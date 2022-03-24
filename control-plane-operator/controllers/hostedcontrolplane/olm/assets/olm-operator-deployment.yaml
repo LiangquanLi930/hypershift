@@ -22,7 +22,7 @@ spec:
             secretName: olm-operator-serving-cert
         - name: client-ca
           secret:
-            secretName: pprof-cert
+            secretName: metrics-client
         - name: kubeconfig
           secret:
             secretName: service-network-admin-kubeconfig
@@ -54,13 +54,14 @@ spec:
             - --tls-key
             - /srv-cert/tls.key
             - --client-ca
-            - /client-ca/tls.crt
+            - /client-ca/ca.crt
           image: OLM_OPERATOR_IMAGE
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8443
               name: metrics
           livenessProbe:
+            initialDelaySeconds: 60
             httpGet:
               path: /healthz
               port: 8443
@@ -92,7 +93,8 @@ spec:
               memory: 160Mi
         - name: socks5-proxy
           command:
-            - "/usr/bin/konnectivity-socks5-proxy"
+            - /usr/bin/control-plane-operator
+            - konnectivity-socks5-proxy
           args:
             - run
           image: SOCKS5_PROXY_IMAGE

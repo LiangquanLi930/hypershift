@@ -66,6 +66,19 @@ objects:
     verbs:
     - '*'
   - apiGroups:
+    - batch
+    resources:
+    - cronjobs
+    - jobs
+    verbs:
+    - '*'
+  - apiGroups:
+    - coordination.k8s.io
+    resources:
+    - leases
+    verbs:
+    - '*'
+  - apiGroups:
     - networking.k8s.io
     resources:
     - networkpolicies
@@ -80,8 +93,15 @@ objects:
     - addons.cluster.x-k8s.io
     - exp.cluster.x-k8s.io
     - cluster.x-k8s.io
+    - monitoring.coreos.com
     resources:
     - '*'
+    verbs:
+    - '*'
+  - apiGroups:
+    - policy
+    resources:
+    - poddisruptionbudgets
     verbs:
     - '*'
   - apiGroups:
@@ -107,12 +127,19 @@ objects:
     resources:
     - '*'
     verbs:
-    - '*'
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
   - apiGroups:
     - ""
     resources:
     - events
     - configmaps
+    - persistentvolumeclaims
     - pods
     - pods/log
     - secrets
@@ -120,12 +147,14 @@ objects:
     - namespaces
     - serviceaccounts
     - services
+    - endpoints
     verbs:
     - '*'
   - apiGroups:
     - apps
     resources:
     - deployments
+    - statefulsets
     verbs:
     - '*'
   - apiGroups:
@@ -154,6 +183,37 @@ objects:
     - capi-provider.agent-install.openshift.io
     resources:
     - '*'
+    verbs:
+    - '*'
+  - apiGroups:
+    - operator.openshift.io
+    resources:
+    - ingresscontrollers
+    verbs:
+    - '*'
+  - apiGroups:
+    - kubevirt.io
+    resources:
+    - virtualmachineinstances
+    - virtualmachines
+    verbs:
+    - '*'
+  - apiGroups:
+    - agent-install.openshift.io
+    resources:
+    - agents
+    verbs:
+    - '*'
+  - apiGroups:
+    - extensions.hive.openshift.io
+    resources:
+    - agentclusterinstalls
+    verbs:
+    - '*'
+  - apiGroups:
+    - hive.openshift.io
+    resources:
+    - clusterdeployments
     verbs:
     - '*'
 - apiVersion: rbac.authorization.k8s.io/v1
@@ -19603,6 +19663,10 @@ objects:
         jsonPath: .status.conditions[?(@.type=="Available")].reason
         name: Reason
         type: string
+      - description: Message
+        jsonPath: .status.conditions[?(@.type=="Available")].message
+        name: Message
+        type: string
       name: v1alpha1
       schema:
         openAPIV3Schema:
@@ -19676,6 +19740,16 @@ objects:
                       format: int32
                       type: integer
                   type: object
+                clusterID:
+                  description: ClusterID uniquely identifies this cluster. This is
+                    expected to be an RFC4122 UUID value (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                    in hexadecimal values). As with a Kubernetes metadata.uid, this
+                    ID uniquely identifies this cluster in space and time. This value
+                    identifies the cluster in metrics pushed to telemetry and metrics
+                    produced by the control plane operators. If a value is not specified,
+                    an ID is generated. After initial creation, the value is immutable.
+                  pattern: '[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}'
+                  type: string
                 configuration:
                   description: Configuration specifies configuration for individual
                     OCP components in the cluster, represented as embedded resources
@@ -19928,6 +20002,17 @@ objects:
                   - podCIDR
                   - serviceCIDR
                   type: object
+                olmCatalogPlacement:
+                  default: management
+                  description: OLMCatalogPlacement specifies the placement of OLM
+                    catalog components. By default, this is set to management and
+                    OLM catalog components are deployed onto the management cluster.
+                    If set to guest, the OLM catalog components will be deployed onto
+                    the guest cluster.
+                  enum:
+                  - management
+                  - guest
+                  type: string
                 pausedUntil:
                   description: 'PausedUntil is a field that can be used to pause reconciliation
                     on a resource. Either a date can be provided in RFC3339 format
@@ -20458,6 +20543,15 @@ objects:
                         description: ServicePublishingStrategy specifies how to publish
                           Service.
                         properties:
+                          loadBalancer:
+                            description: LoadBalancer configures exposing a service
+                              using a LoadBalancer.
+                            properties:
+                              hostname:
+                                description: Hostname is the name of the DNS record
+                                  that will be created pointing to the LoadBalancer.
+                                type: string
+                            type: object
                           nodePort:
                             description: NodePort configures exposing a service using
                               a NodePort.
@@ -20474,6 +20568,15 @@ objects:
                                 type: integer
                             required:
                             - address
+                            type: object
+                          route:
+                            description: Route configures exposing a service using
+                              a Route.
+                            properties:
+                              hostname:
+                                description: Hostname is the name of the DNS record
+                                  that will be created pointing to the Route.
+                                type: string
                             type: object
                           type:
                             description: Type is the publishing strategy used for
@@ -20504,7 +20607,6 @@ objects:
                       type: string
                   type: object
               required:
-              - issuerURL
               - networking
               - platform
               - pullSecret
@@ -20789,6 +20891,12 @@ objects:
                         TODO: Add other useful fields. apiVersion, kind, uid?'
                       type: string
                   type: object
+                clusterID:
+                  description: ClusterID is the unique id that identifies the cluster
+                    externally. Making it optional here allows us to keep compatibility
+                    with previous versions of the control-plane-operator that have
+                    no knowledge of this field.
+                  type: string
                 configuration:
                   description: 'Configuration embeds resources that correspond to
                     the openshift configuration API: https://docs.openshift.com/container-platform/4.7/rest_api/config_apis/config-apis-index.html'
@@ -21001,6 +21109,17 @@ objects:
                   enum:
                   - OpenShiftSDN
                   - Calico
+                  type: string
+                olmCatalogPlacement:
+                  default: management
+                  description: OLMCatalogPlacement specifies the placement of OLM
+                    catalog components. By default, this is set to management and
+                    OLM catalog components are deployed onto the management cluster.
+                    If set to guest, the OLM catalog components will be deployed onto
+                    the guest cluster.
+                  enum:
+                  - management
+                  - guest
                   type: string
                 pausedUntil:
                   description: 'PausedUntil is a field that can be used to pause reconciliation
@@ -21521,6 +21640,15 @@ objects:
                         description: ServicePublishingStrategy specifies how to publish
                           Service.
                         properties:
+                          loadBalancer:
+                            description: LoadBalancer configures exposing a service
+                              using a LoadBalancer.
+                            properties:
+                              hostname:
+                                description: Hostname is the name of the DNS record
+                                  that will be created pointing to the LoadBalancer.
+                                type: string
+                            type: object
                           nodePort:
                             description: NodePort configures exposing a service using
                               a NodePort.
@@ -21537,6 +21665,15 @@ objects:
                                 type: integer
                             required:
                             - address
+                            type: object
+                          route:
+                            description: Route configures exposing a service using
+                              a Route.
+                            properties:
+                              hostname:
+                                description: Hostname is the name of the DNS record
+                                  that will be created pointing to the Route.
+                                type: string
                             type: object
                           type:
                             description: Type is the publishing strategy used for
@@ -21768,11 +21905,11 @@ objects:
         type: string
       - description: Desired Nodes
         jsonPath: .spec.nodeCount
-        name: DesiredNodes
+        name: Desired Nodes
         type: integer
       - description: Available Nodes
         jsonPath: .status.nodeCount
-        name: CurrentNodes
+        name: Current Nodes
         type: integer
       - description: Autoscaling Enabled
         jsonPath: .status.conditions[?(@.type=="AutoscalingEnabled")].status
@@ -21793,6 +21930,10 @@ objects:
       - description: UpdatingConfig in progress
         jsonPath: .status.conditions[?(@.type=="UpdatingConfig")].status
         name: UpdatingConfig
+        type: string
+      - description: Message
+        jsonPath: .status.conditions[?(@.type=="Ready")].message
+        name: Message
         type: string
       name: v1alpha1
       schema:
@@ -22164,12 +22305,24 @@ objects:
                       type: object
                     azure:
                       properties:
+                        availabilityZone:
+                          description: AvailabilityZone of the nodepool. Must not
+                            be specified for clusters in a location that does not
+                            support AvailabilityZone.
+                          type: string
+                        diskSizeGB:
+                          default: 120
+                          format: int32
+                          minimum: 16
+                          type: integer
                         imageID:
+                          description: 'ImageID is the id of the image to boot from.
+                            If unset, the default image at the location below will
+                            be used: subscription/$subscriptionID/resourceGroups/$resourceGroupName/providers/Microsoft.Compute/images/rhcos.x86_64.vhd'
                           type: string
                         vmsize:
                           type: string
                       required:
-                      - imageID
                       - vmsize
                       type: object
                     ibmcloud:
@@ -26995,6 +27148,15 @@ objects:
   - apiGroup: rbac.authorization.k8s.io
     kind: Group
     name: hypershift-readers
+- apiVersion: v1
+  data:
+    name: ${OIDC_S3_NAME}
+    region: ${OIDC_S3_REGION}
+  kind: ConfigMap
+  metadata:
+    creationTimestamp: null
+    name: oidc-storage-provider-s3-config
+    namespace: kube-public
 parameters:
 - name: OPERATOR_IMG
   value: quay.io/hypershift/hypershift-operator

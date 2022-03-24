@@ -34,9 +34,15 @@ type HostedControlPlaneSpec struct {
 	// NetworkType specifies the SDN provider used for cluster networking.
 	NetworkType NetworkType                 `json:"networkType"`
 	SSHKey      corev1.LocalObjectReference `json:"sshKey"`
-	InfraID     string                      `json:"infraID"`
-	Platform    PlatformSpec                `json:"platform"`
-	DNS         DNSSpec                     `json:"dns"`
+	// ClusterID is the unique id that identifies the cluster externally.
+	// Making it optional here allows us to keep compatibility with previous
+	// versions of the control-plane-operator that have no knowledge of this
+	// field.
+	// +optional
+	ClusterID string       `json:"clusterID,omitempty"`
+	InfraID   string       `json:"infraID"`
+	Platform  PlatformSpec `json:"platform"`
+	DNS       DNSSpec      `json:"dns"`
 
 	// APIPort is the port at which the APIServer listens inside a worker
 	// +optional
@@ -102,6 +108,16 @@ type HostedControlPlaneSpec struct {
 	// provided: reconciliation is paused on the resource until the field is removed.
 	// +optional
 	PausedUntil *string `json:"pausedUntil,omitempty"`
+
+	// OLMCatalogPlacement specifies the placement of OLM catalog components. By default,
+	// this is set to management and OLM catalog components are deployed onto the management
+	// cluster. If set to guest, the OLM catalog components will be deployed onto the guest
+	// cluster.
+	//
+	// +kubebuilder:default=management
+	// +optional
+	// +immutable
+	OLMCatalogPlacement OLMCatalogPlacement `json:"olmCatalogPlacement,omitempty"`
 }
 
 // AvailabilityPolicy specifies a high level availability policy for components.

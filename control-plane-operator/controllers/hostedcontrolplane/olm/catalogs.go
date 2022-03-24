@@ -4,13 +4,19 @@ import (
 	"fmt"
 	"math/big"
 
+	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
+	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
-	//TODO: Switch to k8s.io/api/batch/v1 when all management clusters at 1.21+ OR 4.8_openshift+
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	// TODO: Switch to k8s.io/api/batch/v1 when all management clusters at 1.21+ OR 4.8_openshift+
 	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/util"
 )
 
 var (
@@ -19,6 +25,10 @@ var (
 	redHatMarketplaceCatalogService = MustService("assets/catalog-redhat-marketplace.service.yaml")
 	redHatOperatorsCatalogService   = MustService("assets/catalog-redhat-operators.service.yaml")
 )
+
+func catalogLabels() map[string]string {
+	return map[string]string{"app": "catalog-operator", hyperv1.ControlPlaneComponent: "catalog-operator"}
+}
 
 func ReconcileCertifiedOperatorsService(svc *corev1.Service, ownerRef config.OwnerRef) error {
 	return reconcileCatalogService(svc, ownerRef, certifiedCatalogService)
@@ -138,5 +148,60 @@ func ReconcileCatalogRolloutRoleBinding(roleBinding *rbacv1.RoleBinding, ownerRe
 	ownerRef.ApplyTo(roleBinding)
 	roleBinding.RoleRef = catalogRolloutRoleBinding.DeepCopy().RoleRef
 	roleBinding.Subjects = catalogRolloutRoleBinding.DeepCopy().Subjects
+	return nil
+}
+
+func ReconcileCatalogServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string) error {
+	ownerRef.ApplyTo(sm)
+
+	sm.Spec.Selector.MatchLabels = catalogLabels()
+	sm.Spec.NamespaceSelector = prometheusoperatorv1.NamespaceSelector{
+		MatchNames: []string{sm.Namespace},
+	}
+	targetPort := intstr.FromString("metrics")
+	sm.Spec.Endpoints = []prometheusoperatorv1.Endpoint{
+		{
+			Interval:   "15s",
+			TargetPort: &targetPort,
+			Scheme:     "https",
+			TLSConfig: &prometheusoperatorv1.TLSConfig{
+				SafeTLSConfig: prometheusoperatorv1.SafeTLSConfig{
+					ServerName: "catalog-operator-metrics",
+					Cert: prometheusoperatorv1.SecretOrConfigMap{
+						Secret: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: manifests.MetricsClientCertSecret(sm.Namespace).Name,
+							},
+							Key: "tls.crt",
+						},
+					},
+					KeySecret: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: manifests.MetricsClientCertSecret(sm.Namespace).Name,
+						},
+						Key: "tls.key",
+					},
+					CA: prometheusoperatorv1.SecretOrConfigMap{
+						Secret: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: manifests.MetricsClientCertSecret(sm.Namespace).Name,
+							},
+							Key: "ca.crt",
+						},
+					},
+				},
+			},
+			MetricRelabelConfigs: []*prometheusoperatorv1.RelabelConfig{
+				{
+					Action:       "drop",
+					Regex:        "etcd_(debugging|disk|server).*",
+					SourceLabels: []string{"__name__"},
+				},
+			},
+		},
+	}
+
+	util.ApplyClusterIDLabel(&sm.Spec.Endpoints[0], clusterID)
+
 	return nil
 }

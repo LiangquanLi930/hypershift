@@ -22,7 +22,7 @@ spec:
             secretName: catalog-operator-serving-cert
         - name: profile-collector
           secret:
-            secretName: pprof-cert
+            secretName: metrics-client
         - name: kubeconfig
           secret:
             secretName: service-network-admin-kubeconfig
@@ -57,7 +57,7 @@ spec:
             - --tls-key
             - /srv-cert/tls.key
             - --client-ca
-            - /client-ca/tls.crt
+            - /client-ca/ca.crt
             - -kubeconfig
             - /etc/openshift/kubeconfig/kubeconfig
           image: OLM_OPERATOR_IMAGE
@@ -66,6 +66,7 @@ spec:
             - containerPort: 8443
               name: metrics
           livenessProbe:
+            initialDelaySeconds: 60
             httpGet:
               path: /healthz
               port: 8443
@@ -95,7 +96,8 @@ spec:
               value: kube-apiserver,redhat-operators,certified-operators,community-operators,redhat-marketplace
         - name: socks5-proxy
           command:
-            - "/usr/bin/konnectivity-socks5-proxy"
+            - /usr/bin/control-plane-operator
+            - konnectivity-socks5-proxy
           args:
             - run
           image: SOCKS5_PROXY_IMAGE

@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"fmt"
 
+	rbacv1 "k8s.io/api/rbac/v1"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
@@ -61,6 +63,7 @@ type ExampleOptions struct {
 	FIPS                             bool
 	AutoRepair                       bool
 	EtcdStorageClass                 string
+	ExternalDNSDomain                string
 	AWS                              *ExampleAWSOptions
 	None                             *ExampleNoneOptions
 	Agent                            *ExampleAgentOptions
@@ -124,6 +127,8 @@ type ExampleAzureOptions struct {
 	MachineIdentityID string
 	InstanceType      string
 	SecurityGroupName string
+	DiskSizeGB        int32
+	AvailabilityZones []string
 }
 
 // AzureCreds is the fileformat we expect for credentials. It is copied from the installer
@@ -219,6 +224,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 			buildAWSCreds(o.Name+"-cpo-creds", o.AWS.ControlPlaneOperatorRoleARN),
 			kmsCredsSecret,
 		}
+		endpointAccess := hyperv1.AWSEndpointAccessType(o.AWS.EndpointAccess)
 		resources = awsResources.AsObjects()
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.AWSPlatform,
@@ -236,7 +242,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				NodePoolManagementCreds:   corev1.LocalObjectReference{Name: awsResources.NodePoolManagementAWSCreds.Name},
 				ControlPlaneOperatorCreds: corev1.LocalObjectReference{Name: awsResources.ControlPlaneOperatorAWSCreds.Name},
 				ResourceTags:              o.AWS.ResourceTags,
-				EndpointAccess:            hyperv1.AWSEndpointAccessType(o.AWS.EndpointAccess),
+				EndpointAccess:            endpointAccess,
 			},
 		}
 
@@ -259,44 +265,46 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				},
 			}
 		}
+		services = getIngressServicePublishingStrategyMapping()
+		if o.ExternalDNSDomain != "" {
+			for i, svc := range services {
+				switch svc.Service {
+				case hyperv1.APIServer:
+					if endpointAccess != hyperv1.Private {
+						services[i].LoadBalancer = &hyperv1.LoadBalancerPublishingStrategy{
+							Hostname: fmt.Sprintf("api-%s.%s", o.Name, o.ExternalDNSDomain),
+						}
+					}
 
-		services = []hyperv1.ServicePublishingStrategyMapping{
-			{
-				Service: hyperv1.APIServer,
-				ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-					Type: hyperv1.LoadBalancer,
-				},
-			},
-			{
-				Service: hyperv1.OAuthServer,
-				ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-					Type: hyperv1.Route,
-				},
-			},
-			{
-				Service: hyperv1.OIDC,
-				ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-					Type: hyperv1.S3,
-				},
-			},
-			{
-				Service: hyperv1.Konnectivity,
-				ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-					Type: hyperv1.Route,
-				},
-			},
-			{
-				Service: hyperv1.Ignition,
-				ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-					Type: hyperv1.Route,
-				},
-			},
+				case hyperv1.OAuthServer:
+					if endpointAccess != hyperv1.Private {
+						services[i].Route = &hyperv1.RoutePublishingStrategy{
+							Hostname: fmt.Sprintf("oauth-%s.%s", o.Name, o.ExternalDNSDomain),
+						}
+					}
+
+				case hyperv1.Konnectivity:
+					if endpointAccess == hyperv1.Public {
+						services[i].Route = &hyperv1.RoutePublishingStrategy{
+							Hostname: fmt.Sprintf("konnectivity-%s.%s", o.Name, o.ExternalDNSDomain),
+						}
+					}
+
+				case hyperv1.Ignition:
+					if endpointAccess == hyperv1.Public {
+						services[i].Route = &hyperv1.RoutePublishingStrategy{
+							Hostname: fmt.Sprintf("ignition-%s.%s", o.Name, o.ExternalDNSDomain),
+						}
+					}
+				}
+			}
+
 		}
 	case o.None != nil:
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.NonePlatform,
 		}
-		services = o.getServicePublishingStrategyMappingByAPIServerAddress(o.None.APIServerAddress)
+		services = getServicePublishingStrategyMappingByAPIServerAddress(o.None.APIServerAddress)
 	case o.Agent != nil:
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.AgentPlatform,
@@ -304,16 +312,36 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				AgentNamespace: o.Agent.AgentNamespace,
 			},
 		}
-		services = o.getServicePublishingStrategyMappingByAPIServerAddress(o.Agent.APIServerAddress)
+		agentResources := &ExampleAgentResources{
+			&rbacv1.Role{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Role",
+					APIVersion: rbacv1.SchemeGroupVersion.String(),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: o.Agent.AgentNamespace,
+					Name:      "capi-provider-role",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{"agent-install.openshift.io"},
+						Resources: []string{"agents"},
+						Verbs:     []string{"*"},
+					},
+				},
+			},
+		}
+		resources = agentResources.AsObjects()
+		services = getServicePublishingStrategyMappingByAPIServerAddress(o.Agent.APIServerAddress)
 	case o.Kubevirt != nil:
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.KubevirtPlatform,
 		}
 		switch o.Kubevirt.ServicePublishingStrategy {
 		case "NodePort":
-			services = o.getServicePublishingStrategyMappingByAPIServerAddress(o.Kubevirt.APIServerAddress)
+			services = getServicePublishingStrategyMappingByAPIServerAddress(o.Kubevirt.APIServerAddress)
 		case "Ingress":
-			services = o.getIngressServicePublishingStrategyMapping()
+			services = getIngressServicePublishingStrategyMapping()
 		default:
 			panic(fmt.Sprintf("service publishing type %s is not supported", o.Kubevirt.ServicePublishingStrategy))
 		}
@@ -350,7 +378,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				SecurityGroupName: o.Azure.SecurityGroupName,
 			},
 		}
-		services = o.getIngressServicePublishingStrategyMapping()
+		services = getIngressServicePublishingStrategyMapping()
 
 	default:
 		panic("no platform specified")
@@ -547,12 +575,27 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 	case hyperv1.NonePlatform, hyperv1.AgentPlatform:
 		nodePools = append(nodePools, defaultNodePool(cluster.Name))
 	case hyperv1.AzurePlatform:
-		nodePool := defaultNodePool(cluster.Name)
-		nodePool.Spec.Platform.Azure = &hyperv1.AzureNodePoolPlatform{
-			VMSize:  o.Azure.InstanceType,
-			ImageID: o.Azure.BootImageID,
+		if len(o.Azure.AvailabilityZones) > 0 {
+			for _, availabilityZone := range o.Azure.AvailabilityZones {
+				nodePool := defaultNodePool(fmt.Sprintf("%s-%s", cluster.Name, availabilityZone))
+				nodePool.Spec.Platform.Azure = &hyperv1.AzureNodePoolPlatform{
+					VMSize:           o.Azure.InstanceType,
+					ImageID:          o.Azure.BootImageID,
+					DiskSizeGB:       o.Azure.DiskSizeGB,
+					AvailabilityZone: availabilityZone,
+				}
+				nodePools = append(nodePools, nodePool)
+			}
+
+		} else {
+			nodePool := defaultNodePool(cluster.Name)
+			nodePool.Spec.Platform.Azure = &hyperv1.AzureNodePoolPlatform{
+				VMSize:     o.Azure.InstanceType,
+				ImageID:    o.Azure.BootImageID,
+				DiskSizeGB: o.Azure.DiskSizeGB,
+			}
+			nodePools = append(nodePools, nodePool)
 		}
-		nodePools = append(nodePools, nodePool)
 	default:
 		panic("Unsupported platform")
 	}
@@ -567,7 +610,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 	}
 }
 
-func (o ExampleOptions) getIngressServicePublishingStrategyMapping() []hyperv1.ServicePublishingStrategyMapping {
+func getIngressServicePublishingStrategyMapping() []hyperv1.ServicePublishingStrategyMapping {
 	return []hyperv1.ServicePublishingStrategyMapping{
 		{
 			Service: hyperv1.APIServer,
@@ -596,7 +639,48 @@ func (o ExampleOptions) getIngressServicePublishingStrategyMapping() []hyperv1.S
 	}
 }
 
-func (o ExampleOptions) getServicePublishingStrategyMappingByAPIServerAddress(APIServerAddress string) []hyperv1.ServicePublishingStrategyMapping {
+func getIngressWithHostnameServicePublishingStrategyMapping(name, domain string, endpointAcesss hyperv1.AWSEndpointAccessType) []hyperv1.ServicePublishingStrategyMapping {
+	return []hyperv1.ServicePublishingStrategyMapping{
+		{
+			Service: hyperv1.APIServer,
+			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+				Type: hyperv1.LoadBalancer,
+				LoadBalancer: &hyperv1.LoadBalancerPublishingStrategy{
+					Hostname: fmt.Sprintf("api-%s.%s", name, domain),
+				},
+			},
+		},
+		{
+			Service: hyperv1.OAuthServer,
+			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+				Type: hyperv1.Route,
+				Route: &hyperv1.RoutePublishingStrategy{
+					Hostname: fmt.Sprintf("oauth-%s.%s", name, domain),
+				},
+			},
+		},
+		{
+			Service: hyperv1.Konnectivity,
+			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+				Type: hyperv1.Route,
+				Route: &hyperv1.RoutePublishingStrategy{
+					Hostname: fmt.Sprintf("konnectivity-%s.%s", name, domain),
+				},
+			},
+		},
+		{
+			Service: hyperv1.Ignition,
+			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+				Type: hyperv1.Route,
+				Route: &hyperv1.RoutePublishingStrategy{
+					Hostname: fmt.Sprintf("ignition-%s.%s", name, domain),
+				},
+			},
+		},
+	}
+}
+
+func getServicePublishingStrategyMappingByAPIServerAddress(APIServerAddress string) []hyperv1.ServicePublishingStrategyMapping {
 	return []hyperv1.ServicePublishingStrategyMapping{
 		{
 			Service: hyperv1.APIServer,

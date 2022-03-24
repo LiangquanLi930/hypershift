@@ -12,12 +12,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/proxy"
 	"github.com/openshift/hypershift/support/util"
 )
 
@@ -172,7 +174,14 @@ func ReconcileDeployment(deployment *appsv1.Deployment, image, hcpName, openShif
 		},
 	}
 	config.ApplyTo(deployment)
-	util.AvailabilityProber(kas.InClusterKASReadyURL(deployment.Namespace, apiInternalPort), availabilityProberImage, &deployment.Spec.Template.Spec)
+	util.AvailabilityProber(kas.InClusterKASReadyURL(deployment.Namespace, apiInternalPort), availabilityProberImage, &deployment.Spec.Template.Spec, func(o *util.AvailabilityProberOpts) {
+		o.KubeconfigVolumeName = "kubeconfig"
+		o.RequiredAPIs = []schema.GroupVersionKind{
+			{Group: "imageregistry.operator.openshift.io", Version: "v1", Kind: "Config"},
+			{Group: "config.openshift.io", Version: "v1", Kind: "ClusterOperator"},
+			{Group: "config.openshift.io", Version: "v1", Kind: "ClusterVersion"},
+		}
+	})
 	return nil
 }
 
@@ -242,6 +251,7 @@ func buildHCCContainerMain(image, hcpName, openShiftVersion, kubeVersion string,
 				Value: releaseImage,
 			},
 		}
+		proxy.SetEnvVars(&c.Env)
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
 	}
 }

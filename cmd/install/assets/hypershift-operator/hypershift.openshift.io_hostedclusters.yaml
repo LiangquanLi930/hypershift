@@ -40,6 +40,10 @@ spec:
       jsonPath: .status.conditions[?(@.type=="Available")].reason
       name: Reason
       type: string
+    - description: Message
+      jsonPath: .status.conditions[?(@.type=="Available")].message
+      name: Message
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -112,6 +116,16 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              clusterID:
+                description: ClusterID uniquely identifies this cluster. This is expected
+                  to be an RFC4122 UUID value (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                  in hexadecimal values). As with a Kubernetes metadata.uid, this
+                  ID uniquely identifies this cluster in space and time. This value
+                  identifies the cluster in metrics pushed to telemetry and metrics
+                  produced by the control plane operators. If a value is not specified,
+                  an ID is generated. After initial creation, the value is immutable.
+                pattern: '[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}'
+                type: string
               configuration:
                 description: Configuration specifies configuration for individual
                   OCP components in the cluster, represented as embedded resources
@@ -358,6 +372,16 @@ spec:
                 - podCIDR
                 - serviceCIDR
                 type: object
+              olmCatalogPlacement:
+                default: management
+                description: OLMCatalogPlacement specifies the placement of OLM catalog
+                  components. By default, this is set to management and OLM catalog
+                  components are deployed onto the management cluster. If set to guest,
+                  the OLM catalog components will be deployed onto the guest cluster.
+                enum:
+                - management
+                - guest
+                type: string
               pausedUntil:
                 description: 'PausedUntil is a field that can be used to pause reconciliation
                   on a resource. Either a date can be provided in RFC3339 format or
@@ -882,6 +906,15 @@ spec:
                       description: ServicePublishingStrategy specifies how to publish
                         Service.
                       properties:
+                        loadBalancer:
+                          description: LoadBalancer configures exposing a service
+                            using a LoadBalancer.
+                          properties:
+                            hostname:
+                              description: Hostname is the name of the DNS record
+                                that will be created pointing to the LoadBalancer.
+                              type: string
+                          type: object
                         nodePort:
                           description: NodePort configures exposing a service using
                             a NodePort.
@@ -898,6 +931,15 @@ spec:
                               type: integer
                           required:
                           - address
+                          type: object
+                        route:
+                          description: Route configures exposing a service using a
+                            Route.
+                          properties:
+                            hostname:
+                              description: Hostname is the name of the DNS record
+                                that will be created pointing to the Route.
+                              type: string
                           type: object
                         type:
                           description: Type is the publishing strategy used for the
@@ -928,7 +970,6 @@ spec:
                     type: string
                 type: object
             required:
-            - issuerURL
             - networking
             - platform
             - pullSecret

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +40,7 @@ type CreateInfraOptions struct {
 	Location        string
 	InfraID         string
 	CredentialsFile string
+	Credentials     *apifixtures.AzureCreds
 	OutputFile      string
 }
 
@@ -112,9 +112,14 @@ func resourceGroupName(clusterName, infraID string) string {
 }
 
 func (o *CreateInfraOptions) Run(ctx context.Context) (*CreateInfraOutput, error) {
-	creds, err := readCredentials(o.CredentialsFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the credentials: %w", err)
+	creds := o.Credentials
+	if creds == nil {
+		var err error
+		creds, err = readCredentials(o.CredentialsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read the credentials: %w", err)
+		}
+		log.Log.Info("Using credentials from file", "path", o.CredentialsFile)
 	}
 
 	authorizer, err := auth.ClientCredentialsConfig{
@@ -180,6 +185,7 @@ func (o *CreateInfraOptions) Run(ctx context.Context) (*CreateInfraOutput, error
 		return nil, fmt.Errorf("failed to generate uuid for role assignment name: %w", err)
 	}
 
+	log.Log.Info("Assigning role to managed identity, this may take some time")
 	for try := 0; try < 100; try++ {
 		_, err := roleAssignmentClient.Create(ctx, *rg.ID, roleAssignmentName, authorization.RoleAssignmentCreateParameters{RoleAssignmentProperties: &authorization.RoleAssignmentProperties{
 			RoleDefinitionID: roleDefinitions.Values()[0].ID,
@@ -187,7 +193,6 @@ func (o *CreateInfraOptions) Run(ctx context.Context) (*CreateInfraOutput, error
 		}})
 		if err != nil {
 			if try < 99 {
-				log.Log.Info("Rolle assignment failed, retrying...", "try", strconv.Itoa(try), "err", err)
 				time.Sleep(time.Second)
 				continue
 			}
@@ -256,7 +261,7 @@ func (o *CreateInfraOptions) Run(ctx context.Context) (*CreateInfraOutput, error
 	privateZoneParams := privatedns.PrivateZone{
 		Location: utilpointer.String("global"),
 	}
-	privateDNSZonePromise, err := privateZoneClient.CreateOrUpdate(ctx, *rg.Name, o.Name+"-azurecluser."+o.BaseDomain, privateZoneParams, "", "")
+	privateDNSZonePromise, err := privateZoneClient.CreateOrUpdate(ctx, *rg.Name, o.Name+"-azurecluster."+o.BaseDomain, privateZoneParams, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create private DNS zone: %w", err)
 	}
@@ -318,7 +323,7 @@ func (o *CreateInfraOptions) Run(ctx context.Context) (*CreateInfraOutput, error
 	// Extraction is done like this:
 	// docker run --rm -it --entrypoint cat quay.io/openshift-release-dev/ocp-release:4.10.0-rc.0-x86_64 release-manifests/0000_50_installer_coreos-bootimages.yaml |yaml2json |jq .data.stream -r|jq '.architectures.x86_64["rhel-coreos-extensions"]["azure-disk"].url'
 	sourceURL := "https://rhcos.blob.core.windows.net/imagebucket/rhcos-49.84.202110081407-0-azure.x86_64.vhd"
-	blobName := "rhcos.vhd"
+	blobName := "rhcos.x86_64.vhd"
 
 	// Explicitly check this, Azure API makes inferring the problem from the error message extremely hard
 	if !strings.HasPrefix(sourceURL, "https://rhcos.blob.core.windows.net") {
@@ -369,7 +374,7 @@ func (o *CreateInfraOptions) Run(ctx context.Context) (*CreateInfraOutput, error
 		},
 		Location: utilpointer.String(o.Location),
 	}
-	imageCreationFuture, err := imagesClient.CreateOrUpdate(ctx, resourceGroupName, o.InfraID, imageInput)
+	imageCreationFuture, err := imagesClient.CreateOrUpdate(ctx, resourceGroupName, blobName, imageInput)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create image: %w", err)
 	}

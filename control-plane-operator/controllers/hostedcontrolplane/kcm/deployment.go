@@ -16,6 +16,7 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
+	"github.com/openshift/hypershift/support/proxy"
 	"github.com/openshift/hypershift/support/util"
 )
 
@@ -139,6 +140,7 @@ func buildKCMContainerMain(image string, args []string, port int32) func(c *core
 				Protocol:      corev1.ProtocolTCP,
 			},
 		}
+		proxy.SetEnvVars(&c.Env)
 	}
 }
 
@@ -255,7 +257,7 @@ func buildKCMVolumeServerCert(v *corev1.Volume) {
 	if v.Secret == nil {
 		v.Secret = &corev1.SecretVolumeSource{}
 	}
-	v.Secret.DefaultMode = pointer.Int32Ptr(420)
+	v.Secret.DefaultMode = pointer.Int32Ptr(416)
 	v.Secret.SecretName = manifests.KCMServerCertSecret("").Name
 }
 

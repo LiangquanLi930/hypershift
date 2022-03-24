@@ -6,10 +6,12 @@ import (
 	"strings"
 
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
@@ -19,21 +21,17 @@ import (
 )
 
 var (
-	cvoLabels = map[string]string{
-		"app":                         "cluster-version-operator",
-		hyperv1.ControlPlaneComponent: "cluster-version-operator",
-	}
-
 	volumeMounts = util.PodVolumeMounts{
 		cvoContainerMain().Name: {
 			cvoVolumeUpdatePayloads().Name: "/etc/cvo/updatepayloads",
 			cvoVolumeKubeconfig().Name:     "/etc/openshift/kubeconfig",
 			cvoVolumePayload().Name:        "/var/payload",
+			cvoVolumeServerCert().Name:     "/etc/kubernetes/certs/server",
 		},
 		cvoContainerPrepPayload().Name: {
 			cvoVolumePayload().Name: "/var/payload",
 		},
-		cvoContainerApplyBootstrap().Name: {
+		cvoContainerBootstrap().Name: {
 			cvoVolumePayload().Name:    "/var/payload",
 			cvoVolumeKubeconfig().Name: "/etc/kubernetes",
 		},
@@ -76,7 +74,16 @@ var (
 	}
 )
 
-func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef, deploymentConfig config.DeploymentConfig, image, cliImage string) error {
+func cvoLabels() map[string]string {
+	return map[string]string{
+		"app":                         "cluster-version-operator",
+		hyperv1.ControlPlaneComponent: "cluster-version-operator",
+	}
+}
+
+var port int32 = 8443
+
+func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef, deploymentConfig config.DeploymentConfig, image, cliImage, availabilityProberImage, clusterID string, apiPort *int32) error {
 	ownerRef.ApplyTo(deployment)
 
 	// preserve existing resource requirements for main CVO container
@@ -87,30 +94,39 @@ func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef
 
 	deployment.Spec = appsv1.DeploymentSpec{
 		Selector: &metav1.LabelSelector{
-			MatchLabels: cvoLabels,
+			MatchLabels: cvoLabels(),
 		},
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: cvoLabels,
+				Labels: cvoLabels(),
 			},
 			Spec: corev1.PodSpec{
 				AutomountServiceAccountToken: pointer.BoolPtr(false),
 				InitContainers: []corev1.Container{
 					util.BuildContainer(cvoContainerPrepPayload(), buildCVOContainerPrepPayload(image)),
+					util.BuildContainer(cvoContainerBootstrap(), buildCVOContainerBootstrap(cliImage, clusterID)),
 				},
 				Containers: []corev1.Container{
 					util.BuildContainer(cvoContainerMain(), buildCVOContainerMain(image)),
-					util.BuildContainer(cvoContainerApplyBootstrap(), buildCVOContainerApplyBootstrap(cliImage)),
 				},
 				Volumes: []corev1.Volume{
 					util.BuildVolume(cvoVolumePayload(), buildCVOVolumePayload),
 					util.BuildVolume(cvoVolumeKubeconfig(), buildCVOVolumeKubeconfig),
 					util.BuildVolume(cvoVolumeUpdatePayloads(), buildCVOVolumeUpdatePayloads),
+					util.BuildVolume(cvoVolumeServerCert(), buildCVOVolumeServerCert),
 				},
 			},
 		},
 	}
 	deploymentConfig.ApplyTo(deployment)
+	util.AvailabilityProber(
+		kas.InClusterKASReadyURL(deployment.Namespace, apiPort),
+		availabilityProberImage,
+		&deployment.Spec.Template.Spec,
+		func(o *util.AvailabilityProberOpts) {
+			o.KubeconfigVolumeName = cvoVolumeKubeconfig().Name
+		},
+	)
 	return nil
 }
 
@@ -120,9 +136,9 @@ func cvoContainerPrepPayload() *corev1.Container {
 	}
 }
 
-func cvoContainerApplyBootstrap() *corev1.Container {
+func cvoContainerBootstrap() *corev1.Container {
 	return &corev1.Container{
-		Name: "apply-bootstrap",
+		Name: "bootstrap",
 	}
 }
 
@@ -144,13 +160,13 @@ func buildCVOContainerPrepPayload(image string) func(c *corev1.Container) {
 	}
 }
 
-func buildCVOContainerApplyBootstrap(image string) func(*corev1.Container) {
+func buildCVOContainerBootstrap(image, clusterID string) func(*corev1.Container) {
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.Command = []string{"/bin/bash"}
 		c.Args = []string{
 			"-c",
-			applyBootrapScript(),
+			cvoBootrapScript(clusterID),
 		}
 		c.Resources.Requests = corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("10m"),
@@ -181,10 +197,20 @@ func preparePayloadScript() string {
 	return strings.Join(stmts, "\n")
 }
 
-func applyBootrapScript() string {
-	payloadDir := volumeMounts.Path(cvoContainerApplyBootstrap().Name, cvoVolumePayload().Name)
-	var script = `#!/bin/bash
+func cvoBootrapScript(clusterID string) string {
+	payloadDir := volumeMounts.Path(cvoContainerBootstrap().Name, cvoVolumePayload().Name)
+	var scriptTemplate = `#!/bin/bash
 set -euo pipefail
+cat > /tmp/clusterversion.yaml <<EOF
+apiVersion: config.openshift.io/v1
+kind: ClusterVersion
+metadata:
+  name: version
+spec:
+  clusterID: %s
+EOF
+oc get ns openshift-config &> /dev/null || oc create ns openshift-config
+oc get ns openshift-config-managed &> /dev/null || oc create ns openshift-config-managed
 while true; do
   echo "Applying CVO bootstrap manifests"
   if oc apply -f %s/manifests; then
@@ -193,19 +219,15 @@ while true; do
   fi
   sleep 1
 done
-
-# After bootstrap manifests have been applied, just sleep to keep the container alive.
-# The reason the container must be run in parallel (and not as an init container) is that
-# some manifests in the bootstrap directory depend on manifests from the release payload
-# that is applied by the main CVO container.
-while true; do
-  sleep 1000
-done
+oc get clusterversion/version &> /dev/null || oc create -f /tmp/clusterversion.yaml
 `
-	return fmt.Sprintf(script, payloadDir)
+	return fmt.Sprintf(scriptTemplate, clusterID, payloadDir)
 }
 
 func buildCVOContainerMain(image string) func(c *corev1.Container) {
+	cpath := func(vol, file string) string {
+		return path.Join(volumeMounts.Path(cvoContainerMain().Name, vol), file)
+	}
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.Command = []string{"cluster-version-operator"}
@@ -214,10 +236,11 @@ func buildCVOContainerMain(image string) func(c *corev1.Container) {
 			"--release-image",
 			image,
 			"--enable-auto-update=false",
-			"--enable-default-cluster-version=true",
 			"--kubeconfig",
 			path.Join(volumeMounts.Path(c.Name, cvoVolumeKubeconfig().Name), kas.KubeconfigKey),
-			"--listen=",
+			fmt.Sprintf("--listen=0.0.0.0:%d", port),
+			fmt.Sprintf("--serving-cert-file=%s", cpath(cvoVolumeServerCert().Name, corev1.TLSCertKey)),
+			fmt.Sprintf("--serving-key-file=%s", cpath(cvoVolumeServerCert().Name, corev1.TLSPrivateKeyKey)),
 			"--v=4",
 		}
 		c.Env = []corev1.EnvVar{
@@ -236,6 +259,13 @@ func buildCVOContainerMain(image string) func(c *corev1.Container) {
 						FieldPath: "spec.nodeName",
 					},
 				},
+			},
+		}
+		c.Ports = []corev1.ContainerPort{
+			{
+				Name:          "https",
+				ContainerPort: port,
+				Protocol:      corev1.ProtocolTCP,
 			},
 		}
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
@@ -271,4 +301,102 @@ func buildCVOVolumeKubeconfig(v *corev1.Volume) {
 
 func buildCVOVolumePayload(v *corev1.Volume) {
 	v.EmptyDir = &corev1.EmptyDirVolumeSource{}
+}
+
+func cvoVolumeServerCert() *corev1.Volume {
+	return &corev1.Volume{
+		Name: "server-crt",
+	}
+}
+func buildCVOVolumeServerCert(v *corev1.Volume) {
+	if v.Secret == nil {
+		v.Secret = &corev1.SecretVolumeSource{}
+	}
+	v.Secret.DefaultMode = pointer.Int32Ptr(416)
+	v.Secret.SecretName = manifests.ClusterVersionOperatorServerCertSecret("").Name
+}
+
+func ReconcileService(svc *corev1.Service, owner config.OwnerRef) error {
+	owner.ApplyTo(svc)
+	svc.Spec.Selector = cvoLabels()
+
+	// Ensure labels propagate to endpoints so service monitors can select them
+	if svc.Labels == nil {
+		svc.Labels = map[string]string{}
+	}
+	for k, v := range cvoLabels() {
+		svc.Labels[k] = v
+	}
+
+	svc.Spec.Type = corev1.ServiceTypeClusterIP
+
+	if len(svc.Spec.Ports) == 0 {
+		svc.Spec.Ports = []corev1.ServicePort{
+			{
+				Name: "https",
+			},
+		}
+	}
+
+	svc.Spec.Ports[0].Port = port
+	svc.Spec.Ports[0].Name = "https"
+	svc.Spec.Ports[0].TargetPort = intstr.FromString("https")
+	svc.Spec.Ports[0].Protocol = corev1.ProtocolTCP
+
+	return nil
+}
+
+func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string) error {
+	ownerRef.ApplyTo(sm)
+
+	sm.Spec.Selector.MatchLabels = cvoLabels()
+	sm.Spec.NamespaceSelector = prometheusoperatorv1.NamespaceSelector{
+		MatchNames: []string{sm.Namespace},
+	}
+	targetPort := intstr.FromString("https")
+	sm.Spec.Endpoints = []prometheusoperatorv1.Endpoint{
+		{
+			Interval:   "15s",
+			TargetPort: &targetPort,
+			Scheme:     "https",
+			TLSConfig: &prometheusoperatorv1.TLSConfig{
+				SafeTLSConfig: prometheusoperatorv1.SafeTLSConfig{
+					ServerName: "cluster-version-operator",
+					Cert: prometheusoperatorv1.SecretOrConfigMap{
+						Secret: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: manifests.MetricsClientCertSecret(sm.Namespace).Name,
+							},
+							Key: "tls.crt",
+						},
+					},
+					KeySecret: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: manifests.MetricsClientCertSecret(sm.Namespace).Name,
+						},
+						Key: "tls.key",
+					},
+					CA: prometheusoperatorv1.SecretOrConfigMap{
+						Secret: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: manifests.MetricsClientCertSecret(sm.Namespace).Name,
+							},
+							Key: "ca.crt",
+						},
+					},
+				},
+			},
+			MetricRelabelConfigs: []*prometheusoperatorv1.RelabelConfig{
+				{
+					Action:       "drop",
+					Regex:        "etcd_(debugging|disk|server).*",
+					SourceLabels: []string{"__name__"},
+				},
+			},
+		},
+	}
+
+	util.ApplyClusterIDLabel(&sm.Spec.Endpoints[0], clusterID)
+
+	return nil
 }

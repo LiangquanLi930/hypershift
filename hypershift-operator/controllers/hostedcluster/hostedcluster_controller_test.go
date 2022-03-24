@@ -288,7 +288,7 @@ func TestComputeHostedClusterAvailability(t *testing.T) {
 				Status: metav1.ConditionFalse,
 			},
 		},
-		"missing kubeconfig should cause unavailability": {
+		"hosted controlplane with availability false should cause unavailability": {
 			Cluster: hyperv1.HostedCluster{
 				Spec: hyperv1.HostedClusterSpec{
 					Etcd: hyperv1.EtcdSpec{ManagementType: hyperv1.Managed},
@@ -296,10 +296,10 @@ func TestComputeHostedClusterAvailability(t *testing.T) {
 				Status: hyperv1.HostedClusterStatus{},
 			},
 			ControlPlane: &hyperv1.HostedControlPlane{
-				Spec: hyperv1.HostedControlPlaneSpec{},
+				Spec: hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
 				Status: hyperv1.HostedControlPlaneStatus{
 					Conditions: []metav1.Condition{
-						{Type: string(hyperv1.HostedControlPlaneAvailable), Status: metav1.ConditionTrue},
+						{Type: string(hyperv1.HostedControlPlaneAvailable), Status: metav1.ConditionFalse},
 					},
 				},
 			},
@@ -313,9 +313,7 @@ func TestComputeHostedClusterAvailability(t *testing.T) {
 				Spec: hyperv1.HostedClusterSpec{
 					Etcd: hyperv1.EtcdSpec{ManagementType: hyperv1.Managed},
 				},
-				Status: hyperv1.HostedClusterStatus{
-					KubeConfig: &corev1.LocalObjectReference{Name: "foo"},
-				},
+				Status: hyperv1.HostedClusterStatus{},
 			},
 			ControlPlane: &hyperv1.HostedControlPlane{
 				Spec: hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
@@ -1046,7 +1044,7 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 			Spec: hyperv1.HostedClusterSpec{
 				Platform: hyperv1.PlatformSpec{
 					Type:  hyperv1.AgentPlatform,
-					Agent: &hyperv1.AgentPlatformSpec{},
+					Agent: &hyperv1.AgentPlatformSpec{AgentNamespace: "agent-namespace"},
 				},
 			},
 		},
@@ -1101,6 +1099,11 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 				".dockerconfigjson": []byte("{}"),
 			},
 		},
+		&corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "agent-namespace",
+			},
+		},
 	}
 	for _, cluster := range hostedClusters {
 		cluster.Spec.Services = []hyperv1.ServicePublishingStrategyMapping{
@@ -1129,9 +1132,11 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 	})))
 
 	for _, hc := range hostedClusters {
-		if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: hc.Namespace, Name: hc.Name}}); err != nil {
-			t.Fatalf("Reconcile failed: %v", err)
-		}
+		t.Run(hc.Name, func(t *testing.T) {
+			if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: hc.Namespace, Name: hc.Name}}); err != nil {
+				t.Fatalf("Reconcile failed: %v", err)
+			}
+		})
 	}
 	watchedResources := sets.String{}
 	for _, resource := range r.managedResources() {
@@ -1265,7 +1270,7 @@ func TestValidateConfigAndClusterCapabilities(t *testing.T) {
 			managementClusterCapabilities: &fakecapabilities.FakeSupportAllCapabilities{},
 		},
 		{
-			name: "Azurecluser with incomplete credentials secret, error",
+			name: "Azurecluster with incomplete credentials secret, error",
 			hostedCluster: &hyperv1.HostedCluster{Spec: hyperv1.HostedClusterSpec{Platform: hyperv1.PlatformSpec{
 				Type: hyperv1.AzurePlatform,
 				Azure: &hyperv1.AzurePlatformSpec{
@@ -1296,6 +1301,13 @@ func TestValidateConfigAndClusterCapabilities(t *testing.T) {
 					},
 				},
 			},
+		},
+		{
+			name: "invalid cluster uuid",
+			hostedCluster: &hyperv1.HostedCluster{Spec: hyperv1.HostedClusterSpec{
+				ClusterID: "foobar",
+			}},
+			expectedResult: errors.New(`cannot parse cluster ID "foobar": invalid UUID length: 6`),
 		},
 	}
 
@@ -1379,6 +1391,64 @@ func TestPauseHostedControlPlane(t *testing.T) {
 				g.Expect(finalHCP.Annotations).To(BeEquivalentTo(tc.expectedHostedControlPlaneObject.Annotations))
 			} else {
 				g.Expect(errors2.IsNotFound(err)).To(BeTrue())
+			}
+		})
+	}
+}
+
+func TestDefaultClusterIDsIfNeeded(t *testing.T) {
+	testHC := func(infraID, clusterID string) *hyperv1.HostedCluster {
+		return &hyperv1.HostedCluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "fake-cluster",
+				Namespace: "fake-namespace",
+			},
+			Spec: hyperv1.HostedClusterSpec{
+				InfraID:   infraID,
+				ClusterID: clusterID,
+			},
+		}
+	}
+	tests := []struct {
+		name string
+		hc   *hyperv1.HostedCluster
+	}{
+		{
+			name: "generate both",
+			hc:   testHC("", ""),
+		},
+		{
+			name: "generate clusterid",
+			hc:   testHC("fake-infra", ""),
+		},
+		{
+			name: "generate infra-id",
+			hc:   testHC("", "fake-uuid"),
+		},
+		{
+			name: "generate none",
+			hc:   testHC("fake-infra", "fake-uuid"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := &HostedClusterReconciler{
+				Client: fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(test.hc).Build(),
+			}
+			g := NewGomegaWithT(t)
+			previousInfraID := test.hc.Spec.InfraID
+			previousClusterID := test.hc.Spec.ClusterID
+			err := r.defaultClusterIDsIfNeeded(context.Background(), test.hc)
+			g.Expect(err).ToNot(HaveOccurred())
+			resultHC := &hyperv1.HostedCluster{}
+			r.Client.Get(context.Background(), crclient.ObjectKeyFromObject(test.hc), resultHC)
+			g.Expect(resultHC.Spec.ClusterID).NotTo(BeEmpty())
+			g.Expect(resultHC.Spec.InfraID).NotTo(BeEmpty())
+			if len(previousClusterID) > 0 {
+				g.Expect(resultHC.Spec.ClusterID).To(BeIdenticalTo(previousClusterID))
+			}
+			if len(previousInfraID) > 0 {
+				g.Expect(resultHC.Spec.InfraID).To(BeIdenticalTo(previousInfraID))
 			}
 		})
 	}

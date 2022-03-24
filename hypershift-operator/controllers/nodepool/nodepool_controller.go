@@ -94,7 +94,8 @@ func (r *NodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// We want to reconcile when the ConfigMaps referenced by the spec.config and also the core ones change.
 		Watches(&source.Kind{Type: &corev1.ConfigMap{}}, handler.EnqueueRequestsFromMapFunc(r.enqueueNodePoolsForConfig)).
 		WithOptions(controller.Options{
-			RateLimiter: workqueue.NewItemExponentialFailureRateLimiter(1*time.Second, 10*time.Second),
+			RateLimiter:             workqueue.NewItemExponentialFailureRateLimiter(1*time.Second, 10*time.Second),
+			MaxConcurrentReconciles: 10,
 		}).
 		Build(r)
 	if err != nil {
@@ -362,7 +363,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 	config, missingConfigs, err := r.getConfig(ctx, nodePool, expectedCoreConfigResources, controlPlaneNamespace)
 	if err != nil {
 		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-			Type:               hyperv1.NodePoolConfigValidConfigConditionType,
+			Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 			Status:             corev1.ConditionFalse,
 			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
 			Message:            err.Error(),
@@ -372,7 +373,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 	}
 	if missingConfigs {
 		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-			Type:               hyperv1.NodePoolConfigValidConfigConditionType,
+			Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 			Status:             corev1.ConditionFalse,
 			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
 			Message:            "Core ignition config has not been created yet",
@@ -382,7 +383,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		return ctrl.Result{}, nil
 	}
 	setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-		Type:               hyperv1.NodePoolConfigValidConfigConditionType,
+		Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 		Status:             corev1.ConditionTrue,
 		Reason:             hyperv1.NodePoolAsExpectedConditionReason,
 		ObservedGeneration: nodePool.Generation,
@@ -439,8 +440,8 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 			return reconcile.Result{}, fmt.Errorf("failed to get token Secret: %w", err)
 		}
 		if err == nil {
-			if err := r.Delete(ctx, tokenSecret); err != nil && !apierrors.IsNotFound(err) {
-				return reconcile.Result{}, fmt.Errorf("failed to delete token Secret: %w", err)
+			if err := setExpirationTimestampOnToken(ctx, r.Client, tokenSecret); err != nil && !apierrors.IsNotFound(err) {
+				return reconcile.Result{}, fmt.Errorf("failed to set expiration on token Secret: %w", err)
 			}
 		}
 
@@ -678,6 +679,8 @@ func reconcileTokenSecret(tokenSecret *corev1.Secret, nodePool *hyperv1.NodePool
 
 	tokenSecret.Annotations[TokenSecretAnnotation] = "true"
 	tokenSecret.Annotations[nodePoolAnnotation] = client.ObjectKeyFromObject(nodePool).String()
+	// active token should never be marked as expired.
+	delete(tokenSecret.Annotations, hyperv1.IgnitionServerTokenExpirationTimestampAnnotation)
 
 	if tokenSecret.Data == nil {
 		tokenSecret.Data = map[string][]byte{}
@@ -1451,4 +1454,14 @@ func validateInfraID(infraID string) error {
 		return fmt.Errorf("infraID can't be empty")
 	}
 	return nil
+}
+
+func setExpirationTimestampOnToken(ctx context.Context, c client.Client, tokenSecret *corev1.Secret) error {
+	// this should be a reasonable value to allow all in flight provisions to complete.
+	timeUntilExpiry := 2 * time.Hour
+	if tokenSecret.Annotations == nil {
+		tokenSecret.Annotations = map[string]string{}
+	}
+	tokenSecret.Annotations[hyperv1.IgnitionServerTokenExpirationTimestampAnnotation] = time.Now().Add(timeUntilExpiry).Format(time.RFC3339)
+	return c.Update(ctx, tokenSecret)
 }

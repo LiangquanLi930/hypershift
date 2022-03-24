@@ -6,18 +6,26 @@ import (
 	"os"
 	"time"
 
+	availabilityprober "github.com/openshift/hypershift/availability-prober"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/awsprivatelink"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedapicache"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator"
+	ignitionserver "github.com/openshift/hypershift/ignition-server"
+	konnectivitysocks5proxy "github.com/openshift/hypershift/konnectivity-socks5-proxy"
 	"github.com/openshift/hypershift/support/capabilities"
+	"github.com/openshift/hypershift/support/events"
+	"github.com/openshift/hypershift/support/images"
 	"github.com/openshift/hypershift/support/util"
+	tokenminter "github.com/openshift/hypershift/token-minter"
 	"go.uber.org/zap/zapcore"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
 	"github.com/spf13/cobra"
@@ -51,6 +59,10 @@ func main() {
 	}
 	cmd.AddCommand(NewStartCommand())
 	cmd.AddCommand(hostedclusterconfigoperator.NewCommand())
+	cmd.AddCommand(konnectivitysocks5proxy.NewStartCommand())
+	cmd.AddCommand(availabilityprober.NewStartCommand())
+	cmd.AddCommand(tokenminter.NewStartCommand())
+	cmd.AddCommand(ignitionserver.NewStartCommand())
 
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -60,11 +72,10 @@ func main() {
 
 const (
 	// TODO: Include konnectivity image in release payload
-	konnectivityServerImage = "registry.ci.openshift.org/hypershift/apiserver-network-proxy:latest"
-	konnectivityAgentImage  = "registry.ci.openshift.org/hypershift/apiserver-network-proxy:latest"
+	defaultKonnectivityImage = "registry.ci.openshift.org/hypershift/apiserver-network-proxy:latest"
 
 	// Default AWS KMS provider image. Can be overriden with annotation on HostedCluster
-	awsKMSProviderImage = "registry.ci.openshift.org/hypershift/aws-encryption-provider:latest"
+	defaultAWSKMSProviderImage = "registry.ci.openshift.org/hypershift/aws-encryption-provider:latest"
 )
 
 func NewStartCommand() *cobra.Command {
@@ -126,12 +137,26 @@ func NewStartCommand() *cobra.Command {
 			RetryPeriod:                   &retryPeriod,
 			HealthProbeBindAddress:        healthProbeAddr,
 			NewCache: cache.BuilderWithOptions(cache.Options{
-				DefaultSelector:   cache.ObjectSelector{Field: fields.OneTermEqualSelector("metadata.namespace", namespace)},
-				SelectorsByObject: cache.SelectorsByObject{&operatorv1.IngressController{}: {Field: fields.OneTermEqualSelector("metadata.namespace", manifests.IngressPrivateIngressController("").Namespace)}},
+				DefaultSelector: cache.ObjectSelector{Field: fields.OneTermEqualSelector("metadata.namespace", namespace)},
+				SelectorsByObject: cache.SelectorsByObject{
+					&operatorv1.IngressController{}: {Field: fields.OneTermEqualSelector("metadata.namespace", manifests.IngressPrivateIngressController("").Namespace)},
+					// We watch warning events to be able to surface cloud provider errors as conditions
+					// Surfacing cloud-provider specific status is discussed in:
+					// https://github.com/kubernetes/kubernetes/issues/70159
+					// https://github.com/kubernetes/kubernetes/issues/52670
+					&corev1.Event{}: {Field: fields.AndSelectors(fields.OneTermEqualSelector("metadata.namespace", namespace), fields.OneTermEqualSelector("type", "warning"))},
+				},
 			}),
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to start manager")
+			os.Exit(1)
+		}
+		if err = mgr.GetFieldIndexer().IndexField(ctx, &corev1.Event{}, events.EventInvolvedObjectUIDField, func(object crclient.Object) []string {
+			event := object.(*corev1.Event)
+			return []string{string(event.InvolvedObject.UID)}
+		}); err != nil {
+			setupLog.Error(err, "failed to setup event involvedObject.uid index")
 			os.Exit(1)
 		}
 
@@ -202,6 +227,18 @@ func NewStartCommand() *cobra.Command {
 			os.Exit(1)
 		}
 		setupLog.Info("using token minter image", "image", tokenMinterImage)
+
+		konnectivityServerImage := defaultKonnectivityImage
+		konnectivityAgentImage := defaultKonnectivityImage
+		if envImage := os.Getenv(images.KonnectivityEnvVar); len(envImage) > 0 {
+			konnectivityServerImage = envImage
+			konnectivityAgentImage = envImage
+		}
+
+		awsKMSProviderImage := defaultAWSKMSProviderImage
+		if envImage := os.Getenv(images.AWSEncryptionProviderEnvVar); len(envImage) > 0 {
+			awsKMSProviderImage = envImage
+		}
 
 		releaseProvider := &releaseinfo.RegistryMirrorProviderDecorator{
 			Delegate: &releaseinfo.StaticProviderDecorator{

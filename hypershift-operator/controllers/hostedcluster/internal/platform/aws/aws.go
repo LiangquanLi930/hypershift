@@ -3,9 +3,11 @@ package aws
 import (
 	"context"
 	"fmt"
+	"os"
 
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
+	"github.com/openshift/hypershift/support/images"
 	"github.com/openshift/hypershift/support/upsert"
 	"github.com/openshift/hypershift/support/util"
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,16 +29,14 @@ const (
 	imageCAPA = "registry.ci.openshift.org/hypershift/cluster-api-aws-controller:v1.1.0"
 )
 
-func New(availabilityProberImage string, tokenMinterImage string) *AWS {
+func New(controlPlaneOperatorImage string) *AWS {
 	return &AWS{
-		avaiabilityProberImage: availabilityProberImage,
-		tokenMinterImage:       tokenMinterImage,
+		controlPlaneOperatorImage: controlPlaneOperatorImage,
 	}
 }
 
 type AWS struct {
-	avaiabilityProberImage string
-	tokenMinterImage       string
+	controlPlaneOperatorImage string
 }
 
 func (p AWS) ReconcileCAPIInfraCR(ctx context.Context, c client.Client, createOrUpdate upsert.CreateOrUpdateFN,
@@ -62,10 +62,13 @@ func (p AWS) ReconcileCAPIInfraCR(ctx context.Context, c client.Client, createOr
 
 func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hyperv1.HostedControlPlane) (*appsv1.DeploymentSpec, error) {
 	providerImage := imageCAPA
+	if envImage := os.Getenv(images.AWSCAPIProviderEnvVar); len(envImage) > 0 {
+		providerImage = envImage
+	}
 	if override, ok := hcluster.Annotations[hyperv1.ClusterAPIProviderAWSImage]; ok {
 		providerImage = override
 	}
-	defaultMode := int32(420)
+	defaultMode := int32(416)
 	deploymentSpec := &appsv1.DeploymentSpec{
 		Template: corev1.PodTemplateSpec{
 			Spec: corev1.PodSpec{
@@ -189,7 +192,7 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 					},
 					{
 						Name:            "token-minter",
-						Image:           p.tokenMinterImage,
+						Image:           p.controlPlaneOperatorImage,
 						ImagePullPolicy: corev1.PullAlways,
 						VolumeMounts: []corev1.VolumeMount{
 							{
@@ -201,13 +204,13 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 								MountPath: "/etc/kubernetes",
 							},
 						},
-						Command: []string{"/usr/bin/token-minter"},
+						Command: []string{"/usr/bin/control-plane-operator", "token-minter"},
 						Args: []string{
-							"-service-account-namespace=kube-system",
-							"-service-account-name=capa-controller-manager",
-							"-token-audience=openshift",
-							"-token-file=/var/run/secrets/openshift/serviceaccount/token",
-							"-kubeconfig=/etc/kubernetes/kubeconfig",
+							"--service-account-namespace=kube-system",
+							"--service-account-name=capa-controller-manager",
+							"--token-audience=openshift",
+							"--token-file=/var/run/secrets/openshift/serviceaccount/token",
+							"--kubeconfig=/etc/kubernetes/kubeconfig",
 						},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
@@ -220,7 +223,7 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 			},
 		},
 	}
-	util.AvailabilityProber(kas.InClusterKASReadyURL(hcp.Namespace, hcp.Spec.APIPort), p.avaiabilityProberImage, &deploymentSpec.Template.Spec)
+	util.AvailabilityProber(kas.InClusterKASReadyURL(hcp.Namespace, hcp.Spec.APIPort), p.controlPlaneOperatorImage, &deploymentSpec.Template.Spec)
 	return deploymentSpec, nil
 }
 
@@ -381,5 +384,9 @@ func reconcileAWSCluster(awsCluster *capiawsv1.AWSCluster, hcluster *hyperv1.Hos
 }
 
 func (AWS) CAPIProviderPolicyRules() []rbacv1.PolicyRule {
+	return nil
+}
+
+func (AWS) DeleteCredentials(ctx context.Context, c client.Client, hcluster *hyperv1.HostedCluster, controlPlaneNamespace string) error {
 	return nil
 }

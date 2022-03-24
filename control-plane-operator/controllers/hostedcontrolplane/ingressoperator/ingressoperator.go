@@ -5,8 +5,10 @@ import (
 
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/konnectivity"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/proxy"
 	"github.com/openshift/hypershift/support/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -19,6 +21,7 @@ import (
 
 const (
 	ingressOperatorContainerName = "ingress-operator"
+	socks5ProxyContainerName     = "socks-proxy"
 	ingressOperatorMetricsPort   = 60000
 )
 
@@ -29,6 +32,7 @@ type Params struct {
 	ReleaseVersion          string
 	TokenMinterImage        string
 	AvailabilityProberImage string
+	Socks5ProxyImage        string
 	Platform                hyperv1.PlatformType
 	DeploymentConfig        config.DeploymentConfig
 }
@@ -39,6 +43,7 @@ func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[strin
 		HAProxyRouterImage:      images["haproxy-router"],
 		ReleaseVersion:          version,
 		TokenMinterImage:        images["token-minter"],
+		Socks5ProxyImage:        images["socks5-proxy"],
 		AvailabilityProberImage: images[util.AvailabilityProberImageName],
 		Platform:                platform,
 	}
@@ -118,6 +123,18 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 			{Name: "IMAGE", Value: params.HAProxyRouterImage},
 			{Name: "CANARY_IMAGE", Value: params.IngressOperatorImage},
 			{Name: "KUBECONFIG", Value: "/etc/kubernetes/kubeconfig"},
+			{
+				Name:  "HTTP_PROXY",
+				Value: fmt.Sprintf("socks5://127.0.0.1:%d", konnectivity.KonnectivityServerLocalPort),
+			},
+			{
+				Name:  "HTTPS_PROXY",
+				Value: fmt.Sprintf("socks5://127.0.0.1:%d", konnectivity.KonnectivityServerLocalPort),
+			},
+			{
+				Name:  "NO_PROXY",
+				Value: manifests.KubeAPIServerService("").Name,
+			},
 		},
 		Name:            ingressOperatorContainerName,
 		Image:           params.IngressOperatorImage,
@@ -131,9 +148,11 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 			{Name: "ingress-operator-kubeconfig", MountPath: "/etc/kubernetes"},
 		},
 	}}
-
+	dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers, ingressOperatorSocks5ProxyContainer(params.Socks5ProxyImage))
 	dep.Spec.Template.Spec.Volumes = []corev1.Volume{
-		{Name: "ingress-operator-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.IngressOperatorKubeconfig("").Name}}},
+		{Name: "ingress-operator-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.IngressOperatorKubeconfig("").Name, DefaultMode: utilpointer.Int32Ptr(416)}}},
+		{Name: "admin-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "service-network-admin-kubeconfig", DefaultMode: utilpointer.Int32Ptr(416)}}},
+		{Name: "konnectivity-proxy-cert", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.KonnectivityClientSecret("").Name, DefaultMode: utilpointer.Int32Ptr(416)}}},
 	}
 
 	if params.Platform == hyperv1.AWSPlatform {
@@ -142,12 +161,12 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 		)
 		dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers, corev1.Container{
 			Name:    "token-minter",
-			Command: []string{"/usr/bin/token-minter"},
+			Command: []string{"/usr/bin/control-plane-operator", "token-minter"},
 			Args: []string{
-				"-service-account-namespace=openshift-ingress-operator",
-				"-service-account-name=ingress-operator",
-				"-token-file=/var/run/secrets/openshift/serviceaccount/token",
-				"-kubeconfig=/etc/kubernetes/kubeconfig",
+				"--service-account-namespace=openshift-ingress-operator",
+				"--service-account-name=ingress-operator",
+				"--token-file=/var/run/secrets/openshift/serviceaccount/token",
+				"--kubeconfig=/etc/kubernetes/kubeconfig",
 			},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -162,9 +181,7 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 			},
 		})
 		dep.Spec.Template.Spec.Volumes = append(dep.Spec.Template.Spec.Volumes,
-			corev1.Volume{Name: "serviceaccount-token", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			corev1.Volume{Name: "admin-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "service-network-admin-kubeconfig"}}},
-		)
+			corev1.Volume{Name: "serviceaccount-token", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 	}
 
 	util.AvailabilityProber(
@@ -180,4 +197,29 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 	)
 
 	params.DeploymentConfig.ApplyTo(dep)
+}
+
+func ingressOperatorSocks5ProxyContainer(socks5ProxyImage string) corev1.Container {
+	c := corev1.Container{
+		Name:    socks5ProxyContainerName,
+		Image:   socks5ProxyImage,
+		Command: []string{"/usr/bin/control-plane-operator", "konnectivity-socks5-proxy"},
+		Args:    []string{"run"},
+		Env: []corev1.EnvVar{{
+			Name:  "KUBECONFIG",
+			Value: "/etc/kubernetes/kubeconfig",
+		}},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("10Mi"),
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "admin-kubeconfig", MountPath: "/etc/kubernetes"},
+			{Name: "konnectivity-proxy-cert", MountPath: "/etc/konnectivity-proxy-tls"},
+		},
+	}
+	proxy.SetEnvVars(&c.Env)
+	return c
 }
