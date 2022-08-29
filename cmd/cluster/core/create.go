@@ -20,19 +20,23 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeclient "k8s.io/client-go/kubernetes"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
+	"github.com/blang/semver"
+	"github.com/go-logr/logr"
 	apifixtures "github.com/openshift/hypershift/api/fixtures"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
-	"github.com/openshift/hypershift/cmd/log"
 	"github.com/openshift/hypershift/cmd/util"
 	"github.com/openshift/hypershift/cmd/version"
 	hyperapi "github.com/openshift/hypershift/support/api"
+	"github.com/openshift/hypershift/support/releaseinfo"
 )
 
 // ApplyPlatformSpecifics can be used to create platform specific values as well as enriching the fixure with additional values
 type ApplyPlatformSpecifics = func(ctx context.Context, fixture *apifixtures.ExampleOptions, options *CreateOptions) error
 
 type CreateOptions struct {
+	AdditionalTrustBundle            string
 	Annotations                      []string
 	AutoRepair                       bool
 	ControlPlaneAvailabilityPolicy   string
@@ -40,6 +44,7 @@ type CreateOptions struct {
 	EtcdStorageClass                 string
 	FIPS                             bool
 	GenerateSSH                      bool
+	ImageContentSources              string
 	InfrastructureAvailabilityPolicy string
 	InfrastructureJSON               string
 	InfraID                          string
@@ -53,15 +58,40 @@ type CreateOptions struct {
 	Render                           bool
 	SSHKeyFile                       string
 	ServiceCIDR                      string
-	PodCIDR                          string
+	ClusterCIDR                      string
 	ExternalDNSDomain                string
 	NonePlatform                     NonePlatformCreateOptions
 	KubevirtPlatform                 KubevirtPlatformCreateOptions
 	AWSPlatform                      AWSPlatformOptions
 	AgentPlatform                    AgentPlatformCreateOptions
 	AzurePlatform                    AzurePlatformOptions
+	PowerVSPlatform                  PowerVSPlatformOptions
 	Wait                             bool
 	Timeout                          time.Duration
+	Log                              logr.Logger
+
+	// BeforeApply is called immediately before resources are applied to the
+	// server, giving the user an opportunity to inspect or mutate the resources.
+	// This is intended primarily for e2e testing and should be used with care.
+	BeforeApply func(crclient.Object) `json:"-"`
+}
+
+type PowerVSPlatformOptions struct {
+	APIKey          string
+	ResourceGroup   string
+	Region          string
+	Zone            string
+	CloudInstanceID string
+	CloudConnection string
+	VpcRegion       string
+	Vpc             string
+	VpcSubnet       string
+
+	// nodepool related options
+	SysType    string
+	ProcType   string
+	Processors string
+	Memory     int32
 }
 
 type AgentPlatformCreateOptions struct {
@@ -70,7 +100,8 @@ type AgentPlatformCreateOptions struct {
 }
 
 type NonePlatformCreateOptions struct {
-	APIServerAddress string
+	APIServerAddress          string
+	ExposeThroughLoadBalancer bool
 }
 
 type KubevirtPlatformCreateOptions struct {
@@ -79,6 +110,9 @@ type KubevirtPlatformCreateOptions struct {
 	Memory                    string
 	Cores                     uint32
 	ContainerDiskImage        string
+	RootVolumeSize            uint32
+	RootVolumeStorageClass    string
+	RootVolumeAccessModes     string
 }
 
 type AWSPlatformOptions struct {
@@ -96,6 +130,7 @@ type AWSPlatformOptions struct {
 	EndpointAccess     string
 	Zones              []string
 	EtcdKMSKeyARN      string
+	EnableProxy        bool
 }
 
 type AzurePlatformOptions struct {
@@ -106,13 +141,16 @@ type AzurePlatformOptions struct {
 	AvailabilityZones []string
 }
 
-func createCommonFixture(opts *CreateOptions) (*apifixtures.ExampleOptions, error) {
+func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures.ExampleOptions, error) {
 	if len(opts.ReleaseImage) == 0 {
 		defaultVersion, err := version.LookupDefaultOCPVersion()
 		if err != nil {
 			return nil, fmt.Errorf("release image is required when unable to lookup default OCP version: %w", err)
 		}
 		opts.ReleaseImage = defaultVersion.PullSpec
+	}
+	if err := defaultNetworkType(ctx, opts, &releaseinfo.RegistryClientProvider{}, ioutil.ReadFile); err != nil {
+		return nil, fmt.Errorf("failed to default network: %w", err)
 	}
 
 	annotations := map[string]string{}
@@ -150,7 +188,31 @@ func createCommonFixture(opts *CreateOptions) (*apifixtures.ExampleOptions, erro
 		}
 	}
 
+	var userCABundle []byte
+	if len(opts.AdditionalTrustBundle) > 0 {
+		userCABundle, err = ioutil.ReadFile(opts.AdditionalTrustBundle)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read additional trust bundle file: %w", err)
+		}
+	}
+
+	var imageContentSources []hyperv1.ImageContentSource
+	if len(opts.ImageContentSources) > 0 {
+		icspFileBytes, err := ioutil.ReadFile(opts.ImageContentSources)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read image content sources file: %w", err)
+		}
+
+		err = yaml.Unmarshal(icspFileBytes, &imageContentSources)
+		if err != nil {
+			return nil, fmt.Errorf("unable to deserialize image content sources file: %w", err)
+		}
+
+	}
+
 	return &apifixtures.ExampleOptions{
+		AdditionalTrustBundle:            string(userCABundle),
+		ImageContentSources:              imageContentSources,
 		InfraID:                          opts.InfraID,
 		Annotations:                      annotations,
 		AutoRepair:                       opts.AutoRepair,
@@ -167,7 +229,7 @@ func createCommonFixture(opts *CreateOptions) (*apifixtures.ExampleOptions, erro
 		SSHPublicKey:                     sshKey,
 		EtcdStorageClass:                 opts.EtcdStorageClass,
 		ServiceCIDR:                      opts.ServiceCIDR,
-		PodCIDR:                          opts.PodCIDR,
+		ClusterCIDR:                      opts.ClusterCIDR,
 	}, nil
 }
 
@@ -193,61 +255,54 @@ func generateSSHKeys() ([]byte, []byte, error) {
 	return publicBytes, privatePEM, nil
 }
 
-func apply(ctx context.Context, exampleOptions *apifixtures.ExampleOptions, render bool, waitForRollout bool) error {
-
+func apply(ctx context.Context, l logr.Logger, exampleOptions *apifixtures.ExampleOptions, waitForRollout bool, mutate func(crclient.Object)) error {
 	exampleObjects := exampleOptions.Resources().AsObjects()
-	switch {
-	case render:
-		for _, object := range exampleObjects {
-			err := hyperapi.YamlSerializer.Encode(object, os.Stdout)
-			if err != nil {
-				return fmt.Errorf("failed to encode objects: %w", err)
-			}
-			fmt.Println("---")
-		}
-	default:
-		client, err := util.GetClient()
-		if err != nil {
-			return err
-		}
-		var hostedCluster *hyperv1.HostedCluster
-		for _, object := range exampleObjects {
-			key := crclient.ObjectKeyFromObject(object)
-			object.SetLabels(map[string]string{util.AutoInfraLabelName: exampleOptions.InfraID})
-			var err error
-			if object.GetObjectKind().GroupVersionKind().Kind == "HostedCluster" {
-				hostedCluster = &hyperv1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Namespace: object.GetNamespace(), Name: object.GetName()}}
-				err = client.Create(ctx, object)
-			} else {
-				err = client.Patch(ctx, object, crclient.Apply, crclient.ForceOwnership, crclient.FieldOwner("hypershift-cli"))
-			}
-			if err != nil {
-				return fmt.Errorf("failed to apply object %q: %w", key, err)
-			}
-			log.Log.Info("Applied Kube resource", "kind", object.GetObjectKind().GroupVersionKind().Kind, "namespace", key.Namespace, "name", key.Name)
-		}
 
-		if waitForRollout {
-			log.Log.Info("Waiting for cluster rollout")
-			return wait.PollInfiniteWithContext(ctx, 30*time.Second, func(ctx context.Context) (bool, error) {
-				hostedCluster := hostedCluster.DeepCopy()
-				if err := client.Get(ctx, crclient.ObjectKeyFromObject(hostedCluster), hostedCluster); err != nil {
-					return false, fmt.Errorf("failed to get hostedcluster %s: %w", crclient.ObjectKeyFromObject(hostedCluster), err)
-				}
-				rolledOut := len(hostedCluster.Status.Version.History) > 0 && hostedCluster.Status.Version.History[0].CompletionTime != nil
-				if !rolledOut {
-					log.Log.Info("Cluster rollout not finished yet, checking again in 30 seconds...")
-				}
-				return rolledOut, nil
-			})
-		}
-
-		return nil
+	client, err := util.GetClient()
+	if err != nil {
+		return err
 	}
+	if mutate != nil {
+		for _, object := range exampleObjects {
+			mutate(object)
+		}
+	}
+	var hostedCluster *hyperv1.HostedCluster
+	for _, object := range exampleObjects {
+		key := crclient.ObjectKeyFromObject(object)
+		object.SetLabels(map[string]string{util.AutoInfraLabelName: exampleOptions.InfraID})
+		var err error
+		if object.GetObjectKind().GroupVersionKind().Kind == "HostedCluster" {
+			hostedCluster = &hyperv1.HostedCluster{ObjectMeta: metav1.ObjectMeta{Namespace: object.GetNamespace(), Name: object.GetName()}}
+			err = client.Create(ctx, object)
+		} else {
+			err = client.Patch(ctx, object, crclient.Apply, crclient.ForceOwnership, crclient.FieldOwner("hypershift-cli"))
+		}
+		if err != nil {
+			return fmt.Errorf("failed to apply object %q: %w", key, err)
+		}
+		l.Info("Applied Kube resource", "kind", object.GetObjectKind().GroupVersionKind().Kind, "namespace", key.Namespace, "name", key.Name)
+	}
+
+	if waitForRollout {
+		l.Info("Waiting for cluster rollout")
+		return wait.PollInfiniteWithContext(ctx, 30*time.Second, func(ctx context.Context) (bool, error) {
+			hostedCluster := hostedCluster.DeepCopy()
+			if err := client.Get(ctx, crclient.ObjectKeyFromObject(hostedCluster), hostedCluster); err != nil {
+				return false, fmt.Errorf("failed to get hostedcluster %s: %w", crclient.ObjectKeyFromObject(hostedCluster), err)
+			}
+			rolledOut := len(hostedCluster.Status.Version.History) > 0 && hostedCluster.Status.Version.History[0].CompletionTime != nil
+			if !rolledOut {
+				l.Info("Cluster rollout not finished yet, checking again in 30 seconds...")
+			}
+			return rolledOut, nil
+		})
+	}
+
 	return nil
 }
 
-func GetAPIServerAddressByNode(ctx context.Context) (string, error) {
+func GetAPIServerAddressByNode(ctx context.Context, l logr.Logger) (string, error) {
 	// Fetch a single node and determine possible DNS or IP entries to use
 	// for external node-port communication.
 	// Possible values are considered with the following priority based on the address type:
@@ -283,7 +338,7 @@ func GetAPIServerAddressByNode(ctx context.Context) (string, error) {
 	if apiServerAddress == "" {
 		return "", fmt.Errorf("node %q does not expose any IP addresses, this should not be possible", nodes.Items[0].Name)
 	}
-	log.Log.Info(fmt.Sprintf("detected %q from node %q as external-api-server-address", apiServerAddress, nodes.Items[0].Name))
+	l.Info(fmt.Sprintf("detected %q from node %q as external-api-server-address", apiServerAddress, nodes.Items[0].Name))
 	return apiServerAddress, nil
 }
 
@@ -310,7 +365,7 @@ func CreateCluster(ctx context.Context, opts *CreateOptions, platformSpecificApp
 		return errors.New("--wait requires --node-pool-replicas > 0")
 	}
 
-	exampleOptions, err := createCommonFixture(opts)
+	exampleOptions, err := createCommonFixture(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -320,5 +375,51 @@ func CreateCluster(ctx context.Context, opts *CreateOptions, platformSpecificApp
 		return err
 	}
 
-	return apply(ctx, exampleOptions, opts.Render, opts.Wait)
+	// In render mode, print the objects and return early
+	if opts.Render {
+		for _, object := range exampleOptions.Resources().AsObjects() {
+			err := hyperapi.YamlSerializer.Encode(object, os.Stdout)
+			if err != nil {
+				return fmt.Errorf("failed to encode objects: %w", err)
+			}
+			fmt.Println("---")
+		}
+		return nil
+	}
+
+	// Otherwise, apply the objects
+	return apply(ctx, opts.Log, exampleOptions, opts.Wait, opts.BeforeApply)
+}
+
+func defaultNetworkType(ctx context.Context, opts *CreateOptions, releaseProvider releaseinfo.Provider, readFile func(string) ([]byte, error)) error {
+	if opts.NetworkType != "" {
+		return nil
+	}
+	version, err := getReleaseSemanticVersion(ctx, opts, releaseProvider, readFile)
+	if err != nil {
+		return fmt.Errorf("failed to get version for release image %s: %w", opts.ReleaseImage, err)
+	}
+	if version.Minor > 10 {
+		opts.NetworkType = string(hyperv1.OVNKubernetes)
+	} else {
+		opts.NetworkType = string(hyperv1.OpenShiftSDN)
+	}
+
+	return nil
+}
+
+func getReleaseSemanticVersion(ctx context.Context, opts *CreateOptions, provider releaseinfo.Provider, readFile func(string) ([]byte, error)) (*semver.Version, error) {
+	pullSecretBytes, err := readFile(opts.PullSecretFile)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read pull secret file %s: %w", opts.PullSecretFile, err)
+	}
+	releaseImage, err := provider.Lookup(ctx, opts.ReleaseImage, pullSecretBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get version information from %s: %w", opts.ReleaseImage, err)
+	}
+	semanticVersion, err := semver.Parse(releaseImage.Version())
+	if err != nil {
+		return nil, err
+	}
+	return &semanticVersion, nil
 }

@@ -1,4 +1,4 @@
-apiVersion: batch/v1beta1
+apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: olm-collect-profiles
@@ -9,7 +9,7 @@ spec:
       template:
         spec:
           serviceAccountName: olm-collect-profiles
-          priorityClassName: openshift-user-critical
+          priorityClassName: hypershift-control-plane
           containers:
             - name: collect-profiles
               image: OLM_OPERATOR_IMAGE

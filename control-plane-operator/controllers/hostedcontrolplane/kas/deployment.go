@@ -10,19 +10,22 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 
 	configv1 "github.com/openshift/api/config/v1"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/aws"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/azure"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/proxy"
 	"github.com/openshift/hypershift/support/util"
 )
 
 const (
-	kasNamedCertificateMountPathPrefix = "/etc/kubernetes/certs/named"
-	configHashAnnotation               = "kube-apiserver.hypershift.openshift.io/config-hash"
+	kasNamedCertificateMountPathPrefix         = "/etc/kubernetes/certs/named"
+	configHashAnnotation                       = "kube-apiserver.hypershift.openshift.io/config-hash"
+	awsPodIdentityWebhookServingCertVolumeName = "aws-pod-identity-webhook-serving-certs"
+	awsPodIdentityWebhookKubeconfigVolumeName  = "aws-pod-identity-webhook-kubeconfig"
 )
 
 var (
@@ -81,6 +84,7 @@ func kasLabels() map[string]string {
 }
 
 func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
+	hcp *hyperv1.HostedControlPlane,
 	ownerRef config.OwnerRef,
 	deploymentConfig config.DeploymentConfig,
 	namedCertificates []configv1.APIServerNamedServingCert,
@@ -90,12 +94,16 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	images KubeAPIServerImages,
 	config *corev1.ConfigMap,
 	auditWebhookRef *corev1.LocalObjectReference,
-	secretEncryptionData *hyperv1.SecretEncryptionSpec,
 	aesCBCActiveKey []byte,
 	aesCBCBackupKey []byte,
-	etcdMgmtType hyperv1.EtcdManagementType,
 	port int32,
 ) error {
+
+	secretEncryptionData := hcp.Spec.SecretEncryption
+	etcdMgmtType := hcp.Spec.Etcd.ManagementType
+	var additionalNoProxyCIDRS []string
+	additionalNoProxyCIDRS = append(additionalNoProxyCIDRS, util.ClusterCIDRs(hcp.Spec.Networking.ClusterNetwork)...)
+	additionalNoProxyCIDRS = append(additionalNoProxyCIDRS, util.ServiceCIDRs(hcp.Spec.Networking.ServiceNetwork)...)
 
 	configBytes, ok := config.Data[KubeAPIServerConfigKey]
 	if !ok {
@@ -103,26 +111,17 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	}
 	configHash := util.ComputeHash(configBytes)
 
-	ownerRef.ApplyTo(deployment)
-	maxSurge := intstr.FromInt(3)
-	maxUnavailable := intstr.FromInt(0)
-
 	// preserve existing resource requirements for main KAS container
 	mainContainer := util.FindContainer(kasContainerMain().Name, deployment.Spec.Template.Spec.Containers)
 	if mainContainer != nil {
 		deploymentConfig.SetContainerResourcesIfPresent(mainContainer)
 	}
+	if deployment.Spec.Selector == nil {
+		deployment.Spec.Selector = &metav1.LabelSelector{
+			MatchLabels: kasLabels(),
+		}
+	}
 
-	deployment.Spec.Selector = &metav1.LabelSelector{
-		MatchLabels: kasLabels(),
-	}
-	deployment.Spec.Strategy = appsv1.DeploymentStrategy{
-		Type: appsv1.RollingUpdateDeploymentStrategyType,
-		RollingUpdate: &appsv1.RollingUpdateDeployment{
-			MaxSurge:       &maxSurge,
-			MaxUnavailable: &maxUnavailable,
-		},
-	}
 	deployment.Spec.Template = corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: kasLabels(),
@@ -145,7 +144,28 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			},
 			Containers: []corev1.Container{
 				util.BuildContainer(kasContainerApplyBootstrap(), buildKASContainerApplyBootstrap(images.CLI)),
-				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port)),
+				util.BuildContainer(kasContainerMain(), buildKASContainerMain(images.HyperKube, port, additionalNoProxyCIDRS)),
+				{
+					Name:            "audit-logs",
+					Image:           images.CLI,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Command: []string{
+						"/usr/bin/tail",
+						"-c+1",
+						"-F",
+						"/var/log/kube-apiserver/audit.log",
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("5m"),
+							corev1.ResourceMemory: resource.MustParse("10Mi"),
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      kasVolumeWorkLogs().Name,
+						MountPath: "/var/log/kube-apiserver",
+					}},
+				},
 			},
 			Volumes: []corev1.Volume{
 				util.BuildVolume(kasVolumeBootstrapManifests(), buildKASVolumeBootstrapManifests),
@@ -186,6 +206,40 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 	applyCloudConfigVolumeMount(cloudProviderConfigRef, &deployment.Spec.Template.Spec, cloudProviderName)
 	util.ApplyCloudProviderCreds(&deployment.Spec.Template.Spec, cloudProviderName, cloudProviderCreds, images.TokenMinterImage, kasContainerMain().Name)
 
+	if cloudProviderName == aws.Provider {
+		deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers, corev1.Container{
+			Name:            "aws-pod-identity-webhook",
+			Image:           images.AWSPodIdentityWebhookImage,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command: []string{
+				"/usr/bin/aws-pod-identity-webhook",
+				"--annotation-prefix=eks.amazonaws.com",
+				"--in-cluster=false",
+				"--kubeconfig=/var/run/app/kubeconfig/kubeconfig",
+				"--logtostderr",
+				"--port=4443",
+				"--aws-default-region=" + hcp.Spec.Platform.AWS.Region,
+				"--tls-cert=/var/run/app/certs/tls.crt",
+				"--tls-key=/var/run/app/certs/tls.key",
+				"--token-audience=openshift",
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+					corev1.ResourceMemory: resource.MustParse("25Mi"),
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: awsPodIdentityWebhookServingCertVolumeName, MountPath: "/var/run/app/certs"},
+				{Name: awsPodIdentityWebhookKubeconfigVolumeName, MountPath: "/var/run/app/kubeconfig"},
+			},
+		})
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes,
+			corev1.Volume{Name: awsPodIdentityWebhookServingCertVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.AWSPodIdentityWebhookServingCert("").Name}}},
+			corev1.Volume{Name: awsPodIdentityWebhookKubeconfigVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.AWSPodIdentityWebhookKubeconfig("").Name}}},
+		)
+	}
+
 	if auditWebhookRef != nil {
 		applyKASAuditWebhookConfigFileVolume(&deployment.Spec.Template.Spec, auditWebhookRef)
 	}
@@ -220,6 +274,7 @@ func ReconcileKubeAPIServerDeployment(deployment *appsv1.Deployment,
 			// nothing needed to be done
 		}
 	}
+	ownerRef.ApplyTo(deployment)
 	deploymentConfig.ApplyTo(deployment)
 	return nil
 }
@@ -312,7 +367,7 @@ func kasContainerMain() *corev1.Container {
 	}
 }
 
-func buildKASContainerMain(image string, port int32) func(c *corev1.Container) {
+func buildKASContainerMain(image string, port int32, noProxyCIDRs []string) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.TerminationMessagePolicy = corev1.TerminationMessageReadFile
@@ -336,6 +391,13 @@ func buildKASContainerMain(image string, port int32) func(c *corev1.Container) {
 			Name:      "HOST_IP",
 			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
 		}}
+
+		// We have to exempt the pod and service CIDR, otherwise the proxy will get respected by the transport inside
+		// the the egress transport and that breaks the egress selection/konnektivity usage.
+		// Using a CIDR is not supported by Go's default ProxyFunc, but Kube uses a custom one by default that does support it:
+		// https://github.com/kubernetes/kubernetes/blob/ab13c85316015cf9f115e29923ba9740bd1564fd/staging/src/k8s.io/apimachinery/pkg/util/net/http.go#L112-L114
+		proxy.SetEnvVars(&c.Env, noProxyCIDRs...)
+
 		c.WorkingDir = volumeMounts.Path(c.Name, kasVolumeWorkLogs().Name)
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
 		c.Ports = []corev1.ContainerPort{

@@ -3,6 +3,7 @@ package kcm
 import (
 	"fmt"
 	"path"
+	"strings"
 
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +17,7 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
+	"github.com/openshift/hypershift/support/certs"
 	"github.com/openshift/hypershift/support/proxy"
 	"github.com/openshift/hypershift/support/util"
 )
@@ -64,8 +66,10 @@ func ReconcileDeployment(deployment *appsv1.Deployment, config, servingCA *corev
 		p.DeploymentConfig.SetContainerResourcesIfPresent(mainContainer)
 	}
 
-	deployment.Spec.Selector = &metav1.LabelSelector{
-		MatchLabels: kcmLabels(),
+	if deployment.Spec.Selector == nil {
+		deployment.Spec.Selector = &metav1.LabelSelector{
+			MatchLabels: kcmLabels(),
+		}
 	}
 	deployment.Spec.Strategy.Type = appsv1.RollingUpdateDeploymentStrategyType
 	maxSurge := intstr.FromInt(3)
@@ -302,11 +306,20 @@ func kcmArgs(p *KubeControllerManagerParams) []string {
 	if p.CloudProvider != "" {
 		args = append(args, fmt.Sprintf("--cloud-provider=%s", p.CloudProvider))
 	}
+	if p.MinTLSVersion() != "" {
+		args = append(args, fmt.Sprintf("--tls-min-version=%s", p.MinTLSVersion()))
+	}
+	if len(p.CipherSuites()) != 0 {
+		args = append(args, fmt.Sprintf("--tls-cipher-suites=%s", strings.Join(p.CipherSuites(), ",")))
+	}
+	if p.DisableProfiling {
+		args = append(args, "--profiling=false")
+	}
 	args = append(args, []string{
 		fmt.Sprintf("--cert-dir=%s", cpath(kcmVolumeCertDir().Name, "")),
-		fmt.Sprintf("--cluster-cidr=%s", p.PodCIDR),
-		fmt.Sprintf("--cluster-signing-cert-file=%s", cpath(kcmVolumeClusterSigner().Name, pki.CASignerCertMapKey)),
-		fmt.Sprintf("--cluster-signing-key-file=%s", cpath(kcmVolumeClusterSigner().Name, pki.CASignerKeyMapKey)),
+		fmt.Sprintf("--cluster-cidr=%s", p.ClusterCIDR),
+		fmt.Sprintf("--cluster-signing-cert-file=%s", cpath(kcmVolumeClusterSigner().Name, certs.CASignerCertMapKey)),
+		fmt.Sprintf("--cluster-signing-key-file=%s", cpath(kcmVolumeClusterSigner().Name, certs.CASignerKeyMapKey)),
 		"--configure-cloud-routes=false",
 		"--controllers=*",
 		"--controllers=-ttl",
@@ -316,11 +329,10 @@ func kcmArgs(p *KubeControllerManagerParams) []string {
 		"--flex-volume-plugin-dir=/etc/kubernetes/kubelet-plugins/volume/exec",
 		"--kube-api-burst=300",
 		"--kube-api-qps=150",
-		"--leader-elect-resource-lock=configmaps",
+		"--leader-elect-resource-lock=configmapsleases",
 		"--leader-elect=true",
 		"--leader-elect-retry-period=3s",
-		"--port=0",
-		fmt.Sprintf("--root-ca-file=%s", cpath(kcmVolumeCombinedCA().Name, pki.CASignerCertMapKey)),
+		fmt.Sprintf("--root-ca-file=%s", cpath(kcmVolumeCombinedCA().Name, certs.CASignerCertMapKey)),
 		fmt.Sprintf("--secure-port=%d", DefaultPort),
 		fmt.Sprintf("--service-account-private-key-file=%s", cpath(kcmVolumeServiceSigner().Name, pki.ServiceSignerPrivateKey)),
 		fmt.Sprintf("--service-cluster-ip-range=%s", p.ServiceCIDR),

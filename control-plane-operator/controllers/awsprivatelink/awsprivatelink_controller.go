@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/aws/aws-sdk-go/service/route53/route53iface"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,7 @@ import (
 
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	awsutil "github.com/openshift/hypershift/cmd/infra/aws/util"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/upsert"
 )
 
@@ -177,7 +179,8 @@ func (r *AWSEndpointServiceReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	_, err := ctrl.NewControllerManagedBy(mgr).
 		For(&hyperv1.AWSEndpointService{}).
 		WithOptions(controller.Options{
-			RateLimiter: workqueue.NewItemExponentialFailureRateLimiter(3*time.Second, 30*time.Second),
+			RateLimiter:             workqueue.NewItemExponentialFailureRateLimiter(3*time.Second, 30*time.Second),
+			MaxConcurrentReconciles: 10,
 		}).
 		Build(r)
 	if err != nil {
@@ -278,6 +281,7 @@ func (r *AWSEndpointServiceReconciler) Reconcile(ctx context.Context, req ctrl.R
 	hcp := &hcpList.Items[0]
 
 	// Reconcile the AWSEndpointService
+	oldStatus := awsEndpointService.Status.DeepCopy()
 	if err := reconcileAWSEndpointService(ctx, awsEndpointService, hcp, r.ec2Client, r.route53Client); err != nil {
 		meta.SetStatusCondition(&awsEndpointService.Status.Conditions, metav1.Condition{
 			Type:    string(hyperv1.AWSEndpointAvailable),
@@ -285,8 +289,10 @@ func (r *AWSEndpointServiceReconciler) Reconcile(ctx context.Context, req ctrl.R
 			Reason:  hyperv1.AWSErrorReason,
 			Message: err.Error(),
 		})
-		if err := r.Status().Update(ctx, awsEndpointService); err != nil {
-			return ctrl.Result{}, err
+		if !equality.Semantic.DeepEqual(*oldStatus, awsEndpointService.Status) {
+			if err := r.Status().Update(ctx, awsEndpointService); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		return ctrl.Result{}, err
 	}
@@ -298,8 +304,10 @@ func (r *AWSEndpointServiceReconciler) Reconcile(ctx context.Context, req ctrl.R
 		Message: "",
 	})
 
-	if err := r.Status().Update(ctx, awsEndpointService); err != nil {
-		return ctrl.Result{}, err
+	if !equality.Semantic.DeepEqual(*oldStatus, awsEndpointService.Status) {
+		if err := r.Status().Update(ctx, awsEndpointService); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	log.Info("reconcilation complete")
@@ -389,10 +397,12 @@ func reconcileAWSEndpointService(ctx context.Context, awsEndpointService *hyperv
 				RemoveSubnetIds: removed,
 			})
 			if err != nil {
+				msg := err.Error()
 				if awsErr, ok := err.(awserr.Error); ok {
-					return errors.New(awsErr.Code())
+					msg = awsErr.Code()
 				}
-				return err
+				log.Error(err, "failed to modify vpc endpoint")
+				return fmt.Errorf("failed to modify vpc endpoint: %s", msg)
 			}
 			log.Info("endpoint subnets updated")
 		} else {
@@ -410,10 +420,12 @@ func reconcileAWSEndpointService(ctx context.Context, awsEndpointService *hyperv
 			Filters: apiTagToEC2Filter(awsEndpointService.Name, hcp.Spec.Platform.AWS.ResourceTags),
 		})
 		if err != nil {
+			msg := err.Error()
 			if awsErr, ok := err.(awserr.Error); ok {
-				return errors.New(awsErr.Code())
+				msg = awsErr.Code()
 			}
-			return err
+			log.Error(err, "failed to describe vpc endpoints")
+			return fmt.Errorf("failed to describe vpc endpoints: %s", msg)
 		}
 		if len(output.VpcEndpoints) != 0 {
 			endpointID = *output.VpcEndpoints[0].VpcEndpointId
@@ -438,10 +450,12 @@ func reconcileAWSEndpointService(ctx context.Context, awsEndpointService *hyperv
 				}},
 			})
 			if err != nil {
+				msg := err.Error()
 				if awsErr, ok := err.(awserr.Error); ok {
-					return errors.New(awsErr.Code())
+					msg = awsErr.Code()
 				}
-				return err
+				log.Error(err, "failed to create vpc endpoint")
+				return fmt.Errorf("failed to create vpc endpoint: %s", msg)
 			}
 			if output == nil || output.VpcEndpoint == nil {
 				return fmt.Errorf("CreateVpcEndpointWithContext output is nil")
@@ -459,13 +473,10 @@ func reconcileAWSEndpointService(ctx context.Context, awsEndpointService *hyperv
 		return nil
 	}
 
-	var recordName string
-	if awsEndpointService.Name == "kube-apiserver-private" {
-		recordName = "api"
-	} else if strings.HasPrefix(awsEndpointService.Name, "router-") {
-		recordName = "*.apps"
-	} else {
-		return fmt.Errorf("no mapping from AWSEndpointService to DNS")
+	recordNames := recordsForService(awsEndpointService, hcp)
+	if len(recordNames) == 0 {
+		log.Info("WARNING: no mapping from AWSEndpointService to DNS")
+		return nil
 	}
 
 	zoneName := fmt.Sprintf("%s.%s", hcp.Name, hypershiftLocalZone)
@@ -474,17 +485,43 @@ func reconcileAWSEndpointService(ctx context.Context, awsEndpointService *hyperv
 		return err
 	}
 
-	fqdn := fmt.Sprintf("%s.%s", recordName, zoneName)
-	err = createRecord(ctx, route53Client, zoneID, fqdn, *(endpointDNSEntries[0].DnsName))
-	if err != nil {
-		return err
+	var fqdns []string
+	for _, recordName := range recordNames {
+		fqdn := fmt.Sprintf("%s.%s", recordName, zoneName)
+		fqdns = append(fqdns, fqdn)
+		err = createRecord(ctx, route53Client, zoneID, fqdn, *(endpointDNSEntries[0].DnsName))
+		if err != nil {
+			return err
+		}
+		log.Info("DNS record created", "fqdn", fqdn)
 	}
-	log.Info("DNS record created", "fqdn", fqdn)
 
-	awsEndpointService.Status.DNSName = fqdn
+	//lint:ignore SA1019 we reset the deprecated field precicely
+	// because it is deprecated.
+	awsEndpointService.Status.DNSName = ""
+	awsEndpointService.Status.DNSNames = fqdns
 	awsEndpointService.Status.DNSZoneID = zoneID
 
 	return nil
+}
+
+func recordsForService(awsEndpointService *hyperv1.AWSEndpointService, hcp *hyperv1.HostedControlPlane) []string {
+	if awsEndpointService.Name == manifests.KubeAPIServerPrivateService("").Name {
+		return []string{"api"}
+
+	}
+	if awsEndpointService.Name != manifests.PrivateRouterService("").Name {
+		return nil
+	}
+
+	// If the kas is exposed through a route, the router needs to have DNS entries for both
+	// the kas and the apps domain
+	if m := servicePublishingStrategyByType(hcp, hyperv1.APIServer); m != nil && m.Type == hyperv1.Route {
+		return []string{"api", "*.apps"}
+	}
+
+	return []string{"*.apps"}
+
 }
 
 func apiTagToEC2Tag(name string, in []hyperv1.AWSResourceTag) []*ec2.Tag {
@@ -523,28 +560,37 @@ func (r *AWSEndpointServiceReconciler) delete(ctx context.Context, awsEndpointSe
 		log.Info("endpoint deleted", "endpointID", endpointID)
 	}
 
-	fqdn := awsEndpointService.Status.DNSName
 	zoneID := awsEndpointService.Status.DNSZoneID
 	if err != nil {
 		return false, err
 	}
-	if fqdn != "" && zoneID != "" {
-		record, err := findRecord(ctx, route53Client, zoneID, fqdn)
-		if err != nil {
-			return false, err
-		}
-		if record != nil {
-			err = deleteRecord(ctx, route53Client, zoneID, record)
+
+	for _, fqdn := range awsEndpointService.Status.DNSNames {
+		if fqdn != "" && zoneID != "" {
+			record, err := findRecord(ctx, route53Client, zoneID, fqdn)
 			if err != nil {
 				return false, err
 			}
-			log.Info("DNS record deleted", "fqdn", fqdn)
-		} else {
-			log.Info("no DNS record found", "fqdn", fqdn)
+			if record != nil {
+				err = deleteRecord(ctx, route53Client, zoneID, record)
+				if err != nil {
+					return false, err
+				}
+				log.Info("DNS record deleted", "fqdn", fqdn)
+			} else {
+				log.Info("no DNS record found", "fqdn", fqdn)
+			}
 		}
-	} else {
-		log.Info("no DNS status set in AWSEndpointService", "name", awsEndpointService.Name)
 	}
 
 	return true, nil
+}
+
+func servicePublishingStrategyByType(hcp *hyperv1.HostedControlPlane, svcType hyperv1.ServiceType) *hyperv1.ServicePublishingStrategy {
+	for _, mapping := range hcp.Spec.Services {
+		if mapping.Service == svcType {
+			return &mapping.ServicePublishingStrategy
+		}
+	}
+	return nil
 }

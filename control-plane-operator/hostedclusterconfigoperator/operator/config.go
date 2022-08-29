@@ -20,14 +20,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
 	configv1 "github.com/openshift/api/config/v1"
+	imageregistryv1 "github.com/openshift/api/imageregistry/v1"
+	operatorv1 "github.com/openshift/api/operator/v1"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/api"
+	"github.com/openshift/hypershift/support/labelenforcingclient"
 	"github.com/openshift/hypershift/support/releaseinfo"
 	"github.com/openshift/hypershift/support/upsert"
 )
 
 const (
-	cacheLabelSelectorKey   = "hypershift.io/managed"
+	cacheLabelSelectorKey   = "hypershift.openshift.io/managed"
 	cacheLabelSelectorValue = "true"
 )
 
@@ -92,24 +95,36 @@ func Mgr(cfg, cpConfig *rest.Config, namespace string) ctrl.Manager {
 			if err != nil {
 				return nil, err
 			}
-			return &labelEnforcingClient{
-				Client: client,
-				labels: map[string]string{cacheLabelSelectorKey: cacheLabelSelectorValue},
-			}, nil
+			return labelenforcingclient.New(
+				client,
+				map[string]string{cacheLabelSelectorKey: cacheLabelSelectorValue},
+			), nil
 		},
 		NewCache: cache.BuilderWithOptions(cache.Options{
 			SelectorsByObject: cache.SelectorsByObject{
-				&corev1.Namespace{}:        allSelector,
-				&configv1.Infrastructure{}: allSelector,
-				&configv1.DNS{}:            allSelector,
-				&configv1.Ingress{}:        allSelector,
-				&configv1.Network{}:        allSelector,
-				&configv1.Proxy{}:          allSelector,
-				&configv1.Build{}:          allSelector,
-				&configv1.Image{}:          allSelector,
-				&configv1.Project{}:        allSelector,
-				&configv1.ClusterVersion{}: allSelector,
-				&configv1.FeatureGate{}:    allSelector,
+				&corev1.Namespace{}:         allSelector,
+				&configv1.Infrastructure{}:  allSelector,
+				&configv1.DNS{}:             allSelector,
+				&configv1.Ingress{}:         allSelector,
+				&operatorv1.Network{}:       allSelector,
+				&configv1.Network{}:         allSelector,
+				&configv1.Proxy{}:           allSelector,
+				&configv1.Build{}:           allSelector,
+				&configv1.Image{}:           allSelector,
+				&configv1.Project{}:         allSelector,
+				&configv1.ClusterVersion{}:  allSelector,
+				&configv1.FeatureGate{}:     allSelector,
+				&configv1.ClusterOperator{}: allSelector,
+
+				// Needed for inplace upgrader.
+				&corev1.Node{}: allSelector,
+
+				// Needed for resource cleanup
+				&corev1.Service{}:               allSelector,
+				&corev1.PersistentVolume{}:      allSelector,
+				&corev1.PersistentVolumeClaim{}: allSelector,
+				&operatorv1.IngressController{}: allSelector,
+				&imageregistryv1.Config{}:       allSelector,
 			},
 			DefaultSelector: cache.ObjectSelector{Label: cacheLabelSelector()},
 		}),

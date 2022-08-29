@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,7 +11,6 @@ import (
 
 	apifixtures "github.com/openshift/hypershift/api/fixtures"
 	"github.com/openshift/hypershift/cmd/cluster/core"
-	"github.com/openshift/hypershift/cmd/log"
 	"github.com/openshift/hypershift/cmd/util"
 )
 
@@ -22,9 +22,11 @@ func NewCreateCommand(opts *core.CreateOptions) *cobra.Command {
 	}
 
 	opts.AgentPlatform = core.AgentPlatformCreateOptions{
-		AgentNamespace: "",
+		APIServerAddress: "",
+		AgentNamespace:   "",
 	}
 
+	cmd.Flags().StringVar(&opts.AgentPlatform.APIServerAddress, "api-server-address", opts.AgentPlatform.APIServerAddress, "The API server address that should be used for components outside the control plane")
 	cmd.Flags().StringVar(&opts.AgentPlatform.AgentNamespace, "agent-namespace", opts.AgentPlatform.AgentNamespace, "The namespace in which to search for Agents")
 	cmd.MarkFlagRequired("agent-namespace")
 
@@ -37,7 +39,7 @@ func NewCreateCommand(opts *core.CreateOptions) *cobra.Command {
 		}
 
 		if err := CreateCluster(ctx, opts); err != nil {
-			log.Log.Error(err, "Failed to create cluster")
+			opts.Log.Error(err, "Failed to create cluster")
 			return err
 		}
 		return nil
@@ -52,7 +54,7 @@ func CreateCluster(ctx context.Context, opts *core.CreateOptions) error {
 
 func applyPlatformSpecificsValues(ctx context.Context, exampleOptions *apifixtures.ExampleOptions, opts *core.CreateOptions) (err error) {
 	if opts.AgentPlatform.APIServerAddress == "" {
-		opts.AgentPlatform.APIServerAddress, err = core.GetAPIServerAddressByNode(ctx)
+		opts.AgentPlatform.APIServerAddress, err = core.GetAPIServerAddressByNode(ctx, opts.Log)
 		if err != nil {
 			return err
 		}

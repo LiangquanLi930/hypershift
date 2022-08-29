@@ -20,20 +20,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// IBMPowerVSMachineTemplateSpec defines the desired state of IBMPowerVSMachineTemplate
+// IBMPowerVSMachineTemplateSpec defines the desired state of IBMPowerVSMachineTemplate.
 type IBMPowerVSMachineTemplateSpec struct {
 	Template IBMPowerVSMachineTemplateResource `json:"template"`
 }
 
-// IBMPowerVSMachineTemplateResource holds the IBMPowerVSMachine spec
+// IBMPowerVSMachineTemplateResource holds the IBMPowerVSMachine spec.
 type IBMPowerVSMachineTemplateResource struct {
 	Spec IBMPowerVSMachineSpec `json:"spec"`
 }
 
-// IBMPowerVSMachineTemplateStatus defines the observed state of IBMPowerVSMachineTemplate
+// IBMPowerVSMachineTemplateStatus defines the observed state of IBMPowerVSMachineTemplate.
 type IBMPowerVSMachineTemplateStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
@@ -42,7 +41,7 @@ type IBMPowerVSMachineTemplateStatus struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 
-// IBMPowerVSMachineTemplate is the Schema for the ibmpowervsmachinetemplates API
+// IBMPowerVSMachineTemplate is the Schema for the ibmpowervsmachinetemplates API.
 type IBMPowerVSMachineTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -53,7 +52,7 @@ type IBMPowerVSMachineTemplate struct {
 
 //+kubebuilder:object:root=true
 
-// IBMPowerVSMachineTemplateList contains a list of IBMPowerVSMachineTemplate
+// IBMPowerVSMachineTemplateList contains a list of IBMPowerVSMachineTemplate.
 type IBMPowerVSMachineTemplateList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

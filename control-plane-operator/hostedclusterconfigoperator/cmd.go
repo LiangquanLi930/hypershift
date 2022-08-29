@@ -23,8 +23,12 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/api"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/configmetrics"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/cmca"
+	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/hcpstatus"
+	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/inplaceupgrader"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/operator"
+	"github.com/openshift/hypershift/pkg/version"
+	"github.com/openshift/hypershift/support/labelenforcingclient"
 	"github.com/openshift/hypershift/support/releaseinfo"
 	"github.com/openshift/hypershift/support/upsert"
 	"github.com/spf13/cobra"
@@ -47,6 +51,8 @@ func NewCommand() *cobra.Command {
 var controllerFuncs = map[string]operator.ControllerSetupFunc{
 	"controller-manager-ca":  cmca.Setup,
 	resources.ControllerName: resources.Setup,
+	"inplaceupgrader":        inplaceupgrader.Setup,
+	hcpstatus.ControllerName: hcpstatus.Setup,
 }
 
 type HostedClusterConfigOperator struct {
@@ -190,6 +196,7 @@ func (o *HostedClusterConfigOperator) Run(ctx context.Context) error {
 	cfg := operator.CfgFromFile(o.TargetKubeconfig)
 	cpConfig := ctrl.GetConfigOrDie()
 	mgr := operator.Mgr(cfg, cpConfig, o.Namespace)
+	mgr.GetLogger().Info("Starting hosted-cluster-config-operator", "version", version.String())
 	cpCluster, err := cluster.New(cpConfig, func(opt *cluster.Options) {
 		opt.Namespace = o.Namespace
 		opt.Scheme = api.Scheme
@@ -210,7 +217,7 @@ func (o *HostedClusterConfigOperator) Run(ctx context.Context) error {
 		},
 	}
 	operatorConfig := &operator.HostedClusterConfigOperatorConfig{
-		TargetCreateOrUpdateProvider: &operator.LabelEnforcingUpsertProvider{
+		TargetCreateOrUpdateProvider: &labelenforcingclient.LabelEnforcingUpsertProvider{
 			Upstream:  upsert.New(o.enableCIDebugOutput),
 			APIReader: mgr.GetAPIReader(),
 		},

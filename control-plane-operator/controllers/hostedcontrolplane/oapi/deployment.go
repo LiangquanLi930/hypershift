@@ -18,7 +18,7 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/konnectivity"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
-	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
+	"github.com/openshift/hypershift/support/certs"
 	"github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/util"
 )
@@ -88,17 +88,21 @@ func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef
 			MaxSurge:       &maxSurge,
 		},
 	}
-	deployment.Spec.Selector = &metav1.LabelSelector{
-		MatchLabels: openShiftAPIServerLabels(),
+	if deployment.Spec.Selector == nil {
+		deployment.Spec.Selector = &metav1.LabelSelector{
+			MatchLabels: openShiftAPIServerLabels(),
+		}
 	}
 	deployment.Spec.Template.ObjectMeta.Labels = openShiftAPIServerLabels()
 	etcdUrlData, err := url.Parse(etcdURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse etcd url: %w", err)
 	}
-	deployment.Spec.Template.ObjectMeta.Annotations = map[string]string{
-		configHashAnnotation: configHash,
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = map[string]string{}
 	}
+	deployment.Spec.Template.Annotations[configHashAnnotation] = configHash
+
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: pointer.BoolPtr(false),
 		InitContainers:               []corev1.Container{util.BuildContainer(oasTrustAnchorGenerator(), buildOASTrustAnchorGenerator(image))},
@@ -200,13 +204,13 @@ func buildOASContainerMain(image string, etcdHostname string, port int32) func(c
 			fmt.Sprintf("--config=%s", cpath(oasVolumeConfig().Name, openshiftAPIServerConfigKey)),
 			fmt.Sprintf("--authorization-kubeconfig=%s", cpath(oasVolumeKubeconfig().Name, kas.KubeconfigKey)),
 			fmt.Sprintf("--authentication-kubeconfig=%s", cpath(oasVolumeKubeconfig().Name, kas.KubeconfigKey)),
-			fmt.Sprintf("--requestheader-client-ca-file=%s", cpath(oasVolumeAggregatorClientCA().Name, pki.CASignerCertMapKey)),
+			fmt.Sprintf("--requestheader-client-ca-file=%s", cpath(oasVolumeAggregatorClientCA().Name, certs.CASignerCertMapKey)),
 			"--requestheader-allowed-names=kube-apiserver-proxy,system:kube-apiserver-proxy,system:openshift-aggregator",
 			"--requestheader-username-headers=X-Remote-User",
 			"--requestheader-group-headers=X-Remote-Group",
 			"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 			"--client-ca-file=/etc/kubernetes/config/serving-ca.crt",
-			fmt.Sprintf("--client-ca-file=%s", cpath(oasVolumeServingCA().Name, pki.CASignerCertMapKey)),
+			fmt.Sprintf("--client-ca-file=%s", cpath(oasVolumeServingCA().Name, certs.CASignerCertMapKey)),
 		}
 		c.Env = []corev1.EnvVar{
 			{

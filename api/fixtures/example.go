@@ -8,23 +8,25 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 
+	"github.com/openshift/hypershift/api/util/ipnet"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 
-	apiresource "k8s.io/apimachinery/pkg/api/resource"
-	kubevirtv1 "kubevirt.io/api/core/v1"
-	capikubevirt "sigs.k8s.io/cluster-api-provider-kubevirt/api/v1alpha1"
+	configv1 "github.com/openshift/api/config/v1"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type ExampleResources struct {
-	Namespace  *corev1.Namespace
-	PullSecret *corev1.Secret
-	Resources  []crclient.Object
-	SSHKey     *corev1.Secret
-	Cluster    *hyperv1.HostedCluster
-	NodePools  []*hyperv1.NodePool
+	AdditionalTrustBundle *corev1.ConfigMap
+	Namespace             *corev1.Namespace
+	PullSecret            *corev1.Secret
+	Resources             []crclient.Object
+	SSHKey                *corev1.Secret
+	Cluster               *hyperv1.HostedCluster
+	NodePools             []*hyperv1.NodePool
 }
 
 func (o *ExampleResources) AsObjects() []crclient.Object {
@@ -37,6 +39,9 @@ func (o *ExampleResources) AsObjects() []crclient.Object {
 	if o.SSHKey != nil {
 		objects = append(objects, o.SSHKey)
 	}
+	if o.AdditionalTrustBundle != nil {
+		objects = append(objects, o.AdditionalTrustBundle)
+	}
 	for _, nodePool := range o.NodePools {
 		objects = append(objects, nodePool)
 	}
@@ -44,6 +49,7 @@ func (o *ExampleResources) AsObjects() []crclient.Object {
 }
 
 type ExampleOptions struct {
+	AdditionalTrustBundle            string
 	Namespace                        string
 	Name                             string
 	ReleaseImage                     string
@@ -52,10 +58,11 @@ type ExampleOptions struct {
 	SSHPublicKey                     []byte
 	SSHPrivateKey                    []byte
 	NodePoolReplicas                 int32
+	ImageContentSources              []hyperv1.ImageContentSource
 	InfraID                          string
-	ComputeCIDR                      string
+	MachineCIDR                      string
 	ServiceCIDR                      string
-	PodCIDR                          string
+	ClusterCIDR                      string
 	BaseDomain                       string
 	PublicZoneID                     string
 	PrivateZoneID                    string
@@ -69,76 +76,10 @@ type ExampleOptions struct {
 	Agent                            *ExampleAgentOptions
 	Kubevirt                         *ExampleKubevirtOptions
 	Azure                            *ExampleAzureOptions
+	PowerVS                          *ExamplePowerVSOptions
 	NetworkType                      hyperv1.NetworkType
 	ControlPlaneAvailabilityPolicy   hyperv1.AvailabilityPolicy
 	InfrastructureAvailabilityPolicy hyperv1.AvailabilityPolicy
-}
-
-type ExampleNoneOptions struct {
-	APIServerAddress string
-}
-
-type ExampleAgentOptions struct {
-	APIServerAddress string
-	AgentNamespace   string
-}
-
-type ExampleKubevirtOptions struct {
-	ServicePublishingStrategy string
-	APIServerAddress          string
-	Memory                    string
-	Cores                     uint32
-	Image                     string
-}
-
-type ExampleAWSOptionsZones struct {
-	Name     string
-	SubnetID *string
-}
-
-type ExampleAWSOptions struct {
-	Region                      string
-	Zones                       []ExampleAWSOptionsZones
-	VPCID                       string
-	SecurityGroupID             string
-	InstanceProfile             string
-	InstanceType                string
-	Roles                       []hyperv1.AWSRoleCredentials
-	KubeCloudControllerRoleARN  string
-	NodePoolManagementRoleARN   string
-	ControlPlaneOperatorRoleARN string
-	KMSProviderRoleARN          string
-	KMSKeyARN                   string
-	RootVolumeSize              int64
-	RootVolumeType              string
-	RootVolumeIOPS              int64
-	ResourceTags                []hyperv1.AWSResourceTag
-	EndpointAccess              string
-}
-
-type ExampleAzureOptions struct {
-	Creds             AzureCreds
-	Location          string
-	ResourceGroupName string
-	VnetName          string
-	VnetID            string
-	SubnetName        string
-	BootImageID       string
-	MachineIdentityID string
-	InstanceType      string
-	SecurityGroupName string
-	DiskSizeGB        int32
-	AvailabilityZones []string
-}
-
-// AzureCreds is the fileformat we expect for credentials. It is copied from the installer
-// to allow using the same crededentials file for both:
-// https://github.com/openshift/installer/blob/8fca1ade5b096d9b2cd312c4599881d099439288/pkg/asset/installconfig/azure/session.go#L36
-type AzureCreds struct {
-	SubscriptionID string `json:"subscriptionId,omitempty"`
-	ClientID       string `json:"clientId,omitempty"`
-	ClientSecret   string `json:"clientSecret,omitempty"`
-	TenantID       string `json:"tenantId,omitempty"`
 }
 
 func (o ExampleOptions) Resources() *ExampleResources {
@@ -192,6 +133,7 @@ func (o ExampleOptions) Resources() *ExampleResources {
 	var resources []crclient.Object
 	var services []hyperv1.ServicePublishingStrategyMapping
 	var secretEncryption *hyperv1.SecretEncryptionSpec
+	var globalOpts []runtime.RawExtension
 
 	switch {
 	case o.AWS != nil:
@@ -219,9 +161,6 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 			kmsCredsSecret = buildAWSCreds(o.Name+"-kms-creds", o.AWS.KMSProviderRoleARN)
 		}
 		awsResources := &ExampleAWSResources{
-			buildAWSCreds(o.Name+"-cloud-ctrl-creds", o.AWS.KubeCloudControllerRoleARN),
-			buildAWSCreds(o.Name+"-node-mgmt-creds", o.AWS.NodePoolManagementRoleARN),
-			buildAWSCreds(o.Name+"-cpo-creds", o.AWS.ControlPlaneOperatorRoleARN),
 			kmsCredsSecret,
 		}
 		endpointAccess := hyperv1.AWSEndpointAccessType(o.AWS.EndpointAccess)
@@ -229,8 +168,8 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.AWSPlatform,
 			AWS: &hyperv1.AWSPlatformSpec{
-				Region: o.AWS.Region,
-				Roles:  o.AWS.Roles,
+				Region:   o.AWS.Region,
+				RolesRef: o.AWS.Roles,
 				CloudProviderConfig: &hyperv1.AWSCloudProviderConfig{
 					VPC: o.AWS.VPCID,
 					Subnet: &hyperv1.AWSResourceReference{
@@ -238,12 +177,22 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 					},
 					Zone: o.AWS.Zones[0].Name,
 				},
-				KubeCloudControllerCreds:  corev1.LocalObjectReference{Name: awsResources.KubeCloudControllerAWSCreds.Name},
-				NodePoolManagementCreds:   corev1.LocalObjectReference{Name: awsResources.NodePoolManagementAWSCreds.Name},
-				ControlPlaneOperatorCreds: corev1.LocalObjectReference{Name: awsResources.ControlPlaneOperatorAWSCreds.Name},
-				ResourceTags:              o.AWS.ResourceTags,
-				EndpointAccess:            endpointAccess,
+				ResourceTags:   o.AWS.ResourceTags,
+				EndpointAccess: endpointAccess,
 			},
+		}
+
+		if o.AWS.ProxyAddress != "" {
+			globalOpts = append(globalOpts, runtime.RawExtension{Object: &configv1.Proxy{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: configv1.GroupVersion.String(),
+					Kind:       "Proxy",
+				},
+				Spec: configv1.ProxySpec{
+					HTTPProxy:  o.AWS.ProxyAddress,
+					HTTPSProxy: o.AWS.ProxyAddress,
+				},
+			}})
 		}
 
 		if kmsCredsSecret != nil {
@@ -265,13 +214,13 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				},
 			}
 		}
-		services = getIngressServicePublishingStrategyMapping()
+		services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
 		if o.ExternalDNSDomain != "" {
 			for i, svc := range services {
 				switch svc.Service {
 				case hyperv1.APIServer:
 					if endpointAccess != hyperv1.Private {
-						services[i].LoadBalancer = &hyperv1.LoadBalancerPublishingStrategy{
+						services[i].Route = &hyperv1.RoutePublishingStrategy{
 							Hostname: fmt.Sprintf("api-%s.%s", o.Name, o.ExternalDNSDomain),
 						}
 					}
@@ -296,6 +245,12 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 							Hostname: fmt.Sprintf("ignition-%s.%s", o.Name, o.ExternalDNSDomain),
 						}
 					}
+				case hyperv1.OVNSbDb:
+					if endpointAccess == hyperv1.Public {
+						services[i].Route = &hyperv1.RoutePublishingStrategy{
+							Hostname: fmt.Sprintf("ovn-sbdb-%s.%s", o.Name, o.ExternalDNSDomain),
+						}
+					}
 				}
 			}
 
@@ -304,7 +259,11 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.NonePlatform,
 		}
-		services = getServicePublishingStrategyMappingByAPIServerAddress(o.None.APIServerAddress)
+		if o.None.APIServerAddress != "" {
+			services = getServicePublishingStrategyMappingByAPIServerAddress(o.None.APIServerAddress, o.NetworkType)
+		} else {
+			services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
+		}
 	case o.Agent != nil:
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.AgentPlatform,
@@ -332,16 +291,16 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 			},
 		}
 		resources = agentResources.AsObjects()
-		services = getServicePublishingStrategyMappingByAPIServerAddress(o.Agent.APIServerAddress)
+		services = getServicePublishingStrategyMappingByAPIServerAddress(o.Agent.APIServerAddress, o.NetworkType)
 	case o.Kubevirt != nil:
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.KubevirtPlatform,
 		}
 		switch o.Kubevirt.ServicePublishingStrategy {
 		case "NodePort":
-			services = getServicePublishingStrategyMappingByAPIServerAddress(o.Kubevirt.APIServerAddress)
+			services = getServicePublishingStrategyMappingByAPIServerAddress(o.Kubevirt.APIServerAddress, o.NetworkType)
 		case "Ingress":
-			services = getIngressServicePublishingStrategyMapping()
+			services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
 		default:
 			panic(fmt.Sprintf("service publishing type %s is not supported", o.Kubevirt.ServicePublishingStrategy))
 		}
@@ -378,8 +337,64 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				SecurityGroupName: o.Azure.SecurityGroupName,
 			},
 		}
-		services = getIngressServicePublishingStrategyMapping()
+		services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
 
+	case o.PowerVS != nil:
+		buildIBMCloudCreds := func(name, apikey string) *corev1.Secret {
+			data := map[string][]byte{
+				"ibm-credentials.env": []byte(fmt.Sprintf(`IBMCLOUD_AUTH_TYPE=iam
+ IBMCLOUD_APIKEY=%s
+ IBMCLOUD_AUTH_URL=https://iam.cloud.ibm.com
+ `, apikey)),
+				"ibmcloud_api_key": []byte(apikey),
+			}
+
+			return &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Secret",
+					APIVersion: corev1.SchemeGroupVersion.String(),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace.Name,
+					Name:      name,
+				},
+				Data: data,
+			}
+		}
+
+		// TODO(dharaneeshvrd): Need exploration to use granular permissions
+		powerVSResources := &ExamplePowerVSResources{
+			buildIBMCloudCreds(o.Name+"-cloud-ctrl-creds", o.PowerVS.ApiKey),
+			buildIBMCloudCreds(o.Name+"-node-mgmt-creds", o.PowerVS.ApiKey),
+			buildIBMCloudCreds(o.Name+"-cpo-creds", o.PowerVS.ApiKey),
+			buildIBMCloudCreds(o.Name+"-ingress-creds", o.PowerVS.ApiKey),
+		}
+		resources = powerVSResources.AsObjects()
+		platformSpec = hyperv1.PlatformSpec{
+			Type: hyperv1.PowerVSPlatform,
+			PowerVS: &hyperv1.PowerVSPlatformSpec{
+				AccountID:         o.PowerVS.AccountID,
+				ResourceGroup:     o.PowerVS.ResourceGroup,
+				Region:            o.PowerVS.Region,
+				Zone:              o.PowerVS.Zone,
+				CISInstanceCRN:    o.PowerVS.CISInstanceCRN,
+				ServiceInstanceID: o.PowerVS.CloudInstanceID,
+				Subnet: &hyperv1.PowerVSResourceReference{
+					Name: &o.PowerVS.Subnet,
+					ID:   &o.PowerVS.SubnetID,
+				},
+				VPC: &hyperv1.PowerVSVPC{
+					Name:   o.PowerVS.Vpc,
+					Region: o.PowerVS.VpcRegion,
+					Subnet: o.PowerVS.VpcSubnet,
+				},
+				KubeCloudControllerCreds:  corev1.LocalObjectReference{Name: powerVSResources.KubeCloudControllerCreds.Name},
+				NodePoolManagementCreds:   corev1.LocalObjectReference{Name: powerVSResources.NodePoolManagementCreds.Name},
+				ControlPlaneOperatorCreds: corev1.LocalObjectReference{Name: powerVSResources.ControlPlaneOperatorCreds.Name},
+				IngressOperatorCloudCreds: corev1.LocalObjectReference{Name: powerVSResources.IngressOperatorCloudCreds.Name},
+			},
+		}
+		services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
 	default:
 		panic("no platform specified")
 	}
@@ -430,9 +445,6 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 			},
 			SecretEncryption: secretEncryption,
 			Networking: hyperv1.ClusterNetworking{
-				ServiceCIDR: o.ServiceCIDR,
-				PodCIDR:     o.PodCIDR,
-				MachineCIDR: o.ComputeCIDR,
 				NetworkType: o.NetworkType,
 			},
 			Services:   services,
@@ -452,14 +464,51 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		},
 	}
 
+	if o.ClusterCIDR != "" {
+		cluster.Spec.Networking.ClusterNetwork = []hyperv1.ClusterNetworkEntry{{CIDR: *ipnet.MustParseCIDR(o.ClusterCIDR)}}
+	}
+	if o.ServiceCIDR != "" {
+		cluster.Spec.Networking.ServiceNetwork = []hyperv1.ServiceNetworkEntry{{CIDR: *ipnet.MustParseCIDR(o.ServiceCIDR)}}
+	}
+	if o.MachineCIDR != "" {
+		cluster.Spec.Networking.MachineNetwork = []hyperv1.MachineNetworkEntry{{CIDR: *ipnet.MustParseCIDR(o.MachineCIDR)}}
+	}
+
+	if len(globalOpts) > 0 {
+		cluster.Spec.Configuration = &hyperv1.ClusterConfiguration{Items: globalOpts}
+	}
+
+	var userCABundleCM *corev1.ConfigMap
+	if len(o.AdditionalTrustBundle) > 0 {
+		userCABundleCM = &corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "ConfigMap",
+				APIVersion: corev1.SchemeGroupVersion.String(),
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "user-ca-bundle",
+				Namespace: namespace.Name,
+			},
+			Data: map[string]string{
+				"ca-bundle.crt": string(o.AdditionalTrustBundle),
+			},
+		}
+		cluster.Spec.AdditionalTrustBundle = &corev1.LocalObjectReference{Name: userCABundleCM.Name}
+	}
+
+	if len(o.ImageContentSources) > 0 {
+		cluster.Spec.ImageContentSources = o.ImageContentSources
+	}
+
 	if o.NodePoolReplicas <= -1 {
 		return &ExampleResources{
-			Namespace:  namespace,
-			PullSecret: pullSecret,
-			Resources:  resources,
-			SSHKey:     sshKeySecret,
-			Cluster:    cluster,
-			NodePools:  []*hyperv1.NodePool{},
+			AdditionalTrustBundle: userCABundleCM,
+			Namespace:             namespace,
+			PullSecret:            pullSecret,
+			Resources:             resources,
+			SSHKey:                sshKeySecret,
+			Cluster:               cluster,
+			NodePools:             []*hyperv1.NodePool{},
 		}
 	}
 
@@ -478,7 +527,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 					AutoRepair:  o.AutoRepair,
 					UpgradeType: hyperv1.UpgradeTypeReplace,
 				},
-				NodeCount:   &o.NodePoolReplicas,
+				Replicas:    &o.NodePoolReplicas,
 				ClusterName: o.Name,
 				Release: hyperv1.Release{
 					Image: o.ReleaseImage,
@@ -516,61 +565,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		}
 	case hyperv1.KubevirtPlatform:
 		nodePool := defaultNodePool(cluster.Name)
-		runAlways := kubevirtv1.RunStrategyAlways
-		guestQuantity := apiresource.MustParse(o.Kubevirt.Memory)
-		nodePool.Spec.Platform.Kubevirt = &hyperv1.KubevirtNodePoolPlatform{
-			NodeTemplate: &capikubevirt.VirtualMachineTemplateSpec{
-				Spec: kubevirtv1.VirtualMachineSpec{
-					RunStrategy: &runAlways,
-					Template: &kubevirtv1.VirtualMachineInstanceTemplateSpec{
-						Spec: kubevirtv1.VirtualMachineInstanceSpec{
-							Domain: kubevirtv1.DomainSpec{
-								CPU:    &kubevirtv1.CPU{Cores: o.Kubevirt.Cores},
-								Memory: &kubevirtv1.Memory{Guest: &guestQuantity},
-								Devices: kubevirtv1.Devices{
-									Disks: []kubevirtv1.Disk{
-										{
-											Name: "containervolume",
-											DiskDevice: kubevirtv1.DiskDevice{
-												Disk: &kubevirtv1.DiskTarget{
-													Bus: "virtio",
-												},
-											},
-										},
-									},
-									Interfaces: []kubevirtv1.Interface{
-										{
-											Name: "default",
-											InterfaceBindingMethod: kubevirtv1.InterfaceBindingMethod{
-												Bridge: &kubevirtv1.InterfaceBridge{},
-											},
-										},
-									},
-								},
-							},
-							Volumes: []kubevirtv1.Volume{
-								{
-									Name: "containervolume",
-									VolumeSource: kubevirtv1.VolumeSource{
-										ContainerDisk: &kubevirtv1.ContainerDiskSource{
-											Image: o.Kubevirt.Image,
-										},
-									},
-								},
-							},
-							Networks: []kubevirtv1.Network{
-								{
-									Name: "default",
-									NetworkSource: kubevirtv1.NetworkSource{
-										Pod: &kubevirtv1.PodNetwork{},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
+		nodePool.Spec.Platform.Kubevirt = ExampleKubeVirtTemplate(o.Kubevirt)
 		nodePools = append(nodePools, nodePool)
 	case hyperv1.NonePlatform, hyperv1.AgentPlatform:
 		nodePools = append(nodePools, defaultNodePool(cluster.Name))
@@ -596,26 +591,41 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 			}
 			nodePools = append(nodePools, nodePool)
 		}
+	case hyperv1.PowerVSPlatform:
+		nodePool := defaultNodePool(cluster.Name)
+		nodePool.Spec.Platform.PowerVS = &hyperv1.PowerVSNodePoolPlatform{
+			SystemType:    o.PowerVS.SysType,
+			ProcessorType: o.PowerVS.ProcType,
+			Processors:    intstr.FromString(o.PowerVS.Processors),
+			MemoryGiB:     o.PowerVS.Memory,
+		}
+		nodePools = append(nodePools, nodePool)
 	default:
 		panic("Unsupported platform")
 	}
 
 	return &ExampleResources{
-		Namespace:  namespace,
-		PullSecret: pullSecret,
-		Resources:  resources,
-		SSHKey:     sshKeySecret,
-		Cluster:    cluster,
-		NodePools:  nodePools,
+		AdditionalTrustBundle: userCABundleCM,
+		Namespace:             namespace,
+		PullSecret:            pullSecret,
+		Resources:             resources,
+		SSHKey:                sshKeySecret,
+		Cluster:               cluster,
+		NodePools:             nodePools,
 	}
 }
 
-func getIngressServicePublishingStrategyMapping() []hyperv1.ServicePublishingStrategyMapping {
-	return []hyperv1.ServicePublishingStrategyMapping{
+func getIngressServicePublishingStrategyMapping(netType hyperv1.NetworkType, usesExternalDNS bool) []hyperv1.ServicePublishingStrategyMapping {
+
+	apiServiceStrategy := hyperv1.LoadBalancer
+	if usesExternalDNS {
+		apiServiceStrategy = hyperv1.Route
+	}
+	ret := []hyperv1.ServicePublishingStrategyMapping{
 		{
 			Service: hyperv1.APIServer,
 			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-				Type: hyperv1.LoadBalancer,
+				Type: apiServiceStrategy,
 			},
 		},
 		{
@@ -637,51 +647,19 @@ func getIngressServicePublishingStrategyMapping() []hyperv1.ServicePublishingStr
 			},
 		},
 	}
-}
-
-func getIngressWithHostnameServicePublishingStrategyMapping(name, domain string, endpointAcesss hyperv1.AWSEndpointAccessType) []hyperv1.ServicePublishingStrategyMapping {
-	return []hyperv1.ServicePublishingStrategyMapping{
-		{
-			Service: hyperv1.APIServer,
-			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-				Type: hyperv1.LoadBalancer,
-				LoadBalancer: &hyperv1.LoadBalancerPublishingStrategy{
-					Hostname: fmt.Sprintf("api-%s.%s", name, domain),
-				},
-			},
-		},
-		{
-			Service: hyperv1.OAuthServer,
+	if netType == hyperv1.OVNKubernetes {
+		ret = append(ret, hyperv1.ServicePublishingStrategyMapping{
+			Service: hyperv1.OVNSbDb,
 			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
 				Type: hyperv1.Route,
-				Route: &hyperv1.RoutePublishingStrategy{
-					Hostname: fmt.Sprintf("oauth-%s.%s", name, domain),
-				},
 			},
-		},
-		{
-			Service: hyperv1.Konnectivity,
-			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-				Type: hyperv1.Route,
-				Route: &hyperv1.RoutePublishingStrategy{
-					Hostname: fmt.Sprintf("konnectivity-%s.%s", name, domain),
-				},
-			},
-		},
-		{
-			Service: hyperv1.Ignition,
-			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
-				Type: hyperv1.Route,
-				Route: &hyperv1.RoutePublishingStrategy{
-					Hostname: fmt.Sprintf("ignition-%s.%s", name, domain),
-				},
-			},
-		},
+		})
 	}
+	return ret
 }
 
-func getServicePublishingStrategyMappingByAPIServerAddress(APIServerAddress string) []hyperv1.ServicePublishingStrategyMapping {
-	return []hyperv1.ServicePublishingStrategyMapping{
+func getServicePublishingStrategyMappingByAPIServerAddress(APIServerAddress string, netType hyperv1.NetworkType) []hyperv1.ServicePublishingStrategyMapping {
+	ret := []hyperv1.ServicePublishingStrategyMapping{
 		{
 			Service: hyperv1.APIServer,
 			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
@@ -718,6 +696,16 @@ func getServicePublishingStrategyMappingByAPIServerAddress(APIServerAddress stri
 			},
 		},
 	}
+	if netType == hyperv1.OVNKubernetes {
+		ret = append(ret, hyperv1.ServicePublishingStrategyMapping{
+			Service: hyperv1.OVNSbDb,
+			ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+				Type:     hyperv1.NodePort,
+				NodePort: &hyperv1.NodePortPublishingStrategy{Address: APIServerAddress},
+			},
+		})
+	}
+	return ret
 }
 
 func (o ExampleOptions) EtcdEncryptionKeySecret() *corev1.Secret {

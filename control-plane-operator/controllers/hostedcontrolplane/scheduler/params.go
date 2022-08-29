@@ -9,26 +9,31 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
-	"github.com/openshift/hypershift/support/globalconfig"
 	"github.com/openshift/hypershift/support/util"
 )
 
 type KubeSchedulerParams struct {
-	FeatureGate             *configv1.FeatureGate `json:"featureGate"`
-	Scheduler               *configv1.Scheduler   `json:"scheduler"`
-	OwnerRef                config.OwnerRef       `json:"ownerRef"`
-	HyperkubeImage          string                `json:"hyperkubeImage"`
-	AvailabilityProberImage string                `json:"availabilityProberImage"`
+	FeatureGate             *configv1.FeatureGateSpec `json:"featureGate"`
+	Scheduler               *configv1.SchedulerSpec   `json:"scheduler"`
+	OwnerRef                config.OwnerRef           `json:"ownerRef"`
+	HyperkubeImage          string                    `json:"hyperkubeImage"`
+	AvailabilityProberImage string                    `json:"availabilityProberImage"`
 	config.DeploymentConfig `json:",inline"`
+	APIServer               *configv1.APIServerSpec `json:"apiServer"`
+	DisableProfiling        bool                    `json:"disableProfiling"`
 }
 
-func NewKubeSchedulerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane, images map[string]string, globalConfig globalconfig.GlobalConfig, setDefaultSecurityContext bool) *KubeSchedulerParams {
+func NewKubeSchedulerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane, images map[string]string, setDefaultSecurityContext bool) *KubeSchedulerParams {
 	params := &KubeSchedulerParams{
-		FeatureGate:             globalConfig.FeatureGate,
-		Scheduler:               globalConfig.Scheduler,
 		HyperkubeImage:          images["hyperkube"],
 		AvailabilityProberImage: images[util.AvailabilityProberImageName],
+	}
+	if hcp.Spec.Configuration != nil {
+		params.FeatureGate = hcp.Spec.Configuration.FeatureGate
+		params.Scheduler = hcp.Spec.Configuration.Scheduler
+		params.APIServer = hcp.Spec.Configuration.APIServer
 	}
 	params.Scheduling = config.Scheduling{
 		PriorityClass: config.DefaultPriorityClass,
@@ -73,19 +78,10 @@ func NewKubeSchedulerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 			TimeoutSeconds:      5,
 		},
 	}
-	params.DeploymentConfig.SetColocation(hcp)
+	params.DeploymentConfig.SetDefaults(hcp, labels, nil)
 	params.DeploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
-	params.DeploymentConfig.SetReleaseImageAnnotation(hcp.Spec.ReleaseImage)
-	params.DeploymentConfig.SetControlPlaneIsolation(hcp)
-	switch hcp.Spec.ControllerAvailabilityPolicy {
-	case hyperv1.HighlyAvailable:
-		params.Replicas = 3
-		params.DeploymentConfig.SetMultizoneSpread(schedulerLabels)
-	default:
-		params.Replicas = 1
-	}
-
 	params.SetDefaultSecurityContext = setDefaultSecurityContext
+	params.DisableProfiling = util.StringListContains(hcp.Annotations[hyperv1.DisableProfilingAnnotation], manifests.SchedulerDeployment("").Name)
 
 	params.OwnerRef = config.OwnerRefFrom(hcp)
 	return params
@@ -93,15 +89,29 @@ func NewKubeSchedulerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 
 func (p *KubeSchedulerParams) FeatureGates() []string {
 	if p.FeatureGate != nil {
-		return config.FeatureGates(&p.FeatureGate.Spec.FeatureGateSelection)
+		return config.FeatureGates(&p.FeatureGate.FeatureGateSelection)
 	} else {
 		return config.FeatureGates(&configv1.FeatureGateSelection{FeatureSet: configv1.Default})
 	}
 }
 
+func (p *KubeSchedulerParams) CipherSuites() []string {
+	if p.APIServer != nil {
+		return config.CipherSuites(p.APIServer.TLSSecurityProfile)
+	}
+	return config.CipherSuites(nil)
+}
+
+func (p *KubeSchedulerParams) MinTLSVersion() string {
+	if p.APIServer != nil {
+		return config.MinTLSVersion(p.APIServer.TLSSecurityProfile)
+	}
+	return config.MinTLSVersion(nil)
+}
+
 func (p *KubeSchedulerParams) SchedulerPolicy() configv1.ConfigMapNameReference {
 	if p.Scheduler != nil {
-		return p.Scheduler.Spec.Policy
+		return p.Scheduler.Policy
 	} else {
 		return configv1.ConfigMapNameReference{}
 	}

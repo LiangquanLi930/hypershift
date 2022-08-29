@@ -28,39 +28,88 @@ type HostedControlPlaneSpec struct {
 	ReleaseImage string                      `json:"releaseImage"`
 	PullSecret   corev1.LocalObjectReference `json:"pullSecret"`
 	IssuerURL    string                      `json:"issuerURL"`
-	ServiceCIDR  string                      `json:"serviceCIDR"`
-	PodCIDR      string                      `json:"podCIDR"`
-	MachineCIDR  string                      `json:"machineCIDR"`
+
+	// Networking specifies network configuration for the cluster.
+	// Temporarily optional for backward compatibility, required in future releases.
+	// +optional
+	Networking ClusterNetworking `json:"networking,omitempty"`
+
+	// deprecated
+	// use networking.ServiceNetwork
+	// +optional
+	ServiceCIDR string `json:"serviceCIDR,omitempty"`
+
+	// deprecated
+	// use networking.ClusterNetwork
+	// +optional
+	PodCIDR string `json:"podCIDR,omitempty"`
+
+	// deprecated
+	// use networking.MachineNetwork
+	// +optional
+	MachineCIDR string `json:"machineCIDR,omitempty"`
+
+	// deprecated
+	// use networking.NetworkType
 	// NetworkType specifies the SDN provider used for cluster networking.
-	NetworkType NetworkType                 `json:"networkType"`
-	SSHKey      corev1.LocalObjectReference `json:"sshKey"`
+	// +optional
+	NetworkType NetworkType `json:"networkType,omitempty"`
+
+	SSHKey corev1.LocalObjectReference `json:"sshKey"`
+
 	// ClusterID is the unique id that identifies the cluster externally.
 	// Making it optional here allows us to keep compatibility with previous
 	// versions of the control-plane-operator that have no knowledge of this
 	// field.
 	// +optional
-	ClusterID string       `json:"clusterID,omitempty"`
-	InfraID   string       `json:"infraID"`
-	Platform  PlatformSpec `json:"platform"`
-	DNS       DNSSpec      `json:"dns"`
+	ClusterID string `json:"clusterID,omitempty"`
 
+	InfraID  string       `json:"infraID"`
+	Platform PlatformSpec `json:"platform"`
+	DNS      DNSSpec      `json:"dns"`
+
+	// ServiceAccountSigningKey is a reference to a secret containing the private key
+	// used by the service account token issuer. The secret is expected to contain
+	// a single key named "key". If not specified, a service account signing key will
+	// be generated automatically for the cluster.
+	//
+	// +optional
+	ServiceAccountSigningKey *corev1.LocalObjectReference `json:"serviceAccountSigningKey,omitempty"`
+
+	// deprecated
+	// use networking.apiServer.APIPort
 	// APIPort is the port at which the APIServer listens inside a worker
 	// +optional
 	APIPort *int32 `json:"apiPort,omitempty"`
+
+	// deprecated
+	// use networking.apiServer.AdvertiseAddress
 	// APIAdvertiseAddress is the address at which the APIServer listens
 	// inside a worker.
 	// +optional
 	APIAdvertiseAddress *string `json:"apiAdvertiseAddress,omitempty"`
 
-	// ControllerAvailabilityPolicy specifies whether to run control plane controllers in HA mode
-	// Defaults to SingleReplica when not set
+	// deprecated
+	// use networking.apiServer.APIAllowedCIDRBlocks
+	// APIAllowedCIDRBlocks is an allow list of CIDR blocks that can access the APIServer
+	// If not specified, traffic is allowed from all addresses.
+	// This depends on underlying support by the cloud provider for Service LoadBalancerSourceRanges
 	// +optional
+	APIAllowedCIDRBlocks []CIDRBlock `json:"apiAllowedCIDRBlocks,omitempty"`
+
+	// ControllerAvailabilityPolicy specifies the availability policy applied to
+	// critical control plane components. The default value is SingleReplica.
+	//
+	// +optional
+	// +kubebuilder:default:="SingleReplica"
 	ControllerAvailabilityPolicy AvailabilityPolicy `json:"controllerAvailabilityPolicy,omitempty"`
 
-	// InfrastructureAvailabilityPolicy specifies whether to run infrastructure services that
-	// run on the guest cluster nodes in HA mode
-	// Defaults to HighlyAvailable when not set
+	// InfrastructureAvailabilityPolicy specifies the availability policy applied
+	// to infrastructure services which run on cluster nodes. The default value is
+	// SingleReplica.
+	//
 	// +optional
+	// +kubebuilder:default:="SingleReplica"
 	InfrastructureAvailabilityPolicy AvailabilityPolicy `json:"infrastructureAvailabilityPolicy,omitempty"`
 
 	// FIPS specifies if the nodes for the cluster will be running in FIPS mode
@@ -97,6 +146,10 @@ type HostedControlPlaneSpec struct {
 	// +optional
 	ImageContentSources []ImageContentSource `json:"imageContentSources,omitempty"`
 
+	// AdditionalTrustBundle references a ConfigMap containing a PEM-encoded X.509 certificate bundle
+	// +optional
+	AdditionalTrustBundle *corev1.LocalObjectReference `json:"additionalTrustBundle,omitempty"`
+
 	// SecretEncryption contains metadata about the kubernetes secret encryption strategy being used for the
 	// cluster when applicable.
 	// +optional
@@ -118,6 +171,17 @@ type HostedControlPlaneSpec struct {
 	// +optional
 	// +immutable
 	OLMCatalogPlacement OLMCatalogPlacement `json:"olmCatalogPlacement,omitempty"`
+
+	// Autoscaling specifies auto-scaling behavior that applies to all NodePools
+	// associated with the control plane.
+	//
+	// +optional
+	Autoscaling ClusterAutoscaling `json:"autoscaling,omitempty"`
+
+	// NodeSelector when specified, must be true for the pods managed by the HostedCluster to be scheduled.
+	//
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 }
 
 // AvailabilityPolicy specifies a high level availability policy for components.
@@ -146,11 +210,15 @@ type ConditionType string
 
 const (
 	HostedControlPlaneAvailable          ConditionType = "Available"
+	HostedControlPlaneDegraded           ConditionType = "Degraded"
 	EtcdAvailable                        ConditionType = "EtcdAvailable"
+	EtcdSnapshotRestored                 ConditionType = "EtcdSnapshotRestored"
 	KubeAPIServerAvailable               ConditionType = "KubeAPIServerAvailable"
 	InfrastructureReady                  ConditionType = "InfrastructureReady"
 	ValidHostedControlPlaneConfiguration ConditionType = "ValidHostedControlPlaneConfiguration"
 	ClusterVersionFailing                ConditionType = "ClusterVersionFailing"
+	CVOScaledDown                        ConditionType = "CVOScaledDown"
+	CloudResourcesDestroyed              ConditionType = "CloudResourcesDestroyed"
 )
 
 // HostedControlPlaneStatus defines the observed state of HostedControlPlane
@@ -182,6 +250,13 @@ type HostedControlPlaneStatus struct {
 	// after the infrastructure is ready.
 	// +kubebuilder:validation:Optional
 	ControlPlaneEndpoint APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+
+	// OAuthCallbackURLTemplate contains a template for the URL to use as a callback
+	// for identity providers. The [identity-provider-name] placeholder must be replaced
+	// with the name of an identity provider defined on the HostedCluster.
+	// This is populated after the infrastructure is ready.
+	// +kubebuilder:validation:Optional
+	OAuthCallbackURLTemplate string `json:"oauthCallbackURLTemplate,omitempty"`
 
 	// Version is the semantic version of the release applied by
 	// the hosted control plane operator

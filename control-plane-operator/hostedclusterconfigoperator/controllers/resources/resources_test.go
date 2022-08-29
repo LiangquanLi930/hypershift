@@ -9,10 +9,15 @@ import (
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	configv1 "github.com/openshift/api/config/v1"
+	operatorv1 "github.com/openshift/api/operator/v1"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	cpomanifests "github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/api"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/manifests"
 	"github.com/openshift/hypershift/support/globalconfig"
@@ -50,6 +55,7 @@ var initialObjects = []client.Object{
 			"kubeadmin": []byte("something"),
 		},
 	},
+	manifests.NodeTuningClusterOperator(),
 }
 
 func shouldNotError(key client.ObjectKey) bool {
@@ -147,7 +153,7 @@ func fakeHCP() *hyperv1.HostedControlPlane {
 }
 
 func fakeIngressCert() *corev1.Secret {
-	s := manifests.IngressCert("bar")
+	s := cpomanifests.IngressCert("bar")
 	s.Data = map[string][]byte{
 		"tls.crt": []byte("12345"),
 		"tls.key": []byte("12345"),
@@ -200,7 +206,7 @@ func fakeKubeadminPasswordSecret() *corev1.Secret {
 }
 
 func fakeOAuthServingCert() *corev1.Secret {
-	s := manifests.OpenShiftOAuthServerCert("bar")
+	s := cpomanifests.OpenShiftOAuthServerCert("bar")
 	s.Data = map[string][]byte{"tls.crt": []byte("test")}
 	return s
 }
@@ -293,4 +299,401 @@ func TestReconcileKubeadminPasswordHashSecret(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReconcileUserCertCABundle(t *testing.T) {
+	testNamespace := "master-cluster1"
+	testHCPName := "cluster1"
+	tests := map[string]struct {
+		inputHCP              *hyperv1.HostedControlPlane
+		inputObjects          []client.Object
+		expectUserCAConfigMap bool
+	}{
+		"No AdditionalTrustBundle": {
+			inputHCP: &hyperv1.HostedControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testHCPName,
+					Namespace: testNamespace,
+				},
+			},
+			inputObjects:          []client.Object{},
+			expectUserCAConfigMap: false,
+		},
+		"AdditionalTrustBundle": {
+			inputHCP: &hyperv1.HostedControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testHCPName,
+					Namespace: testNamespace,
+				},
+				Spec: hyperv1.HostedControlPlaneSpec{
+					AdditionalTrustBundle: &corev1.LocalObjectReference{
+						Name: manifests.ControlPlaneUserCABundle(testNamespace).Name,
+					},
+				},
+			},
+			inputObjects: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: manifests.ControlPlaneUserCABundle(testNamespace).ObjectMeta,
+					Data: map[string]string{
+						"ca-bundle.crt": "acertxyz",
+					},
+				},
+			},
+			expectUserCAConfigMap: true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			r := &reconciler{
+				client:                 fake.NewClientBuilder().WithScheme(api.Scheme).Build(),
+				CreateOrUpdateProvider: &simpleCreateOrUpdater{},
+				cpClient:               fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(append(test.inputObjects, test.inputHCP)...).Build(),
+				hcpName:                testHCPName,
+				hcpNamespace:           testNamespace,
+			}
+			err := r.reconcileUserCertCABundle(context.Background(), test.inputHCP)
+			g.Expect(err).To(BeNil())
+			guestUserCABundle := manifests.UserCABundle()
+			if test.expectUserCAConfigMap {
+				err := r.client.Get(context.TODO(), client.ObjectKeyFromObject(guestUserCABundle), guestUserCABundle)
+				g.Expect(err).To(BeNil())
+				g.Expect(len(guestUserCABundle.Data["ca-bundle.crt"]) > 0).To(BeTrue())
+			} else {
+				err := r.client.Get(context.TODO(), client.ObjectKeyFromObject(guestUserCABundle), guestUserCABundle)
+				g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			}
+		})
+	}
+}
+
+var _ manifestReconciler = manifestAndReconcile[*rbacv1.ClusterRole]{}
+
+func TestDestroyCloudResources(t *testing.T) {
+
+	fakeHostedControlPlane := func() *hyperv1.HostedControlPlane {
+		return &hyperv1.HostedControlPlane{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-hcp",
+				Namespace: "test-namespace",
+			},
+		}
+	}
+
+	verifyCleanupWebhook := func(g *WithT, c client.Client) {
+		wh := manifests.ResourceCreationBlockerWebhook()
+		err := c.Get(context.Background(), client.ObjectKeyFromObject(wh), wh)
+		g.Expect(err).ToNot(HaveOccurred())
+		expected := manifests.ResourceCreationBlockerWebhook()
+		reconcileCreationBlockerWebhook(expected)
+		g.Expect(wh.Webhooks).To(BeEquivalentTo(expected.Webhooks))
+	}
+
+	managedImageRegistry := func() client.Object {
+		config := manifests.Registry()
+		config.Spec.ManagementState = "Managed"
+		config.Status.Storage.ManagementState = "Managed"
+		return config
+	}
+
+	verifyImageRegistryConfig := func(g *WithT, c, _ client.Client) {
+		config := manifests.Registry()
+		err := c.Get(context.Background(), client.ObjectKeyFromObject(config), config)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(config.Spec.ManagementState).To(Equal(operatorv1.Removed))
+	}
+
+	ingressController := func(name string) client.Object {
+		return &operatorv1.IngressController{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "openshift-ingress-operator",
+			},
+		}
+	}
+
+	verifyIngressControllersRemoved := func(g *WithT, c, _ client.Client) {
+		ingressControllers := &operatorv1.IngressControllerList{}
+		err := c.List(context.Background(), ingressControllers)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(len(ingressControllers.Items)).To(Equal(0))
+	}
+
+	serviceLoadBalancer := func(name string) client.Object {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeLoadBalancer,
+			},
+		}
+	}
+
+	clusterIPService := func(name string) client.Object {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeClusterIP,
+			},
+		}
+	}
+
+	verifyServiceLoadBalancersRemoved := func(g *WithT, c client.Client) {
+		services := &corev1.ServiceList{}
+		err := c.List(context.Background(), services)
+		g.Expect(err).ToNot(HaveOccurred())
+		for _, svc := range services.Items {
+			g.Expect(svc.Spec.Type).ToNot(Equal(corev1.ServiceTypeLoadBalancer))
+		}
+	}
+
+	verifyServiceExists := func(name string, g *WithT, c client.Client) {
+		service := clusterIPService(name)
+		err := c.Get(context.Background(), client.ObjectKeyFromObject(service), service)
+		g.Expect(err).ToNot(HaveOccurred())
+	}
+
+	pv := func(name string) client.Object {
+		return &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+			},
+		}
+	}
+
+	pvc := func(name string) client.Object {
+		return &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+		}
+	}
+
+	pod := func(name string) client.Object {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "pv",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: "test",
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	verifyPVCsRemoved := func(g *WithT, c client.Client) {
+		pvcs := &corev1.PersistentVolumeClaimList{}
+		err := c.List(context.Background(), pvcs)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(len(pvcs.Items)).To(Equal(0))
+	}
+
+	verifyPodsRemoved := func(g *WithT, c client.Client) {
+		pods := &corev1.PodList{}
+		err := c.List(context.Background(), pods)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(len(pods.Items)).To(Equal(0))
+	}
+
+	verifyDoneCond := func(g *WithT, c client.Client) {
+		hcp := fakeHostedControlPlane()
+		err := c.Get(context.Background(), client.ObjectKeyFromObject(hcp), hcp)
+		g.Expect(err).ToNot(HaveOccurred())
+		cond := meta.FindStatusCondition(hcp.Status.Conditions, string(hyperv1.CloudResourcesDestroyed))
+		g.Expect(cond).ToNot(BeNil())
+	}
+
+	tests := []struct {
+		name             string
+		existing         []client.Object
+		existingUncached []client.Object
+		verify           func(*WithT, client.Client, client.Client)
+		verifyDoneCond   bool
+	}{
+		{
+			name:           "no existing resources",
+			verifyDoneCond: true,
+		},
+		{
+			name: "image registry with storage",
+			existing: []client.Object{
+				managedImageRegistry(),
+			},
+			verify: verifyImageRegistryConfig,
+		},
+		{
+			name: "existing ingress controller",
+			existing: []client.Object{
+				ingressController("default"),
+				ingressController("foobar"),
+			},
+			verify: verifyIngressControllersRemoved,
+		},
+		{
+			name: "existing service load balancers",
+			existing: []client.Object{
+				serviceLoadBalancer("foo"),
+				serviceLoadBalancer("bar"),
+				clusterIPService("baz"),
+			},
+			verify: func(g *WithT, c, _ client.Client) {
+				verifyServiceLoadBalancersRemoved(g, c)
+				verifyServiceExists("baz", g, c)
+			},
+		},
+		{
+			name: "existing pv/pvc",
+			existing: []client.Object{
+				pv("foo"), pvc("foo"),
+				pv("bar"), pvc("bar"),
+			},
+			existingUncached: []client.Object{
+				pod("pod1"), pod("pod2"),
+			},
+			verify: func(g *WithT, c, uc client.Client) {
+				verifyPVCsRemoved(g, c)
+				verifyPodsRemoved(g, uc)
+			},
+		},
+		{
+			name: "existing everything",
+			existing: []client.Object{
+				managedImageRegistry(),
+				ingressController("default"),
+				ingressController("foobar"),
+				serviceLoadBalancer("foo"),
+				serviceLoadBalancer("bar"),
+				clusterIPService("baz"),
+				pv("foo"), pvc("foo"),
+				pv("bar"), pvc("bar"),
+			},
+			existingUncached: []client.Object{
+				pod("pod1"), pod("pod2"),
+			},
+			verify: func(g *WithT, c, uc client.Client) {
+				verifyImageRegistryConfig(g, c, nil)
+				verifyIngressControllersRemoved(g, c, nil)
+				verifyServiceLoadBalancersRemoved(g, c)
+				verifyServiceExists("baz", g, c)
+				verifyPVCsRemoved(g, c)
+				verifyPodsRemoved(g, uc)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			fakeHCP := fakeHostedControlPlane()
+			guestClient := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(test.existing...).Build()
+			uncachedClient := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(test.existingUncached...).Build()
+			cpClient := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(fakeHCP).Build()
+			r := &reconciler{
+				client:                 guestClient,
+				uncachedClient:         uncachedClient,
+				cpClient:               cpClient,
+				CreateOrUpdateProvider: &simpleCreateOrUpdater{},
+			}
+			err := r.destroyCloudResources(context.Background(), fakeHCP)
+			g.Expect(err).ToNot(HaveOccurred())
+			verifyCleanupWebhook(g, guestClient)
+			if test.verify != nil {
+				test.verify(g, guestClient, uncachedClient)
+			}
+			if test.verifyDoneCond {
+				verifyDoneCond(g, cpClient)
+			}
+		})
+	}
+}
+
+func TestListAccessor(t *testing.T) {
+	pod := func(name string) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "test-ns",
+			},
+		}
+	}
+	list := &corev1.PodList{
+		Items: []corev1.Pod{
+			pod("test1"),
+			pod("test2"),
+		},
+	}
+
+	a := listAccessor(list)
+	g := NewGomegaWithT(t)
+	g.Expect(a.len()).To(Equal(2))
+	g.Expect(a.item(0).GetName()).To(Equal("test1"))
+	g.Expect(a.item(1).GetName()).To(Equal("test2"))
+}
+
+func TestReconcileClusterVersion(t *testing.T) {
+	hcp := &hyperv1.HostedControlPlane{
+		Spec: hyperv1.HostedControlPlaneSpec{
+			ClusterID: "test-cluster-id",
+		},
+	}
+	testOverrides := []configv1.ComponentOverride{
+		{
+			Kind:      "Pod",
+			Group:     "",
+			Name:      "test",
+			Namespace: "default",
+			Unmanaged: true,
+		},
+	}
+	clusterVersion := &configv1.ClusterVersion{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "version",
+		},
+		Spec: configv1.ClusterVersionSpec{
+			ClusterID: "some-other-id",
+			Capabilities: &configv1.ClusterVersionCapabilitiesSpec{
+				AdditionalEnabledCapabilities: []configv1.ClusterVersionCapability{
+					"foo",
+					"bar",
+				},
+			},
+			Channel: "fast",
+			DesiredUpdate: &configv1.Update{
+				Version: "4.12.5",
+				Image:   "exmple.com/imagens/image:latest",
+				Force:   true,
+			},
+			Upstream:  configv1.URL("https://upstream.example.com"),
+			Overrides: testOverrides,
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(clusterVersion).Build()
+	g := NewWithT(t)
+	r := &reconciler{
+		client:                 fakeClient,
+		CreateOrUpdateProvider: &simpleCreateOrUpdater{},
+	}
+	err := r.reconcileClusterVersion(context.Background(), hcp)
+	g.Expect(err).ToNot(HaveOccurred())
+	err = fakeClient.Get(context.Background(), client.ObjectKeyFromObject(clusterVersion), clusterVersion)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(clusterVersion.Spec.ClusterID).To(Equal(configv1.ClusterID("test-cluster-id")))
+	g.Expect(clusterVersion.Spec.Capabilities).To(BeNil())
+	g.Expect(clusterVersion.Spec.DesiredUpdate).To(BeNil())
+	g.Expect(clusterVersion.Spec.Overrides).To(Equal(testOverrides))
+	g.Expect(clusterVersion.Spec.Channel).To(BeEmpty())
 }

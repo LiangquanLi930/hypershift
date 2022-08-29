@@ -30,6 +30,8 @@ import (
 	destroycmd "github.com/openshift/hypershift/cmd/destroy"
 	dumpcmd "github.com/openshift/hypershift/cmd/dump"
 	installcmd "github.com/openshift/hypershift/cmd/install"
+	cliversion "github.com/openshift/hypershift/cmd/version"
+	"github.com/openshift/hypershift/pkg/version"
 )
 
 func main() {
@@ -44,6 +46,8 @@ func main() {
 		},
 	}
 
+	cmd.Version = version.GetRevision()
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	defer cancel()
@@ -53,6 +57,7 @@ func main() {
 	cmd.AddCommand(destroycmd.NewCommand())
 	cmd.AddCommand(dumpcmd.NewCommand())
 	cmd.AddCommand(consolelogs.NewCommand())
+	cmd.AddCommand(cliversion.NewVersionCommand())
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT)

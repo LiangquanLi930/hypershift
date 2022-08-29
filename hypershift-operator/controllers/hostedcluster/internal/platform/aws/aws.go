@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/support/images"
@@ -29,14 +31,14 @@ const (
 	imageCAPA = "registry.ci.openshift.org/hypershift/cluster-api-aws-controller:v1.1.0"
 )
 
-func New(controlPlaneOperatorImage string) *AWS {
+func New(utilitiesImage string) *AWS {
 	return &AWS{
-		controlPlaneOperatorImage: controlPlaneOperatorImage,
+		utilitiesImage: utilitiesImage,
 	}
 }
 
 type AWS struct {
-	controlPlaneOperatorImage string
+	utilitiesImage string
 }
 
 func (p AWS) ReconcileCAPIInfraCR(ctx context.Context, c client.Client, createOrUpdate upsert.CreateOrUpdateFN,
@@ -93,7 +95,7 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 						Name: "credentials",
 						VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{
-								SecretName: hcluster.Spec.Platform.AWS.NodePoolManagementCreds.Name,
+								SecretName: NodePoolManagementCredsSecret("").Name,
 							},
 						},
 					},
@@ -119,7 +121,7 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 					{
 						Name:            "manager",
 						Image:           providerImage,
-						ImagePullPolicy: corev1.PullAlways,
+						ImagePullPolicy: corev1.PullIfNotPresent,
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("100Mi"),
@@ -192,8 +194,8 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 					},
 					{
 						Name:            "token-minter",
-						Image:           p.controlPlaneOperatorImage,
-						ImagePullPolicy: corev1.PullAlways,
+						Image:           p.utilitiesImage,
+						ImagePullPolicy: corev1.PullIfNotPresent,
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "token",
@@ -223,100 +225,48 @@ func (p AWS) CAPIProviderDeploymentSpec(hcluster *hyperv1.HostedCluster, hcp *hy
 			},
 		},
 	}
-	util.AvailabilityProber(kas.InClusterKASReadyURL(hcp.Namespace, hcp.Spec.APIPort), p.controlPlaneOperatorImage, &deploymentSpec.Template.Spec)
+	util.AvailabilityProber(kas.InClusterKASReadyURL(hcp.Namespace, util.APIPort(hcp)), p.utilitiesImage, &deploymentSpec.Template.Spec)
 	return deploymentSpec, nil
 }
 
 func (p AWS) ReconcileCredentials(ctx context.Context, c client.Client, createOrUpdate upsert.CreateOrUpdateFN,
 	hcluster *hyperv1.HostedCluster,
 	controlPlaneNamespace string) error {
-	// Reconcile the platform provider cloud controller credentials secret by resolving
-	// the reference from the HostedCluster and syncing the secret in the control
-	// plane namespace.
-	var src corev1.Secret
-	if err := c.Get(ctx, client.ObjectKey{Namespace: hcluster.GetNamespace(), Name: hcluster.Spec.Platform.AWS.KubeCloudControllerCreds.Name}, &src); err != nil {
-		return fmt.Errorf("failed to get cloud controller provider creds %s: %w", hcluster.Spec.Platform.AWS.KubeCloudControllerCreds.Name, err)
-	}
-	dest := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: controlPlaneNamespace,
-			Name:      src.Name,
-		},
-	}
-	_, err := createOrUpdate(ctx, c, dest, func() error {
-		srcData, srcHasData := src.Data["credentials"]
-		if !srcHasData {
-			return fmt.Errorf("hostedcluster cloud controller provider credentials secret %q must have a credentials key", src.Name)
+
+	awsCredentialsTemplate := `[default]
+role_arn = %s
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+`
+	// TODO (alberto): consider moving this reconciliation logic down to the CPO.
+	// this is not trivial as the CPO deployment itself needs the secret with the ControlPlaneOperatorARN
+	var errs []error
+	syncSecret := func(secret *corev1.Secret, arn string) error {
+		if arn == "" {
+			return fmt.Errorf("ARN is not provided for cloud credential secret %s/%s", secret.Namespace, secret.Name)
 		}
-		dest.Type = corev1.SecretTypeOpaque
-		if dest.Data == nil {
-			dest.Data = map[string][]byte{}
+		if _, err := createOrUpdate(ctx, c, secret, func() error {
+			credentials := fmt.Sprintf(awsCredentialsTemplate, arn)
+			secret.Data = map[string][]byte{"credentials": []byte(credentials)}
+			secret.Type = corev1.SecretTypeOpaque
+			return nil
+		}); err != nil {
+			return fmt.Errorf("failed to reconcile aws cloud credential secret %s/%s: %w", secret.Namespace, secret.Name, err)
 		}
-		dest.Data["credentials"] = srcData
 		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reconcile cloud controller provider creds: %w", err)
+	}
+	for arn, secret := range map[string]*corev1.Secret{
+		hcluster.Spec.Platform.AWS.RolesRef.KubeCloudControllerARN:  KubeCloudControllerCredsSecret(controlPlaneNamespace),
+		hcluster.Spec.Platform.AWS.RolesRef.NodePoolManagementARN:   NodePoolManagementCredsSecret(controlPlaneNamespace),
+		hcluster.Spec.Platform.AWS.RolesRef.ControlPlaneOperatorARN: ControlPlaneOperatorCredsSecret(controlPlaneNamespace),
+		hcluster.Spec.Platform.AWS.RolesRef.NetworkARN:              CloudNetworkConfigControllerCredsSecret(controlPlaneNamespace),
+	} {
+		err := syncSecret(secret, arn)
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 
-	// Reconcile the platform provider node pool management credentials secret by
-	// resolving  the reference from the HostedCluster and syncing the secret in
-	// the control plane namespace.
-	err = c.Get(ctx, client.ObjectKey{Namespace: hcluster.GetNamespace(), Name: hcluster.Spec.Platform.AWS.NodePoolManagementCreds.Name}, &src)
-	if err != nil {
-		return fmt.Errorf("failed to get node pool provider creds %s: %w", hcluster.Spec.Platform.AWS.NodePoolManagementCreds.Name, err)
-	}
-	dest = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: controlPlaneNamespace,
-			Name:      src.Name,
-		},
-	}
-	_, err = createOrUpdate(ctx, c, dest, func() error {
-		srcData, srcHasData := src.Data["credentials"]
-		if !srcHasData {
-			return fmt.Errorf("node pool provider credentials secret %q is missing credentials key", src.Name)
-		}
-		dest.Type = corev1.SecretTypeOpaque
-		if dest.Data == nil {
-			dest.Data = map[string][]byte{}
-		}
-		dest.Data["credentials"] = srcData
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reconcile node pool provider creds: %w", err)
-	}
-
-	// Reconcile the platform provider node pool management credentials secret by
-	// resolving  the reference from the HostedCluster and syncing the secret in
-	// the control plane namespace.
-	err = c.Get(ctx, client.ObjectKey{Namespace: hcluster.GetNamespace(), Name: hcluster.Spec.Platform.AWS.ControlPlaneOperatorCreds.Name}, &src)
-	if err != nil {
-		return fmt.Errorf("failed to get control plane operator provider creds %s: %w", hcluster.Spec.Platform.AWS.ControlPlaneOperatorCreds.Name, err)
-	}
-	dest = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: controlPlaneNamespace,
-			Name:      src.Name,
-		},
-	}
-	_, err = createOrUpdate(ctx, c, dest, func() error {
-		srcData, srcHasData := src.Data["credentials"]
-		if !srcHasData {
-			return fmt.Errorf("control plane operator provider credentials secret %q is missing credentials key", src.Name)
-		}
-		dest.Type = corev1.SecretTypeOpaque
-		if dest.Data == nil {
-			dest.Data = map[string][]byte{}
-		}
-		dest.Data["credentials"] = srcData
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to reconcile control plane operator provider creds: %w", err)
-	}
-	return nil
+	return utilerrors.NewAggregate(errs)
 }
 
 func (AWS) ReconcileSecretEncryption(ctx context.Context, c client.Client, createOrUpdate upsert.CreateOrUpdateFN,
@@ -389,4 +339,40 @@ func (AWS) CAPIProviderPolicyRules() []rbacv1.PolicyRule {
 
 func (AWS) DeleteCredentials(ctx context.Context, c client.Client, hcluster *hyperv1.HostedCluster, controlPlaneNamespace string) error {
 	return nil
+}
+
+func KubeCloudControllerCredsSecret(controlPlaneNamespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controlPlaneNamespace,
+			Name:      "cloud-controller-creds",
+		},
+	}
+}
+
+func NodePoolManagementCredsSecret(controlPlaneNamespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controlPlaneNamespace,
+			Name:      "node-management-creds",
+		},
+	}
+}
+
+func ControlPlaneOperatorCredsSecret(controlPlaneNamespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controlPlaneNamespace,
+			Name:      "control-plane-operator-creds",
+		},
+	}
+}
+
+func CloudNetworkConfigControllerCredsSecret(controlPlaneNamespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controlPlaneNamespace,
+			Name:      "cloud-network-config-controller-creds",
+		},
+	}
 }

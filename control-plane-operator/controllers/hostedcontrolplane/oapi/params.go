@@ -13,7 +13,7 @@ import (
 )
 
 type OpenShiftAPIServerParams struct {
-	APIServer               *configv1.APIServer `json:"apiServer"`
+	APIServer               *configv1.APIServerSpec `json:"apiServer"`
 	IngressSubDomain        string
 	EtcdURL                 string `json:"etcdURL"`
 	ServiceAccountIssuerURL string `json:"serviceAccountIssuerURL"`
@@ -26,7 +26,7 @@ type OpenShiftAPIServerParams struct {
 	ProxyImage                              string `json:"haproxyImage"`
 	AvailabilityProberImage                 string `json:"availabilityProberImage"`
 	Availability                            hyperv1.AvailabilityPolicy
-	Ingress                                 *configv1.Ingress
+	Ingress                                 *configv1.IngressSpec
 	Image                                   *configv1.Image
 	Project                                 *configv1.Project
 }
@@ -43,20 +43,24 @@ type OAuthDeploymentParams struct {
 	OwnerRef                config.OwnerRef
 }
 
-func NewOpenShiftAPIServerParams(hcp *hyperv1.HostedControlPlane, globalConfig globalconfig.GlobalConfig, images map[string]string, setDefaultSecurityContext bool) *OpenShiftAPIServerParams {
+func NewOpenShiftAPIServerParams(hcp *hyperv1.HostedControlPlane, observedConfig *globalconfig.ObservedConfig, images map[string]string, setDefaultSecurityContext bool) *OpenShiftAPIServerParams {
 	params := &OpenShiftAPIServerParams{
 		OpenShiftAPIServerImage: images["openshift-apiserver"],
 		OAuthAPIServerImage:     images["oauth-apiserver"],
 		ProxyImage:              images["socks5-proxy"],
-		APIServer:               globalConfig.APIServer,
 		ServiceAccountIssuerURL: hcp.Spec.IssuerURL,
-		IngressSubDomain:        globalconfig.IngressDomain(hcp, globalConfig.Ingress),
+		IngressSubDomain:        globalconfig.IngressDomain(hcp),
 		AvailabilityProberImage: images[util.AvailabilityProberImageName],
 		Availability:            hcp.Spec.ControllerAvailabilityPolicy,
-		Image:                   globalConfig.Image,
-		Ingress:                 globalConfig.Ingress,
-		Project:                 globalConfig.Project,
+		Image:                   observedConfig.Image,
+		Project:                 observedConfig.Project,
 	}
+
+	if hcp.Spec.Configuration != nil {
+		params.Ingress = hcp.Spec.Configuration.Ingress
+		params.APIServer = hcp.Spec.Configuration.APIServer
+	}
+
 	params.OpenShiftAPIServerDeploymentConfig = config.DeploymentConfig{
 		Scheduling: config.Scheduling{
 			PriorityClass: config.APICriticalPriorityClass,
@@ -101,10 +105,9 @@ func NewOpenShiftAPIServerParams(hcp *hyperv1.HostedControlPlane, globalConfig g
 			},
 		},
 	}
-	params.OpenShiftAPIServerDeploymentConfig.SetColocation(hcp)
 	params.OpenShiftAPIServerDeploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
-	params.OpenShiftAPIServerDeploymentConfig.SetReleaseImageAnnotation(hcp.Spec.ReleaseImage)
-	params.OpenShiftAPIServerDeploymentConfig.SetControlPlaneIsolation(hcp)
+	params.OpenShiftAPIServerDeploymentConfig.SetDefaults(hcp, openShiftAPIServerLabels(), nil)
+
 	params.OpenShiftOAuthAPIServerDeploymentConfig = config.DeploymentConfig{
 		Scheduling: config.Scheduling{
 			PriorityClass: config.APICriticalPriorityClass,
@@ -143,7 +146,7 @@ func NewOpenShiftAPIServerParams(hcp *hyperv1.HostedControlPlane, globalConfig g
 		Resources: map[string]corev1.ResourceRequirements{
 			oauthContainerMain().Name: {
 				Requests: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("200Mi"),
+					corev1.ResourceMemory: resource.MustParse("80Mi"),
 					corev1.ResourceCPU:    resource.MustParse("150m"),
 				},
 			},
@@ -153,10 +156,8 @@ func NewOpenShiftAPIServerParams(hcp *hyperv1.HostedControlPlane, globalConfig g
 	params.OpenShiftAPIServerDeploymentConfig.SetDefaultSecurityContext = setDefaultSecurityContext
 	params.OpenShiftOAuthAPIServerDeploymentConfig.SetDefaultSecurityContext = setDefaultSecurityContext
 
-	params.OpenShiftOAuthAPIServerDeploymentConfig.SetColocation(hcp)
 	params.OpenShiftOAuthAPIServerDeploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
-	params.OpenShiftOAuthAPIServerDeploymentConfig.SetReleaseImageAnnotation(hcp.Spec.ReleaseImage)
-	params.OpenShiftOAuthAPIServerDeploymentConfig.SetControlPlaneIsolation(hcp)
+	params.OpenShiftOAuthAPIServerDeploymentConfig.SetDefaults(hcp, openShiftOAuthAPIServerLabels(), nil)
 	switch hcp.Spec.Etcd.ManagementType {
 	case hyperv1.Unmanaged:
 		params.EtcdURL = hcp.Spec.Etcd.Unmanaged.Endpoint
@@ -165,30 +166,21 @@ func NewOpenShiftAPIServerParams(hcp *hyperv1.HostedControlPlane, globalConfig g
 	default:
 		params.EtcdURL = config.DefaultEtcdURL
 	}
-	switch hcp.Spec.ControllerAvailabilityPolicy {
-	case hyperv1.HighlyAvailable:
-		params.OpenShiftAPIServerDeploymentConfig.Replicas = 3
-		params.OpenShiftOAuthAPIServerDeploymentConfig.Replicas = 3
-		params.OpenShiftOAuthAPIServerDeploymentConfig.SetMultizoneSpread(openShiftOAuthAPIServerLabels())
-		params.OpenShiftAPIServerDeploymentConfig.SetMultizoneSpread(openShiftAPIServerLabels())
-	default:
-		params.OpenShiftAPIServerDeploymentConfig.Replicas = 1
-		params.OpenShiftOAuthAPIServerDeploymentConfig.Replicas = 1
-	}
+
 	params.OwnerRef = config.OwnerRefFrom(hcp)
 	return params
 }
 
 func (p *OpenShiftAPIServerParams) MinTLSVersion() string {
 	if p.APIServer != nil {
-		return config.MinTLSVersion(p.APIServer.Spec.TLSSecurityProfile)
+		return config.MinTLSVersion(p.APIServer.TLSSecurityProfile)
 	}
 	return config.MinTLSVersion(nil)
 }
 
 func (p *OpenShiftAPIServerParams) CipherSuites() []string {
 	if p.APIServer != nil {
-		return config.CipherSuites(p.APIServer.Spec.TLSSecurityProfile)
+		return config.CipherSuites(p.APIServer.TLSSecurityProfile)
 	}
 	return config.CipherSuites(nil)
 }

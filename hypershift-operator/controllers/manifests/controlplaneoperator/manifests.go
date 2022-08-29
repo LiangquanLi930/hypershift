@@ -10,6 +10,11 @@ import (
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
+const (
+	ServiceSignerPrivateKey = "service-account.key"
+	ServiceSignerPublicKey  = "service-account.pub"
+)
+
 func OperatorDeployment(controlPlaneOperatorNamespace string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -118,11 +123,29 @@ func SSHKey(controlPlaneNamespace string) *corev1.Secret {
 	}
 }
 
+func UserCABundle(controlPlaneNamespace string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "user-ca-bundle",
+			Namespace: controlPlaneNamespace,
+		},
+	}
+}
+
 func PodMonitor(controlPlaneNamespace string) *prometheusoperatorv1.PodMonitor {
 	return &prometheusoperatorv1.PodMonitor{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: controlPlaneNamespace,
 			Name:      "controlplane-operator",
+		},
+	}
+}
+
+func ServiceAccountSigningKeySecret(ns string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sa-signing-key",
+			Namespace: ns,
 		},
 	}
 }

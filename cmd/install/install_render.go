@@ -16,14 +16,20 @@ var (
 	RenderFormatYaml = "yaml"
 	RenderFormatJson = "json"
 
-	TemplateParamHyperShiftImage      = "OPERATOR_IMG"
-	TemplateParamHyperShiftImageTag   = "IMAGE_TAG"
-	TemplateParamNamespace            = "NAMESPACE"
-	TemplateParamOIDCS3Name           = "OIDC_S3_NAME"
-	TemplateParamOIDCS3Region         = "OIDC_S3_REGION"
-	TemplateParamOIDCS3CredsSecret    = "OIDC_S3_CREDS_SECRET"
-	TemplateParamOIDCS3CredsSecretKey = "OIDC_S3_CREDS_SECRET_KEY"
-	TemplateParamOperatorReplicas     = "OPERATOR_REPLICAS"
+	TemplateParamHyperShiftImage          = "OPERATOR_IMG"
+	TemplateParamHyperShiftImageTag       = "IMAGE_TAG"
+	TemplateParamNamespace                = "NAMESPACE"
+	TemplateParamOIDCS3Name               = "OIDC_S3_NAME"
+	TemplateParamOIDCS3Region             = "OIDC_S3_REGION"
+	TemplateParamOIDCS3CredsSecret        = "OIDC_S3_CREDS_SECRET"
+	TemplateParamOIDCS3CredsSecretKey     = "OIDC_S3_CREDS_SECRET_KEY"
+	TemplateParamAWSPrivateRegion         = "AWS_PRIVATE_REGION"
+	TemplateParamAWSPrivateCredsSecret    = "AWS_PRIVATE_CREDS_SECRET"
+	TemplateParamAWSPrivateCredsSecretKey = "AWS_PRIVATE_CREDS_SECRET_KEY"
+	TemplateParamOperatorReplicas         = "OPERATOR_REPLICAS"
+	TemplateParamExternalDNSCredsSecret   = "EXTERNAL_DNS_CREDS_SECRET"
+	TemplateParamExternalDNSDomainFilter  = "EXTERNAL_DNS_DOMAIN_FILTER"
+	TemplateParamExternalDNSTxtOwnerID    = "EXTERNAL_DNS_TXT_OWNER_ID"
 )
 
 func NewRenderCommand(opts *Options) *cobra.Command {
@@ -112,6 +118,39 @@ func hyperShiftOperatorTemplateManifest(opts *Options) (crclient.Object, error) 
 		opts.OIDCStorageProviderS3Region = fmt.Sprintf("${%s}", TemplateParamOIDCS3Region)
 		opts.OIDCStorageProviderS3CredentialsSecret = fmt.Sprintf("${%s}", TemplateParamOIDCS3CredsSecret)
 		opts.OIDCStorageProviderS3CredentialsSecretKey = fmt.Sprintf("${%s}", TemplateParamOIDCS3CredsSecretKey)
+	}
+
+	// aws private credentials
+	if opts.AWSPrivateCredentialsSecret != "" {
+		templateParameters = append(
+			templateParameters,
+			map[string]string{"name": TemplateParamAWSPrivateRegion, "value": opts.AWSPrivateRegion},
+			map[string]string{"name": TemplateParamAWSPrivateCredsSecret, "value": opts.AWSPrivateCredentialsSecret},
+			map[string]string{"name": TemplateParamAWSPrivateCredsSecretKey, "value": opts.AWSPrivateCredentialsSecretKey},
+		)
+		opts.AWSPrivateRegion = fmt.Sprintf("${%s}", TemplateParamAWSPrivateRegion)
+		opts.AWSPrivateCredentialsSecret = fmt.Sprintf("${%s}", TemplateParamAWSPrivateCredsSecret)
+		opts.AWSPrivateCredentialsSecretKey = fmt.Sprintf("${%s}", TemplateParamAWSPrivateCredsSecretKey)
+	}
+
+	// external DNS
+	if opts.ExternalDNSProvider != "" && opts.ExternalDNSDomainFilter != "" && opts.ExternalDNSCredentialsSecret != "" {
+		templateParameters = append(
+			templateParameters,
+			map[string]string{"name": TemplateParamExternalDNSDomainFilter, "value": opts.ExternalDNSDomainFilter},
+			map[string]string{"name": TemplateParamExternalDNSCredsSecret, "value": opts.ExternalDNSCredentialsSecret},
+		)
+		opts.ExternalDNSDomainFilter = fmt.Sprintf("${%s}", TemplateParamExternalDNSDomainFilter)
+		opts.ExternalDNSCredentialsSecret = fmt.Sprintf("${%s}", TemplateParamExternalDNSCredsSecret)
+
+		if opts.ExternalDNSTxtOwnerId != "" {
+			templateParameters = append(
+				templateParameters,
+				map[string]string{"name": TemplateParamExternalDNSTxtOwnerID, "value": opts.ExternalDNSTxtOwnerId},
+			)
+			opts.ExternalDNSTxtOwnerId = fmt.Sprintf("${%s}", TemplateParamExternalDNSTxtOwnerID)
+		}
+
 	}
 
 	// create manifests

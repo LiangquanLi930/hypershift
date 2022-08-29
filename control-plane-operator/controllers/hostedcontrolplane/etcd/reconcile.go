@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	_ "embed"
 	"fmt"
 	"strconv"
 	"strings"
@@ -8,13 +9,13 @@ import (
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/metrics"
 	"github.com/openshift/hypershift/support/util"
 	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
-	//TODO: Switch to k8s.io/api/policy/v1 when all management clusters at 1.21+ OR 4.8_openshift+
-	policyv1beta1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
@@ -25,6 +26,15 @@ func etcdContainer() *corev1.Container {
 		Name: "etcd",
 	}
 }
+
+func etcdInitContainer() *corev1.Container {
+	return &corev1.Container{
+		Name: "etcd-init",
+	}
+}
+
+//go:embed etcd-init.sh
+var etcdInitScript string
 
 func ReconcileStatefulSet(ss *appsv1.StatefulSet, p *EtcdParams) error {
 	p.OwnerRef.ApplyTo(ss)
@@ -55,6 +65,12 @@ func ReconcileStatefulSet(ss *appsv1.StatefulSet, p *EtcdParams) error {
 
 	ss.Spec.Template.Spec.Containers = []corev1.Container{
 		util.BuildContainer(etcdContainer(), buildEtcdContainer(p, ss.Namespace)),
+	}
+
+	if len(p.StorageSpec.RestoreSnapshotURL) > 0 && !p.SnapshotRestored {
+		ss.Spec.Template.Spec.InitContainers = []corev1.Container{
+			util.BuildContainer(etcdInitContainer(), buildEtcdInitContainer(p)),
+		}
 	}
 
 	ss.Spec.Template.Spec.Volumes = []corev1.Volume{
@@ -89,6 +105,28 @@ func ReconcileStatefulSet(ss *appsv1.StatefulSet, p *EtcdParams) error {
 	return nil
 }
 
+func buildEtcdInitContainer(p *EtcdParams) func(c *corev1.Container) {
+	return func(c *corev1.Container) {
+		c.Env = []corev1.EnvVar{}
+		for i := 0; i < p.DeploymentConfig.Replicas; i++ {
+			c.Env = append(c.Env, corev1.EnvVar{
+				Name:  fmt.Sprintf("RESTORE_URL_ETCD_%d", i),
+				Value: p.StorageSpec.RestoreSnapshotURL[i],
+			})
+		}
+
+		c.Image = p.EtcdImage
+		c.ImagePullPolicy = corev1.PullIfNotPresent
+		c.Command = []string{"/bin/sh", "-ce", etcdInitScript}
+		c.VolumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "data",
+				MountPath: "/var/lib",
+			},
+		}
+	}
+}
+
 func buildEtcdContainer(p *EtcdParams, namespace string) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		script := `
@@ -104,6 +142,7 @@ func buildEtcdContainer(p *EtcdParams, namespace string) func(c *corev1.Containe
 --initial-cluster=${INITIAL_CLUSTER} \
 --initial-cluster-state=new \
 --quota-backend-bytes=${QUOTA_BACKEND_BYTES} \
+--snapshot-count=10000 \
 --peer-client-cert-auth=true \
 --peer-cert-file=/etc/etcd/tls/peer/peer.crt \
 --peer-key-file=/etc/etcd/tls/peer/peer.key \
@@ -122,7 +161,7 @@ func buildEtcdContainer(p *EtcdParams, namespace string) func(c *corev1.Containe
 		initialCluster := strings.Join(members, ",")
 
 		c.Image = p.EtcdImage
-		c.ImagePullPolicy = corev1.PullAlways
+		c.ImagePullPolicy = corev1.PullIfNotPresent
 		c.Command = []string{"/bin/sh", "-c", script}
 		c.VolumeMounts = []corev1.VolumeMount{
 			{
@@ -253,7 +292,7 @@ func ReconcileClientService(service *corev1.Service, ownerRef config.OwnerRef) e
 // ReconcileServiceMonitor
 // TODO: Exposing the client cert to monitoring isn't great, but metrics
 // TLS can't yet be independently configured. See: https://github.com/etcd-io/etcd/pull/10504
-func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string) error {
+func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string, metricsSet metrics.MetricsSet) error {
 	ownerRef.ApplyTo(sm)
 
 	sm.Spec.Selector.MatchLabels = etcdPodSelector()
@@ -292,6 +331,7 @@ func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef c
 					},
 				},
 			},
+			MetricRelabelConfigs: metrics.EtcdRelabelConfigs(metricsSet),
 		},
 	}
 
@@ -300,7 +340,7 @@ func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef c
 	return nil
 }
 
-func ReconcilePodDisruptionBudget(pdb *policyv1beta1.PodDisruptionBudget, p *EtcdParams) error {
+func ReconcilePodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, p *EtcdParams) error {
 	if pdb.CreationTimestamp.IsZero() {
 		pdb.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: etcdPodSelector(),

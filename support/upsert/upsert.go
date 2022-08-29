@@ -8,8 +8,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 
 	configv1 "github.com/openshift/api/config/v1"
-	//TODO: Switch to k8s.io/api/batch/v1 when all management clusters at 1.21+ OR 4.8_openshift+
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	capiawsv1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
 	capiazure "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
+	capiibmv1 "sigs.k8s.io/cluster-api-provider-ibmcloud/api/v1beta1"
 	capikubevirt "sigs.k8s.io/cluster-api-provider-kubevirt/api/v1alpha1"
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,6 +37,7 @@ var withStatusSubresource = sets.NewString(
 	fmt.Sprintf("%T", &capikubevirt.KubevirtCluster{}),
 	fmt.Sprintf("%T", &capiv1.Cluster{}),
 	fmt.Sprintf("%T", &capiazure.AzureCluster{}),
+	fmt.Sprintf("%T", &capiibmv1.IBMPowerVSCluster{}),
 )
 
 func hasStatusSubResource(o crclient.Object) bool {
@@ -94,14 +96,16 @@ func (p *createOrUpdateProvider) CreateOrUpdate(ctx context.Context, c crclient.
 		defaultDaemonSetSpec(&existingTyped.Spec, &obj.(*appsv1.DaemonSet).Spec)
 	case *appsv1.StatefulSet:
 		defaultStatefulSetSpec(&existingTyped.Spec, &obj.(*appsv1.StatefulSet).Spec)
-	case *batchv1beta1.CronJob:
-		defaultCronJobSpec(&existingTyped.Spec, &obj.(*batchv1beta1.CronJob).Spec)
+	case *batchv1.CronJob:
+		defaultCronJobSpec(&existingTyped.Spec, &obj.(*batchv1.CronJob).Spec)
 	case *corev1.Service:
 		defaultServiceSpec(&existingTyped.Spec, &obj.(*corev1.Service).Spec)
 	case *routev1.Route:
 		defaultRouteSpec(&existingTyped.Spec, &obj.(*routev1.Route).Spec)
 	case *apiextensionsv1.CustomResourceDefinition:
 		defaultCRDSpec(&existingTyped.Spec, &obj.(*apiextensionsv1.CustomResourceDefinition).Spec)
+	case *admissionregistrationv1.MutatingWebhookConfiguration:
+		defaultMutatingWebhookConfiguration(&existingTyped.Webhooks, &obj.(*admissionregistrationv1.MutatingWebhookConfiguration).Webhooks)
 	}
 
 	if equality.Semantic.DeepEqual(existing, obj) {
@@ -187,7 +191,7 @@ func defaultServiceSpec(original, mutated *corev1.ServiceSpec) {
 	}
 }
 
-func defaultCronJobSpec(original, mutated *batchv1beta1.CronJobSpec) {
+func defaultCronJobSpec(original, mutated *batchv1.CronJobSpec) {
 	if mutated.ConcurrencyPolicy == "" {
 		mutated.ConcurrencyPolicy = original.ConcurrencyPolicy
 	}
@@ -427,4 +431,40 @@ func defaultCRDSpec(original, mutated *apiextensionsv1.CustomResourceDefinitionS
 			Strategy: apiextensionsv1.NoneConverter,
 		}
 	}
+}
+
+func defaultMutatingWebhookConfiguration(original, mutated *[]admissionregistrationv1.MutatingWebhook) {
+	if len(*original) != len(*mutated) {
+		return
+	}
+
+	for idx, webhook := range *mutated {
+		if len(webhook.Rules) == len((*original)[idx].Rules) {
+			for jdx, webhookRule := range webhook.Rules {
+				if webhookRule.Scope == nil {
+					(*mutated)[idx].Rules[jdx].Scope = (*original)[idx].Rules[jdx].Scope
+				}
+			}
+
+			if webhook.FailurePolicy == nil {
+				(*mutated)[idx].FailurePolicy = (*original)[idx].FailurePolicy
+			}
+			if webhook.MatchPolicy == nil {
+				(*mutated)[idx].MatchPolicy = (*original)[idx].MatchPolicy
+			}
+			if webhook.NamespaceSelector == nil {
+				(*mutated)[idx].NamespaceSelector = (*original)[idx].NamespaceSelector
+			}
+			if webhook.ObjectSelector == nil {
+				(*mutated)[idx].ObjectSelector = (*original)[idx].ObjectSelector
+			}
+			if webhook.TimeoutSeconds == nil {
+				(*mutated)[idx].TimeoutSeconds = (*original)[idx].TimeoutSeconds
+			}
+			if webhook.ReinvocationPolicy == nil {
+				(*mutated)[idx].ReinvocationPolicy = (*original)[idx].ReinvocationPolicy
+			}
+		}
+	}
+
 }

@@ -4,7 +4,7 @@ DIR := ${CURDIR}
 IMG ?= hypershift:latest
 
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
-CRD_OPTIONS ?= "crd:trivialVersions=true"
+CRD_OPTIONS ?= "crd"
 
 # Runtime CLI to use for building and pushing images
 RUNTIME ?= docker
@@ -22,6 +22,8 @@ GO_GCFLAGS ?= -gcflags=all='-N -l'
 GO=GO111MODULE=on GOFLAGS=-mod=vendor go
 GO_BUILD_RECIPE=CGO_ENABLED=0 $(GO) build $(GO_GCFLAGS)
 GO_E2E_RECIPE=CGO_ENABLED=0 $(GO) test $(GO_GCFLAGS) -tags e2e -c
+
+CI_TESTS_RUN ?= ""
 
 OUT_DIR ?= bin
 
@@ -128,15 +130,24 @@ app-sre-saas-template: hypershift
 		--oidc-storage-provider-s3-secret=oidc-s3-creds \
 		--oidc-storage-provider-s3-region=us-east-1 \
 		--oidc-storage-provider-s3-secret-key=credentials \
-		--enable-ocp-cluster-monitoring=false \
+		--platform-monitoring=None \
 		--enable-ci-debug-output=false \
 		--enable-admin-rbac-generation=true \
+		--private-platform=AWS \
+		--aws-private-region=eu-east-1 \
+		--aws-private-secret=aws-credentials \
+		--aws-private-secret-key=credentials \
+		--external-dns-provider=aws \
+		--external-dns-secret=dns-credentials \
+		--external-dns-domain-filter=service.hypershift.example.org \
+		--external-dns-txt-owner-id=txt-owner-id \
+		--metrics-set=SRE \
 		render --template --format yaml > $(DIR)/hack/app-sre/saas_template.yaml
 
 # Run tests
 .PHONY: test
-test: build
-	$(GO) test -race -count=25 ./... -coverprofile cover.out
+test:
+	$(GO) test -race -count=25 -timeout=20m ./... -coverprofile cover.out
 
 .PHONY: e2e
 e2e:
@@ -209,6 +220,14 @@ ci-install-hypershift-private:
 		--oidc-storage-provider-s3-credentials=/etc/hypershift-pool-aws-credentials/credentials \
 		--oidc-storage-provider-s3-bucket-name=hypershift-ci-oidc \
 		--oidc-storage-provider-s3-region=us-east-1 \
+		--enable-webhook \
 		--private-platform=AWS \
 		--aws-private-creds=/etc/hypershift-pool-aws-credentials/credentials \
-		--aws-private-region=us-east-1
+		--aws-private-region=us-east-1 \
+		--external-dns-provider=aws \
+		--external-dns-credentials=/etc/hypershift-pool-aws-credentials/credentials \
+		--external-dns-domain-filter=service.ci.hypershift.devcluster.openshift.com
+
+.PHONY: ci-test-e2e
+ci-test-e2e:
+	hack/ci-test-e2e.sh ${CI_TESTS_RUN}

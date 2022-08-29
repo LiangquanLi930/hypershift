@@ -21,7 +21,7 @@ import (
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/ingress"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
-	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
+	"github.com/openshift/hypershift/support/certs"
 	"github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/events"
 	"github.com/openshift/hypershift/support/util"
@@ -95,7 +95,7 @@ func buildKonnectivityServerContainer(image string) func(c *corev1.Container) {
 	}
 	return func(c *corev1.Container) {
 		c.Image = image
-		c.ImagePullPolicy = corev1.PullAlways
+		c.ImagePullPolicy = corev1.PullIfNotPresent
 		c.Command = []string{
 			"/usr/bin/proxy-server",
 		}
@@ -111,7 +111,7 @@ func buildKonnectivityServerContainer(image string) func(c *corev1.Container) {
 			"--server-key",
 			cpath(konnectivityVolumeServerCerts().Name, corev1.TLSPrivateKeyKey),
 			"--server-ca-cert",
-			cpath(konnectivityVolumeServerCerts().Name, pki.CASignerCertMapKey),
+			cpath(konnectivityVolumeServerCerts().Name, certs.CASignerCertMapKey),
 			"--server-port",
 			strconv.Itoa(KonnectivityServerLocalPort),
 			"--agent-port",
@@ -211,28 +211,44 @@ func ReconcileServerService(svc *corev1.Service, ownerRef config.OwnerRef, strat
 	return nil
 }
 
-func ReconcileRoute(route *routev1.Route, ownerRef config.OwnerRef, private bool, strategy *hyperv1.ServicePublishingStrategy) error {
+func ReconcileRoute(route *routev1.Route, ownerRef config.OwnerRef, private bool, strategy *hyperv1.ServicePublishingStrategy, defaultIngressDomain string) error {
 	ownerRef.ApplyTo(route)
-	if !private && strategy.Route != nil && strategy.Route.Hostname != "" {
+
+	// The route host is considered immutable, so set it only once upon creation
+	// and ignore updates.
+	if route.CreationTimestamp.IsZero() {
+		switch {
+		case !private && strategy.Route != nil && strategy.Route.Hostname != "":
+			route.Spec.Host = strategy.Route.Hostname
+			ingress.AddRouteLabel(route)
+		case private:
+			ingress.AddRouteLabel(route)
+			route.Spec.Host = fmt.Sprintf("%s.apps.%s.hypershift.local", route.Name, ownerRef.Reference.Name)
+		default:
+			route.Spec.Host = util.ShortenRouteHostnameIfNeeded(route.Name, route.Namespace, defaultIngressDomain)
+		}
+	}
+
+	switch {
+	case !private && strategy.Route != nil && strategy.Route.Hostname != "":
 		if route.Annotations == nil {
 			route.Annotations = map[string]string{}
 		}
 		route.Annotations[hyperv1.ExternalDNSHostnameAnnotation] = strategy.Route.Hostname
-		route.Spec.Host = strategy.Route.Hostname
-	}
-	if private {
+	case private:
 		if route.Labels == nil {
 			route.Labels = map[string]string{}
 		}
 		route.Labels[ingress.HypershiftRouteLabel] = route.GetNamespace()
-		route.Spec.Host = fmt.Sprintf("%s.apps.%s.hypershift.local", route.Name, ownerRef.Reference.Name)
 	}
+
 	route.Spec.To = routev1.RouteTargetReference{
 		Kind: "Service",
 		Name: manifests.KonnectivityServerRoute(route.Namespace).Name,
 	}
 	route.Spec.TLS = &routev1.TLSConfig{
-		Termination: routev1.TLSTerminationPassthrough,
+		Termination:                   routev1.TLSTerminationPassthrough,
+		InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyNone,
 	}
 	route.Spec.Port = &routev1.RoutePort{
 		TargetPort: intstr.FromInt(KonnectivityServerPort),
@@ -244,11 +260,6 @@ func ReconcileServerServiceStatus(svc *corev1.Service, route *routev1.Route, str
 
 	switch strategy.Type {
 	case hyperv1.LoadBalancer:
-		if strategy.LoadBalancer != nil && strategy.LoadBalancer.Hostname != "" {
-			host = strategy.LoadBalancer.Hostname
-			port = int32(KonnectivityServerPort)
-			return
-		}
 		if len(svc.Status.LoadBalancer.Ingress) == 0 {
 			message = fmt.Sprintf("Konnectivity load balancer is not provisioned; %v since creation", duration.ShortHumanDuration(time.Since(svc.ObjectMeta.CreationTimestamp.Time)))
 			var messages []string
@@ -262,13 +273,14 @@ func ReconcileServerServiceStatus(svc *corev1.Service, route *routev1.Route, str
 			}
 			return
 		}
+		port = int32(KonnectivityServerPort)
 		switch {
+		case strategy.LoadBalancer != nil && strategy.LoadBalancer.Hostname != "":
+			host = strategy.LoadBalancer.Hostname
 		case svc.Status.LoadBalancer.Ingress[0].Hostname != "":
 			host = svc.Status.LoadBalancer.Ingress[0].Hostname
-			port = int32(KonnectivityServerPort)
 		case svc.Status.LoadBalancer.Ingress[0].IP != "":
 			host = svc.Status.LoadBalancer.Ingress[0].IP
-			port = int32(KonnectivityServerPort)
 		}
 	case hyperv1.NodePort:
 		if strategy.NodePort == nil {
@@ -355,14 +367,14 @@ func buildKonnectivityAgentContainer(image string, ips []string) func(c *corev1.
 	}
 	return func(c *corev1.Container) {
 		c.Image = image
-		c.ImagePullPolicy = corev1.PullAlways
+		c.ImagePullPolicy = corev1.PullIfNotPresent
 		c.Command = []string{
 			"/usr/bin/proxy-agent",
 		}
 		c.Args = []string{
 			"--logtostderr=true",
 			"--ca-cert",
-			cpath(konnectivityVolumeAgentCerts().Name, pki.CASignerCertMapKey),
+			cpath(konnectivityVolumeAgentCerts().Name, certs.CASignerCertMapKey),
 			"--agent-cert",
 			cpath(konnectivityVolumeAgentCerts().Name, corev1.TLSCertKey),
 			"--agent-key",

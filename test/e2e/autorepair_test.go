@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	. "github.com/onsi/gomega"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	awsutil "github.com/openshift/hypershift/cmd/infra/aws/util"
 	e2eutil "github.com/openshift/hypershift/test/e2e/util"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -28,7 +27,7 @@ func TestAutoRepair(t *testing.T) {
 	ctx, cancel := context.WithCancel(testContext)
 	defer cancel()
 
-	clusterOpts := globalOpts.DefaultClusterOptions()
+	clusterOpts := globalOpts.DefaultClusterOptions(t)
 	numZones := int32(len(clusterOpts.AWSPlatform.Zones))
 	if numZones <= 1 {
 		clusterOpts.NodePoolReplicas = 3
@@ -39,17 +38,17 @@ func TestAutoRepair(t *testing.T) {
 	}
 	clusterOpts.AutoRepair = true
 
-	hostedCluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, hyperv1.AWSPlatform, globalOpts.ArtifactDir)
+	hostedCluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, globalOpts.Platform, globalOpts.ArtifactDir)
 
 	// Perform some very basic assertions about the guest cluster
-	guestClient := e2eutil.WaitForGuestClient(t, testContext, client, hostedCluster)
+	guestClient := e2eutil.WaitForGuestClient(t, ctx, client, hostedCluster)
 	// TODO (alberto): have ability to label and get Nodes by NodePool. NodePool.Status.Nodes?
 	numNodes := clusterOpts.NodePoolReplicas * numZones
-	nodes := e2eutil.WaitForNReadyNodes(t, testContext, guestClient, numNodes)
+	nodes := e2eutil.WaitForNReadyNodes(t, ctx, guestClient, numNodes, hostedCluster.Spec.Platform.Type)
 
 	// Wait for the rollout to be reported complete
 	t.Logf("Waiting for cluster rollout. Image: %s", globalOpts.LatestReleaseImage)
-	e2eutil.WaitForImageRollout(t, testContext, client, hostedCluster, globalOpts.LatestReleaseImage)
+	e2eutil.WaitForImageRollout(t, ctx, client, guestClient, hostedCluster, globalOpts.LatestReleaseImage)
 
 	// Terminate one of the machines belonging to the cluster
 	nodeToReplace := nodes[0].Name
@@ -66,17 +65,15 @@ func TestAutoRepair(t *testing.T) {
 	// Wait for nodes to be ready again, without the node that was terminated
 	t.Logf("Waiting for %d available nodes without %s", numNodes, nodeToReplace)
 	err = wait.PollUntil(30*time.Second, func() (done bool, err error) {
-		nodes := e2eutil.WaitForNReadyNodes(t, testContext, guestClient, numNodes)
+		nodes := e2eutil.WaitForNReadyNodes(t, ctx, guestClient, numNodes, hostedCluster.Spec.Platform.Type)
 		for _, node := range nodes {
 			if node.Name == nodeToReplace {
 				return false, nil
 			}
 		}
 		return true, nil
-	}, testContext.Done())
+	}, ctx.Done())
 	g.Expect(err).NotTo(HaveOccurred(), "failed to wait for new node to become available")
-
-	e2eutil.EnsureNoCrashingPods(t, ctx, client, hostedCluster)
 }
 
 func ec2Client(awsCredsFile, region string) *ec2.EC2 {

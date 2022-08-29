@@ -7,12 +7,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	. "github.com/onsi/gomega"
+	"github.com/openshift/api/image/docker10"
+	imagev1 "github.com/openshift/api/image/v1"
 	api "github.com/openshift/hypershift/api"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
+	"github.com/openshift/hypershift/support/releaseinfo"
+	"github.com/openshift/hypershift/support/thirdparty/library-go/pkg/image/dockerv1client"
 	"github.com/openshift/hypershift/support/upsert"
+	"github.com/openshift/hypershift/support/util/fakeimagemetadataprovider"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8sutilspointer "k8s.io/utils/pointer"
@@ -20,6 +27,7 @@ import (
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 func TestIsUpdatingConfig(t *testing.T) {
@@ -157,7 +165,7 @@ func TestValidateAutoscaling(t *testing.T) {
 			name: "fails when both nodeCount and autoscaling are set",
 			nodePool: &hyperv1.NodePool{
 				Spec: hyperv1.NodePoolSpec{
-					NodeCount: k8sutilspointer.Int32Ptr(1),
+					Replicas: k8sutilspointer.Int32Ptr(1),
 					AutoScaling: &hyperv1.NodePoolAutoScaling{
 						Min: 1,
 						Max: 2,
@@ -249,6 +257,36 @@ spec:
         mode: 493
         path: /usr/local/bin/core.sh
 `
+	coreMachineConfig1Defaulted := `apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  creationTimestamp: null
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: config-1
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents: null
+        filesystem: root
+        mode: 493
+        path: /usr/local/bin/core.sh
+        source: |-
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/echo Hello Core
+
+          [Install]
+          WantedBy=multi-user.target
+  extensions: null
+  fips: false
+  kernelArguments: null
+  kernelType: ""
+  osImageURL: ""
+`
 
 	machineConfig1 := `
 apiVersion: machineconfiguration.openshift.io/v1
@@ -269,6 +307,36 @@ spec:
         mode: 493
         path: /usr/local/bin/file1.sh
 `
+	machineConfig1Defaulted := `apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  creationTimestamp: null
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: config-1
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents: null
+        filesystem: root
+        mode: 493
+        path: /usr/local/bin/file1.sh
+        source: |-
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/echo Hello World
+
+          [Install]
+          WantedBy=multi-user.target
+  extensions: null
+  fips: false
+  kernelArguments: null
+  kernelType: ""
+  osImageURL: ""
+`
 	machineConfig2 := `
 apiVersion: machineconfiguration.openshift.io/v1
 kind: MachineConfig
@@ -288,6 +356,36 @@ spec:
         mode: 493
         path: /usr/local/bin/file2.sh
 `
+	machineConfig2Defaulted := `apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  creationTimestamp: null
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: config-2
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents: null
+        filesystem: root
+        mode: 493
+        path: /usr/local/bin/file2.sh
+        source: |-
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/echo Hello World 2
+
+          [Install]
+          WantedBy=multi-user.target
+  extensions: null
+  fips: false
+  kernelArguments: null
+  kernelType: ""
+  osImageURL: ""
+`
 	kubeletConfig1 := `
 apiVersion: machineconfiguration.openshift.io/v1
 kind: KubeletConfig
@@ -300,6 +398,63 @@ spec:
   kubeletConfig:
     maxPods: 100
 `
+	haproxyIgnititionConfig := `apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  creationTimestamp: null
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 20-apiserver-haproxy
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLXgKaXAgYWRkciBhZGQgMTcyLjIwLjAuMS8zMiBicmQgMTcyLjIwLjAuMSBzY29wZSBob3N0IGRldiBsbwppcCByb3V0ZSBhZGQgMTcyLjIwLjAuMS8zMiBkZXYgbG8gc2NvcGUgbGluayBzcmMgMTcyLjIwLjAuMQo=
+        mode: 493
+        overwrite: true
+        path: /usr/local/bin/setup-apiserver-ip.sh
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLXgKaXAgYWRkciBkZWxldGUgMTcyLjIwLjAuMS8zMiBkZXYgbG8KaXAgcm91dGUgZGVsIDE3Mi4yMC4wLjEvMzIgZGV2IGxvIHNjb3BlIGxpbmsgc3JjIDE3Mi4yMC4wLjEK
+        mode: 493
+        overwrite: true
+        path: /usr/local/bin/teardown-apiserver-ip.sh
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,Z2xvYmFsCiAgbWF4Y29ubiA3MDAwCiAgbG9nIHN0ZG91dCBsb2NhbDAKICBsb2cgc3Rkb3V0IGxvY2FsMSBub3RpY2UKCmRlZmF1bHRzCiAgbW9kZSB0Y3AKICB0aW1lb3V0IGNsaWVudCAxMG0KICB0aW1lb3V0IHNlcnZlciAxMG0KICB0aW1lb3V0IGNvbm5lY3QgMTBzCiAgdGltZW91dCBjbGllbnQtZmluIDVzCiAgdGltZW91dCBzZXJ2ZXItZmluIDVzCiAgdGltZW91dCBxdWV1ZSA1cwogIHJldHJpZXMgMwoKZnJvbnRlbmQgbG9jYWxfYXBpc2VydmVyCiAgYmluZCAxNzIuMjAuMC4xOjY0NDMKICBsb2cgZ2xvYmFsCiAgbW9kZSB0Y3AKICBvcHRpb24gdGNwbG9nCiAgZGVmYXVsdF9iYWNrZW5kIHJlbW90ZV9hcGlzZXJ2ZXIKCmJhY2tlbmQgcmVtb3RlX2FwaXNlcnZlcgogIG1vZGUgdGNwCiAgbG9nIGdsb2JhbAogIG9wdGlvbiBodHRwY2hrIEdFVCAvdmVyc2lvbgogIG9wdGlvbiBsb2ctaGVhbHRoLWNoZWNrcwogIGRlZmF1bHQtc2VydmVyIGludGVyIDEwcyBmYWxsIDMgcmlzZSAzCiAgc2VydmVyIGNvbnRyb2xwbGFuZSBsb2NhbGhvc3Q6NjQ0Mwo=
+        mode: 420
+        overwrite: true
+        path: /etc/kubernetes/apiserver-proxy-config/haproxy.cfg
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,YXBpVmVyc2lvbjogdjEKa2luZDogUG9kCm1ldGFkYXRhOgogIGNyZWF0aW9uVGltZXN0YW1wOiBudWxsCiAgbGFiZWxzOgogICAgaHlwZXJzaGlmdC5vcGVuc2hpZnQuaW8vY29udHJvbC1wbGFuZS1jb21wb25lbnQ6IGt1YmUtYXBpc2VydmVyLXByb3h5CiAgICBrOHMtYXBwOiBrdWJlLWFwaXNlcnZlci1wcm94eQogIG5hbWU6IGt1YmUtYXBpc2VydmVyLXByb3h5CiAgbmFtZXNwYWNlOiBrdWJlLXN5c3RlbQpzcGVjOgogIGNvbnRhaW5lcnM6CiAgLSBjb21tYW5kOgogICAgLSBoYXByb3h5CiAgICAtIC1mCiAgICAtIC91c3IvbG9jYWwvZXRjL2hhcHJveHkKICAgIGxpdmVuZXNzUHJvYmU6CiAgICAgIGZhaWx1cmVUaHJlc2hvbGQ6IDMKICAgICAgaHR0cEdldDoKICAgICAgICBob3N0OiAxNzIuMjAuMC4xCiAgICAgICAgcGF0aDogL3ZlcnNpb24KICAgICAgICBwb3J0OiA2NDQzCiAgICAgICAgc2NoZW1lOiBIVFRQUwogICAgICBpbml0aWFsRGVsYXlTZWNvbmRzOiAxMjAKICAgICAgcGVyaW9kU2Vjb25kczogMTIwCiAgICAgIHN1Y2Nlc3NUaHJlc2hvbGQ6IDEKICAgIG5hbWU6IGhhcHJveHkKICAgIHBvcnRzOgogICAgLSBjb250YWluZXJQb3J0OiA2NDQzCiAgICAgIGhvc3RQb3J0OiA2NDQzCiAgICAgIG5hbWU6IGFwaXNlcnZlcgogICAgICBwcm90b2NvbDogVENQCiAgICByZXNvdXJjZXM6CiAgICAgIHJlcXVlc3RzOgogICAgICAgIGNwdTogMTNtCiAgICAgICAgbWVtb3J5OiAxNk1pCiAgICBzZWN1cml0eUNvbnRleHQ6CiAgICAgIHJ1bkFzVXNlcjogMTAwMQogICAgdm9sdW1lTW91bnRzOgogICAgLSBtb3VudFBhdGg6IC91c3IvbG9jYWwvZXRjL2hhcHJveHkKICAgICAgbmFtZTogY29uZmlnCiAgaG9zdE5ldHdvcms6IHRydWUKICBwcmlvcml0eUNsYXNzTmFtZTogc3lzdGVtLW5vZGUtY3JpdGljYWwKICB2b2x1bWVzOgogIC0gaG9zdFBhdGg6CiAgICAgIHBhdGg6IC9ldGMva3ViZXJuZXRlcy9hcGlzZXJ2ZXItcHJveHktY29uZmlnCiAgICBuYW1lOiBjb25maWcKc3RhdHVzOiB7fQo=
+        mode: 420
+        overwrite: true
+        path: /etc/kubernetes/manifests/kube-apiserver-proxy.yaml
+    systemd:
+      units:
+      - contents: |
+          [Unit]
+          Description=Sets up local IP to proxy API server requests
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/setup-apiserver-ip.sh
+          ExecStop=/usr/local/bin/teardown-apiserver-ip.sh
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+        enabled: true
+        name: apiserver-ip.service
+  extensions: null
+  fips: false
+  kernelArguments: null
+  kernelType: ""
+  osImageURL: ""
+`
 
 	namespace := "test"
 	testCases := []struct {
@@ -307,6 +462,7 @@ spec:
 		nodePool                    *hyperv1.NodePool
 		config                      []client.Object
 		expectedCoreConfigResources int
+		cpoImageMetadata            *dockerv1client.DockerImageConfig
 		expect                      string
 		missingConfigs              bool
 		error                       bool
@@ -338,7 +494,7 @@ spec:
 					BinaryData: nil,
 				},
 			},
-			expect: machineConfig1,
+			expect: machineConfig1Defaulted,
 			error:  false,
 		},
 		{
@@ -379,7 +535,7 @@ spec:
 					},
 				},
 			},
-			expect: machineConfig1 + "\n---\n" + machineConfig2,
+			expect: machineConfig1Defaulted + "\n---\n" + machineConfig2Defaulted,
 			error:  false,
 		},
 		{
@@ -469,7 +625,7 @@ spec:
 				},
 			},
 			expectedCoreConfigResources: 1,
-			expect:                      coreMachineConfig1 + "\n---\n" + machineConfig1,
+			expect:                      coreMachineConfig1Defaulted + "\n---\n" + machineConfig1Defaulted,
 			error:                       false,
 		},
 		{
@@ -524,7 +680,7 @@ spec:
 				},
 			},
 			expectedCoreConfigResources: 1,
-			expect:                      coreMachineConfig1 + "\n---\n" + machineConfig1,
+			expect:                      coreMachineConfig1Defaulted + "\n---\n" + machineConfig1Defaulted,
 			error:                       false,
 		},
 		{
@@ -538,23 +694,114 @@ spec:
 			missingConfigs:              true,
 			error:                       false,
 		},
+		{
+			name: "Nodepool controller generates HAProxy config",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+				},
+			},
+			config: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "machineconfig-1",
+						Namespace: namespace,
+						Labels: map[string]string{
+							nodePoolCoreIgnitionConfigLabel: "true",
+						},
+					},
+					Data: map[string]string{
+						TokenSecretConfigKey: machineConfig1,
+					},
+				},
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "ignition-config-apiserver-haproxy",
+						Namespace: namespace,
+						Labels: map[string]string{
+							nodePoolCoreIgnitionConfigLabel: "true",
+						},
+					},
+					Data: map[string]string{
+						TokenSecretConfigKey: machineConfig2Defaulted,
+					},
+				},
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "core-machineconfig",
+						Namespace: namespace,
+						Labels: map[string]string{
+							nodePoolCoreIgnitionConfigLabel: "true",
+						},
+					},
+					Data: map[string]string{
+						TokenSecretConfigKey: coreMachineConfig1,
+					},
+				},
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "kubeconfig"},
+					Data: map[string][]byte{"kubeconfig": []byte(`apiVersion: v1
+clusters:
+- cluster:
+    server: http://localhost:6443
+  name: static-kas
+contexts:
+- context:
+    cluster: static-kas
+    user: ""
+    namespace: default
+  name: static-kas
+current-context: static-kas
+kind: Config`)},
+				},
+			},
+			cpoImageMetadata: &dockerv1client.DockerImageConfig{Config: &docker10.DockerConfig{
+				Labels: map[string]string{"io.openshift.hypershift.control-plane-operator-skips-haproxy": "true"},
+			}},
+			expectedCoreConfigResources: 3,
+			expect:                      haproxyIgnititionConfig + "\n---\n" + coreMachineConfig1Defaulted + "\n---\n" + machineConfig1Defaulted,
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			r := NodePoolReconciler{
-				Client: fake.NewClientBuilder().WithObjects(tc.config...).Build(),
+			tc.config = append(tc.config, &corev1.Secret{
+				Data: map[string][]byte{".dockerconfigjson": nil},
+			})
+			if tc.cpoImageMetadata == nil {
+				tc.cpoImageMetadata = &dockerv1client.DockerImageConfig{}
 			}
-			got, missingConfigs, err := r.getConfig(context.Background(), tc.nodePool, tc.expectedCoreConfigResources, namespace)
+
+			r := NodePoolReconciler{
+				Client:                fake.NewClientBuilder().WithObjects(tc.config...).Build(),
+				ImageMetadataProvider: &fakeimagemetadataprovider.FakeImageMetadataProvider{Result: tc.cpoImageMetadata},
+			}
+			hc := &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"hypershift.openshift.io/control-plane-operator-image": "cpo-image"}},
+				Status:     hyperv1.HostedClusterStatus{KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"}},
+			}
+			releaseImage := &releaseinfo.ReleaseImage{ImageStream: &imagev1.ImageStream{Spec: imagev1.ImageStreamSpec{Tags: []imagev1.TagReference{{
+				Name: "haproxy-router",
+				From: &corev1.ObjectReference{},
+			}}}}}
+			got, missingConfigs, err := r.getConfig(context.Background(),
+				tc.nodePool,
+				tc.expectedCoreConfigResources,
+				namespace,
+				releaseImage,
+				hc,
+			)
 			if tc.error {
 				g.Expect(err).To(HaveOccurred())
 				return
 			}
 			g.Expect(missingConfigs).To(Equal(tc.missingConfigs))
 			g.Expect(err).ToNot(HaveOccurred())
-			g.Expect(got).To(Equal(tc.expect))
+			if diff := cmp.Diff(got, tc.expect); diff != "" {
+				t.Errorf("actual config differs from expected: %s", diff)
+			}
 		})
 	}
 }
@@ -572,7 +819,7 @@ func TestSetMachineDeploymentReplicas(t *testing.T) {
 			nodePool: &hyperv1.NodePool{
 				ObjectMeta: metav1.ObjectMeta{},
 				Spec: hyperv1.NodePoolSpec{
-					NodeCount: k8sutilspointer.Int32Ptr(5),
+					Replicas: k8sutilspointer.Int32Ptr(5),
 				},
 			},
 			machineDeployment: &capiv1.MachineDeployment{
@@ -907,6 +1154,9 @@ func RunTestMachineTemplateBuilders(t *testing.T, preCreateMachineTemplate bool)
 						InsecureSkipSecretsManager: true,
 						SecureSecretsBackend:       "secrets-manager",
 					},
+					AdditionalTags: capiaws.Tags{
+						awsClusterCloudProviderTagKey(infraID): infraLifecycleOwned,
+					},
 					RootVolume: &capiaws.Volume{
 						Size: 16,
 						Type: "io1",
@@ -919,7 +1169,7 @@ func RunTestMachineTemplateBuilders(t *testing.T, preCreateMachineTemplate bool)
 	expectedMachineTemplateSpecJSON, err := json.Marshal(expectedMachineTemplate.Spec)
 	g.Expect(err).ToNot(HaveOccurred())
 
-	template, mutateTemplate, machineTemplateSpecJSON, err := machineTemplateBuilders(hcluster, nodePool, infraID, ami)
+	template, mutateTemplate, machineTemplateSpecJSON, err := machineTemplateBuilders(hcluster, nodePool, infraID, ami, "", "")
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(machineTemplateSpecJSON).To(BeIdenticalTo(string(expectedMachineTemplateSpecJSON)))
 
@@ -1090,5 +1340,32 @@ func TestSetExpirationTimestampOnToken(t *testing.T) {
 			// test to run.
 			g.Expect(time.Now().Add(119 * time.Minute).Before(expirationTimestamp)).To(BeTrue())
 		})
+	}
+}
+
+func TestNodepoolDeletionDoesntRequireHCluster(t *testing.T) {
+	nodePool := &hyperv1.NodePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "some-nodepool",
+			Namespace:  "clusters",
+			Finalizers: []string{finalizer},
+		},
+	}
+
+	ctx := context.Background()
+	c := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(nodePool).Build()
+	if err := c.Delete(ctx, nodePool); err != nil {
+		t.Fatalf("failed to delete nodepool: %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(nodePool), nodePool); err != nil {
+		t.Errorf("expected to be able to get nodepool after deletion because of finalizer, but got err: %v", err)
+	}
+
+	if _, err := (&NodePoolReconciler{Client: c}).Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(nodePool)}); err != nil {
+		t.Fatalf("reconciliation failed: %v", err)
+	}
+
+	if err := c.Get(ctx, client.ObjectKeyFromObject(nodePool), nodePool); !apierrors.IsNotFound(err) {
+		t.Errorf("expected to get NotFound after deleted nodePool was reconciled, got %v", err)
 	}
 }

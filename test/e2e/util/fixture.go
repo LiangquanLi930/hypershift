@@ -9,11 +9,14 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	operatorv1 "github.com/openshift/api/operator/v1"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/cmd/cluster/aws"
+	"github.com/openshift/hypershift/cmd/cluster/azure"
 	"github.com/openshift/hypershift/cmd/cluster/core"
 	"github.com/openshift/hypershift/cmd/cluster/kubevirt"
 	"github.com/openshift/hypershift/cmd/cluster/none"
+	"github.com/openshift/hypershift/cmd/cluster/powervs"
 	"github.com/openshift/hypershift/test/e2e/util/dump"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -65,7 +68,8 @@ func CreateCluster(t *testing.T, ctx context.Context, client crclient.Client, op
 	}
 
 	// Build options specific to the platform.
-	opts = createClusterOpts(hc, opts)
+	opts, err = createClusterOpts(ctx, client, hc, opts)
+	g.Expect(err).NotTo(HaveOccurred(), "failed to generate platform specific cluster options")
 
 	// Try and create the cluster. If it fails, immediately try and clean up.
 	t.Logf("Creating a new cluster. Options: %v", opts)
@@ -86,7 +90,14 @@ func CreateCluster(t *testing.T, ctx context.Context, client crclient.Client, op
 	// Everything went well, so register the async cleanup handler and allow tests
 	// to proceed.
 	t.Logf("Successfully created hostedcluster %s/%s in %s", hc.Namespace, hc.Name, time.Since(start).Round(time.Second))
+
 	t.Cleanup(func() { teardown(context.Background(), t, client, hc, opts, artifactDir) })
+
+	t.Cleanup(func() { EnsureAllContainersHavePullPolicyIfNotPresent(t, context.Background(), client, hc) })
+	t.Cleanup(func() { EnsureHCPContainersHaveResourceRequests(t, context.Background(), client, hc) })
+	t.Cleanup(func() { EnsureNoPodsWithTooHighPriority(t, context.Background(), client, hc) })
+	t.Cleanup(func() { NoticePreemptionOrFailedScheduling(t, context.Background(), client, hc) })
+	t.Cleanup(func() { EnsureAllRoutesUseHCPRouter(t, context.Background(), client, hc) })
 
 	return hc
 }
@@ -115,8 +126,14 @@ func teardown(ctx context.Context, t *testing.T, client crclient.Client, hc *hyp
 	t.Run(fmt.Sprintf("DestroyCluster_%d", destroyAttempt), func(t *testing.T) {
 		t.Logf("Waiting for cluster to be destroyed. Namespace: %s, name: %s", hc.Namespace, hc.Name)
 		err := wait.PollImmediateUntil(5*time.Second, func() (bool, error) {
-			err := destroyCluster(ctx, hc, opts)
+			err := destroyCluster(ctx, t, hc, opts)
 			if err != nil {
+				if strings.Contains(err.Error(), "required inputs are missing") {
+					return false, err
+				}
+				if strings.Contains(err.Error(), "NoCredentialProviders") {
+					return false, err
+				}
 				t.Logf("Failed to destroy cluster, will retry: %v", err)
 				err := dumpCluster(ctx, t, false)
 				if err != nil {
@@ -165,16 +182,35 @@ func teardown(ctx context.Context, t *testing.T, client crclient.Client, hc *hyp
 // know or care about in advance.
 //
 // TODO: Mutates the input, instead should use a copy of the input options
-func createClusterOpts(hc *hyperv1.HostedCluster, opts *core.CreateOptions) *core.CreateOptions {
+func createClusterOpts(ctx context.Context, client crclient.Client, hc *hyperv1.HostedCluster, opts *core.CreateOptions) (*core.CreateOptions, error) {
 	opts.Namespace = hc.Namespace
 	opts.Name = hc.Name
+	opts.NonePlatform.ExposeThroughLoadBalancer = true
 
 	switch hc.Spec.Platform.Type {
 	case hyperv1.AWSPlatform:
 		opts.InfraID = hc.Name
+	case hyperv1.KubevirtPlatform:
+		opts.KubevirtPlatform.RootVolumeSize = 16
+
+		// get base domain from default ingress of management cluster
+		defaultIngressOperator := &operatorv1.IngressController{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "default",
+				Namespace: "openshift-ingress-operator",
+			},
+		}
+		err := client.Get(ctx, crclient.ObjectKeyFromObject(defaultIngressOperator), defaultIngressOperator)
+		if err != nil {
+			return opts, err
+		}
+
+		opts.BaseDomain = defaultIngressOperator.Status.Domain
+	case hyperv1.PowerVSPlatform:
+		opts.InfraID = fmt.Sprintf("%s-infra", hc.Name)
 	}
 
-	return opts
+	return opts, nil
 }
 
 // createCluster calls the correct cluster create CLI function based on the
@@ -187,38 +223,54 @@ func createCluster(ctx context.Context, hc *hyperv1.HostedCluster, opts *core.Cr
 		return none.CreateCluster(ctx, opts)
 	case hyperv1.KubevirtPlatform:
 		return kubevirt.CreateCluster(ctx, opts)
+	case hyperv1.AzurePlatform:
+		return azure.CreateCluster(ctx, opts)
+	case hyperv1.PowerVSPlatform:
+		return powervs.CreateCluster(ctx, opts)
 	default:
-		return fmt.Errorf("unsupported platform")
+		return fmt.Errorf("unsupported platform %s", hc.Spec.Platform.Type)
 	}
 }
 
 // destroyCluster calls the correct cluster destroy CLI function based on the
 // cluster platform and the options used to create the cluster.
-func destroyCluster(ctx context.Context, hc *hyperv1.HostedCluster, createOpts *core.CreateOptions) error {
+func destroyCluster(ctx context.Context, t *testing.T, hc *hyperv1.HostedCluster, createOpts *core.CreateOptions) error {
+	opts := &core.DestroyOptions{
+		Namespace:          hc.Namespace,
+		Name:               hc.Name,
+		InfraID:            createOpts.InfraID,
+		ClusterGracePeriod: 15 * time.Minute,
+		Log:                NewLogr(t),
+	}
 	switch hc.Spec.Platform.Type {
 	case hyperv1.AWSPlatform:
-		opts := &core.DestroyOptions{
-			Namespace: hc.Namespace,
-			Name:      hc.Name,
-			InfraID:   createOpts.InfraID,
-			AWSPlatform: core.AWSPlatformDestroyOptions{
-				BaseDomain:         createOpts.BaseDomain,
-				AWSCredentialsFile: createOpts.AWSPlatform.AWSCredentialsFile,
-				PreserveIAM:        false,
-				Region:             createOpts.AWSPlatform.Region,
-			},
-			ClusterGracePeriod: 15 * time.Minute,
+		opts.AWSPlatform = core.AWSPlatformDestroyOptions{
+			BaseDomain:         createOpts.BaseDomain,
+			AWSCredentialsFile: createOpts.AWSPlatform.AWSCredentialsFile,
+			PreserveIAM:        false,
+			Region:             createOpts.AWSPlatform.Region,
 		}
 		return aws.DestroyCluster(ctx, opts)
 	case hyperv1.NonePlatform, hyperv1.KubevirtPlatform:
-		opts := &core.DestroyOptions{
-			Namespace:          hc.Namespace,
-			Name:               hc.Name,
-			ClusterGracePeriod: 15 * time.Minute,
-		}
 		return none.DestroyCluster(ctx, opts)
+	case hyperv1.AzurePlatform:
+		opts.AzurePlatform = core.AzurePlatformDestroyOptions{
+			CredentialsFile: createOpts.AzurePlatform.CredentialsFile,
+			Location:        createOpts.AzurePlatform.Location,
+		}
+		return azure.DestroyCluster(ctx, opts)
+	case hyperv1.PowerVSPlatform:
+		opts.PowerVSPlatform = core.PowerVSPlatformDestroyOptions{
+			BaseDomain:    createOpts.BaseDomain,
+			ResourceGroup: createOpts.PowerVSPlatform.ResourceGroup,
+			Region:        createOpts.PowerVSPlatform.Region,
+			Zone:          createOpts.PowerVSPlatform.Zone,
+			VPCRegion:     createOpts.PowerVSPlatform.VpcRegion,
+		}
+		return powervs.DestroyCluster(ctx, opts)
+
 	default:
-		return fmt.Errorf("unsupported cluster platform")
+		return fmt.Errorf("unsupported cluster platform %s", hc.Spec.Platform.Type)
 	}
 }
 
@@ -241,7 +293,7 @@ func newClusterDumper(hc *hyperv1.HostedCluster, opts *core.CreateOptions, artif
 			if err != nil {
 				t.Logf("Failed saving machine console logs; this is nonfatal: %v", err)
 			}
-			err = dump.DumpHostedCluster(ctx, hc, dumpGuestCluster, dumpDir)
+			err = dump.DumpHostedCluster(ctx, t, hc, dumpGuestCluster, dumpDir)
 			if err != nil {
 				dumpErrors = append(dumpErrors, fmt.Errorf("failed to dump hosted cluster: %w", err))
 			}
@@ -250,18 +302,12 @@ func newClusterDumper(hc *hyperv1.HostedCluster, opts *core.CreateOptions, artif
 				t.Logf("Failed to dump machine journals; this is nonfatal: %v", err)
 			}
 			return utilerrors.NewAggregate(dumpErrors)
-		case hyperv1.NonePlatform, hyperv1.KubevirtPlatform:
-			err := dump.DumpHostedCluster(ctx, hc, dumpGuestCluster, dumpDir)
+		default:
+			err := dump.DumpHostedCluster(ctx, t, hc, dumpGuestCluster, dumpDir)
 			if err != nil {
 				return fmt.Errorf("failed to dump hosted cluster: %w", err)
 			}
 			return nil
-		default:
-			return fmt.Errorf("unsupported cluster platform")
 		}
 	}
-}
-
-func NodePoolName(hcName, zone string) string {
-	return fmt.Sprintf("%s-%s", hcName, zone)
 }

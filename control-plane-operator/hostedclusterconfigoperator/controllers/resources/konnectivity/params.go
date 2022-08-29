@@ -37,6 +37,8 @@ func NewKonnectivityParams(hcp *hyperv1.HostedControlPlane, images map[string]st
 	}
 	p.DeploymentConfig.Scheduling = config.Scheduling{
 		PriorityClass: systemNodeCriticalPriorityClass,
+		// Always run, even if nodes are not ready e.G. because there are networking issues as this helps a lot in debugging
+		Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
 	}
 	p.DeploymentConfig.LivenessProbes = config.LivenessProbes{
 		konnectivityAgentContainer().Name: {
@@ -53,6 +55,10 @@ func NewKonnectivityParams(hcp *hyperv1.HostedControlPlane, images map[string]st
 			FailureThreshold:    3,
 			SuccessThreshold:    1,
 		},
+	}
+	// check apiserver-network-proxy image in ocp payload and use it
+	if _, ok := images["apiserver-network-proxy"]; ok {
+		p.Image = images["apiserver-network-proxy"]
 	}
 	if _, ok := hcp.Annotations[hyperv1.KonnectivityAgentImageAnnotation]; ok {
 		p.Image = hcp.Annotations[hyperv1.KonnectivityAgentImageAnnotation]

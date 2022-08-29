@@ -3,6 +3,8 @@ package configoperator
 import (
 	"context"
 
+	utilpointer "k8s.io/utils/pointer"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -31,14 +33,13 @@ func NewHostedClusterConfigOperatorParams(ctx context.Context, hcp *hyperv1.Host
 		KubernetesVersion:       kubernetesVersion,
 		AvailabilityProberImage: images[util.AvailabilityProberImageName],
 	}
-	params.Replicas = 1
 	params.Scheduling = config.Scheduling{
 		PriorityClass: config.DefaultPriorityClass,
 	}
 	params.Resources = map[string]corev1.ResourceRequirements{
 		hccContainerMain().Name: {
 			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("10Mi"),
+				corev1.ResourceMemory: resource.MustParse("80Mi"),
 				corev1.ResourceCPU:    resource.MustParse("60m"),
 			},
 		},
@@ -76,11 +77,10 @@ func NewHostedClusterConfigOperatorParams(ctx context.Context, hcp *hyperv1.Host
 			TimeoutSeconds:      5,
 		},
 	}
-	params.DeploymentConfig.SetColocation(hcp)
+
 	params.DeploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
-	params.DeploymentConfig.SetReleaseImageAnnotation(hcp.Spec.ReleaseImage)
-	params.DeploymentConfig.SetControlPlaneIsolation(hcp)
-	params.SetDefaultSecurityContext = setDefaultSecurityContext
+	params.DeploymentConfig.SetDefaults(hcp, nil, utilpointer.IntPtr(1))
+	params.DeploymentConfig.SetDefaultSecurityContext = setDefaultSecurityContext
 
 	return params
 }

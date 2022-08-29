@@ -11,6 +11,7 @@ import (
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster/internal/platform/ibmcloud"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster/internal/platform/kubevirt"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster/internal/platform/none"
+	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster/internal/platform/powervs"
 	"github.com/openshift/hypershift/support/upsert"
 	appsv1 "k8s.io/api/apps/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -56,11 +57,11 @@ type Platform interface {
 	DeleteCredentials(ctx context.Context, c client.Client, hcluster *hyperv1.HostedCluster, controlPlaneNamespace string) error
 }
 
-func GetPlatform(hcluster *hyperv1.HostedCluster, controlplaneOperatorImage string) (Platform, error) {
+func GetPlatform(hcluster *hyperv1.HostedCluster, utilitiesImage string) (Platform, error) {
 	var platform Platform
 	switch hcluster.Spec.Platform.Type {
 	case hyperv1.AWSPlatform:
-		platform = aws.New(controlplaneOperatorImage)
+		platform = aws.New(utilitiesImage)
 	case hyperv1.IBMCloudPlatform:
 		platform = &ibmcloud.IBMCloud{}
 	case hyperv1.NonePlatform:
@@ -71,6 +72,8 @@ func GetPlatform(hcluster *hyperv1.HostedCluster, controlplaneOperatorImage stri
 		platform = &kubevirt.Kubevirt{}
 	case hyperv1.AzurePlatform:
 		platform = &azure.Azure{}
+	case hyperv1.PowerVSPlatform:
+		platform = &powervs.PowerVS{}
 	default:
 		return nil, fmt.Errorf("unsupported platform: %s", hcluster.Spec.Platform.Type)
 	}

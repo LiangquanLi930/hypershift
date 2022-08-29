@@ -24,11 +24,13 @@ import (
 	"github.com/openshift/hypershift/cmd/cluster/kubevirt"
 	"github.com/openshift/hypershift/cmd/version"
 	"github.com/openshift/hypershift/test/e2e/podtimingcontroller"
+	"github.com/openshift/hypershift/test/e2e/util"
 	e2eutil "github.com/openshift/hypershift/test/e2e/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
@@ -55,11 +57,13 @@ func init() {
 func TestMain(m *testing.M) {
 	flag.StringVar(&globalOpts.configurableClusterOptions.AWSCredentialsFile, "e2e.aws-credentials-file", "", "path to AWS credentials")
 	flag.StringVar(&globalOpts.configurableClusterOptions.Region, "e2e.aws-region", "us-east-1", "AWS region for clusters")
-	flag.Var(&globalOpts.configurableClusterOptions.Zone, "e2e.aws-zones", "AWS zones for clusters")
+	flag.Var(&globalOpts.configurableClusterOptions.Zone, "e2e.aws-zones", "Deprecated, use -e2e.availability-zones instead")
+	flag.Var(&globalOpts.configurableClusterOptions.Zone, "e2e.availability-zones", "Availability zones for clusters")
 	flag.StringVar(&globalOpts.configurableClusterOptions.PullSecretFile, "e2e.pull-secret-file", "", "path to pull secret")
 	flag.StringVar(&globalOpts.configurableClusterOptions.AWSEndpointAccess, "e2e.aws-endpoint-access", "", "endpoint access profile for the cluster")
 	flag.StringVar(&globalOpts.configurableClusterOptions.ExternalDNSDomain, "e2e.external-dns-domain", "", "domain that external-dns will use to create DNS records for HCP endpoints")
-	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtContainerDiskImage, "e2e.kubevirt-container-disk-image", "", "container disk image to use for kubevirt nodes")
+	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtContainerDiskImage, "e2e.kubevirt-container-disk-image", "", "DEPRECATED (ignored will be removed soon)")
+	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtNodeMemory, "e2e.kubevirt-node-memory", "4Gi", "the amount of memory to provide to each workload node")
 	flag.IntVar(&globalOpts.configurableClusterOptions.NodePoolReplicas, "e2e.node-pool-replicas", 2, "the number of replicas for each node pool in the cluster")
 	flag.StringVar(&globalOpts.LatestReleaseImage, "e2e.latest-release-image", "", "The latest OCP release image for use by tests")
 	flag.StringVar(&globalOpts.PreviousReleaseImage, "e2e.previous-release-image", "", "The previous OCP release image relative to the latest")
@@ -67,8 +71,19 @@ func TestMain(m *testing.M) {
 	flag.StringVar(&globalOpts.configurableClusterOptions.BaseDomain, "e2e.base-domain", "", "The ingress base domain for the cluster")
 	flag.StringVar(&globalOpts.configurableClusterOptions.ControlPlaneOperatorImage, "e2e.control-plane-operator-image", "", "The image to use for the control plane operator. If none specified, the default is used.")
 	flag.Var(&globalOpts.additionalTags, "e2e.additional-tags", "Additional tags to set on AWS resources")
+	flag.StringVar(&globalOpts.configurableClusterOptions.AzureCredentialsFile, "e2e.azure-credentials-file", "", "Path to an Azure credentials file")
+	flag.StringVar(&globalOpts.configurableClusterOptions.AzureLocation, "e2e.azure-location", "eastus", "The location to use for Azure")
+	flag.StringVar(&globalOpts.configurableClusterOptions.SSHKeyFile, "e2e.ssh-key-file", "", "Path to a ssh public key")
+	flag.StringVar(&globalOpts.platformRaw, "e2e.platform", string(hyperv1.AWSPlatform), "The platform to use for the tests")
+	flag.StringVar(&globalOpts.configurableClusterOptions.NetworkType, "network-type", "", "The network type to use. If unset, will default based on the OCP version.")
+	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSResourceGroup, "e2e.powervs-resource-group", "", "IBM Cloud Resource group")
+	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSRegion, "e2e.powervs-region", "us-south", "IBM Cloud region. Default is us-south")
+	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSZone, "e2e.powervs-zone", "us-south", "IBM Cloud zone. Default is us-sout")
+	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSVpcRegion, "e2e.powervs-vpc-region", "us-south", "IBM Cloud VPC Region for VPC resources. Default is us-south")
 
 	flag.Parse()
+
+	globalOpts.Platform = hyperv1.PlatformType(globalOpts.platformRaw)
 
 	// Set defaults for the test options
 	if err := globalOpts.Complete(); err != nil {
@@ -182,12 +197,22 @@ type options struct {
 	IsRunningInCI        bool
 	ArtifactDir          string
 
+	// BeforeApply is a function passed to the CLI create command giving the test
+	// code an opportunity to inspect or mutate the resources the CLI will create
+	// before they're applied.
+	BeforeApply func(crclient.Object) `json:"-"`
+
+	Platform    hyperv1.PlatformType
+	platformRaw string
+
 	configurableClusterOptions configurableClusterOptions
 	additionalTags             stringSliceVar
 }
 
 type configurableClusterOptions struct {
 	AWSCredentialsFile         string
+	AzureCredentialsFile       string
+	AzureLocation              string
 	Region                     string
 	Zone                       stringSliceVar
 	PullSecretFile             string
@@ -196,16 +221,21 @@ type configurableClusterOptions struct {
 	AWSEndpointAccess          string
 	ExternalDNSDomain          string
 	KubeVirtContainerDiskImage string
+	KubeVirtNodeMemory         string
 	NodePoolReplicas           int
+	SSHKeyFile                 string
+	NetworkType                string
+	PowerVSResourceGroup       string
+	PowerVSRegion              string
+	PowerVSZone                string
+	PowerVSVpcRegion           string
 }
 
-func (o *options) DefaultClusterOptions() core.CreateOptions {
+func (o *options) DefaultClusterOptions(t *testing.T) core.CreateOptions {
 	createOption := core.CreateOptions{
 		ReleaseImage:              o.LatestReleaseImage,
-		GenerateSSH:               true,
-		SSHKeyFile:                "",
 		NodePoolReplicas:          int32(o.configurableClusterOptions.NodePoolReplicas),
-		NetworkType:               string(hyperv1.OpenShiftSDN),
+		NetworkType:               string(o.configurableClusterOptions.NetworkType),
 		BaseDomain:                o.configurableClusterOptions.BaseDomain,
 		PullSecretFile:            o.configurableClusterOptions.PullSecretFile,
 		ControlPlaneOperatorImage: o.configurableClusterOptions.ControlPlaneOperatorImage,
@@ -220,12 +250,32 @@ func (o *options) DefaultClusterOptions() core.CreateOptions {
 		},
 		KubevirtPlatform: core.KubevirtPlatformCreateOptions{
 			ServicePublishingStrategy: kubevirt.IngressServicePublishingStrategy,
-			ContainerDiskImage:        o.configurableClusterOptions.KubeVirtContainerDiskImage,
 			Cores:                     2,
-			Memory:                    "4Gi",
+			Memory:                    o.configurableClusterOptions.KubeVirtNodeMemory,
+		},
+		AzurePlatform: core.AzurePlatformOptions{
+			CredentialsFile: o.configurableClusterOptions.AzureCredentialsFile,
+			Location:        o.configurableClusterOptions.AzureLocation,
+			InstanceType:    "Standard_D4s_v4",
+			DiskSizeGB:      120,
+		},
+		PowerVSPlatform: core.PowerVSPlatformOptions{
+			ResourceGroup: o.configurableClusterOptions.PowerVSResourceGroup,
+			Region:        o.configurableClusterOptions.PowerVSRegion,
+			Zone:          o.configurableClusterOptions.PowerVSZone,
+			VpcRegion:     o.configurableClusterOptions.PowerVSVpcRegion,
+			SysType:       "s922",
+			ProcType:      "shared",
+			Processors:    "0.5",
+			Memory:        32,
 		},
 		ServiceCIDR: "172.31.0.0/16",
-		PodCIDR:     "10.132.0.0/14",
+		ClusterCIDR: "10.132.0.0/14",
+		BeforeApply: o.BeforeApply,
+		Log:         util.NewLogr(t),
+		Annotations: []string{
+			fmt.Sprintf("%s=true", hyperv1.CleanupCloudResourcesAnnotation),
+		},
 	}
 	createOption.AWSPlatform.AdditionalTags = append(createOption.AWSPlatform.AdditionalTags, o.additionalTags...)
 	if len(o.configurableClusterOptions.Zone) == 0 {
@@ -233,6 +283,13 @@ func (o *options) DefaultClusterOptions() core.CreateOptions {
 		createOption.AWSPlatform.Zones = []string{"us-east-1a"}
 	} else {
 		createOption.AWSPlatform.Zones = strings.Split(o.configurableClusterOptions.Zone.String(), ",")
+		createOption.AzurePlatform.AvailabilityZones = strings.Split(o.configurableClusterOptions.Zone.String(), ",")
+	}
+
+	if o.configurableClusterOptions.SSHKeyFile == "" {
+		createOption.GenerateSSH = true
+	} else {
+		createOption.SSHKeyFile = o.configurableClusterOptions.SSHKeyFile
 	}
 
 	return createOption
@@ -282,7 +339,26 @@ func (o *options) Validate() error {
 	}
 
 	if len(o.configurableClusterOptions.BaseDomain) == 0 {
-		errs = append(errs, fmt.Errorf("base domain is required"))
+		// The KubeVirt e2e tests don't require a base domain right now.
+		//
+		// For KubeVirt, the e2e tests generate a base domain within the *apps domain
+		// of the ocp cluster. So, the guest cluster's base domain is a
+		// subdomain of the hypershift infra/mgmt cluster's base domain.
+		//
+		// Example:
+		//   Infra/Mgmt cluster's DNS
+		//     Base: example.com
+		//     Cluster: mgmt-cluster.example.com
+		//     Apps:    *apps.mgmt-cluster.example.com
+		//   KubeVirt Guest cluster's DNS
+		//     Base: apps.mgmt-cluster.example.com
+		//     Cluster: guest.apps.mgmt-cluster.example.com
+		//     Apps: *apps.guest.apps.mgmt-cluster.example.com
+		//
+		// This is possible using OCP wildcard routes
+		if o.Platform != hyperv1.KubevirtPlatform {
+			errs = append(errs, fmt.Errorf("base domain is required"))
+		}
 	}
 
 	return errors.NewAggregate(errs)

@@ -33,6 +33,9 @@ following steps will reference elements of the steps you already performed.
                 "ec2:CreateVpcEndpointServiceConfiguration",
                 "ec2:DescribeVpcEndpointServiceConfigurations",
                 "ec2:DeleteVpcEndpointServiceConfigurations",
+                "ec2:DescribeVpcEndpointServicePermissions",
+                "ec2:ModifyVpcEndpointServicePermissions",
+                "ec2:CreateTags",
                 "elasticloadbalancing:DescribeLoadBalancers"
               ],
               "Resource": "*"
@@ -54,6 +57,8 @@ following steps will reference elements of the steps you already performed.
                 "ec2:CreateVpcEndpointServiceConfiguration",
                 "ec2:DescribeVpcEndpointServiceConfigurations",
                 "ec2:DeleteVpcEndpointServiceConfigurations",
+                "ec2:DescribeVpcEndpointServicePermissions",
+                "ec2:ModifyVpcEndpointServicePermissions",
                 "ec2:CreateTags",
                 "elasticloadbalancing:DescribeLoadBalancers"
               ],
@@ -117,7 +122,7 @@ following steps will reference elements of the steps you already performed.
 
     !!! note
 
-        Even if you already installed HyperShift using the [Getting started guide](../getting-started.md), you
+        Even if you already installed HyperShift using the [Getting started guide](../../getting-started.md), you
         can safely run `hypershift install` again with private cluster support to update the existing installation.
 
     !!! important

@@ -5,17 +5,20 @@ import (
 	"fmt"
 	"path"
 
+	"github.com/blang/semver"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	podsecurityadmissionv1beta1 "k8s.io/pod-security-admission/admission/api/v1beta1"
 
 	configv1 "github.com/openshift/api/config/v1"
 	kcpv1 "github.com/openshift/api/kubecontrolplane/v1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
+	"github.com/openshift/hypershift/support/certs"
 	hcpconfig "github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/globalconfig"
 )
@@ -31,12 +34,13 @@ const (
 func ReconcileConfig(config *corev1.ConfigMap,
 	ownerRef hcpconfig.OwnerRef,
 	p KubeAPIServerConfigParams,
+	version semver.Version,
 ) error {
 	ownerRef.ApplyTo(config)
 	if config.Data == nil {
 		config.Data = map[string]string{}
 	}
-	kasConfig := generateConfig(p)
+	kasConfig := generateConfig(p, version)
 	serializedConfig, err := json.Marshal(kasConfig)
 	if err != nil {
 		return fmt.Errorf("failed to serialize kube apiserver config: %w", err)
@@ -53,7 +57,7 @@ func (a kubeAPIServerArgs) Set(name string, values ...string) {
 	a[name] = v
 }
 
-func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
+func generateConfig(p KubeAPIServerConfigParams, version semver.Version) *kcpv1.KubeAPIServerConfig {
 	cpath := func(volume, file string) string {
 		return path.Join(volumeMounts.Path(kasContainerMain().Name, volume), file)
 	}
@@ -77,6 +81,29 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 							Object: restrictedEndpointsAdmission(p.ClusterNetwork, p.ServiceNetwork),
 						},
 					},
+					"PodSecurity": {
+						Configuration: runtime.RawExtension{
+							Object: &podsecurityadmissionv1beta1.PodSecurityConfiguration{
+								TypeMeta: metav1.TypeMeta{
+									APIVersion: podsecurityadmissionv1beta1.SchemeGroupVersion.String(),
+									Kind:       "PodSecurityConfiguration",
+								},
+								Defaults: podsecurityadmissionv1beta1.PodSecurityDefaults{
+									Enforce:        "privileged",
+									EnforceVersion: "latest",
+									Audit:          "restricted",
+									AuditVersion:   "latest",
+									Warn:           "restricted",
+									WarnVersion:    "latest",
+								},
+								Exemptions: podsecurityadmissionv1beta1.PodSecurityExemptions{
+									Usernames: []string{
+										"system:serviceaccount:openshift-infra:build-controller",
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 			ServingInfo: configv1.HTTPServingInfo{
@@ -86,7 +113,7 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 						KeyFile:  path.Join(volumeMounts.Path(kasContainerMain().Name, kasVolumeServerCert().Name), corev1.TLSPrivateKeyKey),
 					},
 					NamedCertificates: globalconfig.GetConfigNamedCertificates(p.NamedCertificates, kasNamedCertificateMountPathPrefix),
-					BindAddress:       fmt.Sprintf("0.0.0.0:%d", p.APIServerPort),
+					BindAddress:       fmt.Sprintf("0.0.0.0:%d", APIServerListenPort),
 					BindNetwork:       "tcp4",
 					CipherSuites:      hcpconfig.CipherSuites(p.TLSSecurityProfile),
 					MinTLSVersion:     hcpconfig.MinTLSVersion(p.TLSSecurityProfile),
@@ -101,7 +128,7 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 		ImagePolicyConfig:            imagePolicyConfig(p.InternalRegistryHostName, p.ExternalRegistryHostNames),
 		ProjectConfig:                projectConfig(p.DefaultNodeSelector),
 		ServiceAccountPublicKeyFiles: []string{cpath(kasVolumeServiceAccountKey().Name, pki.ServiceSignerPublicKey)},
-		ServicesSubnet:               p.ServiceNetwork,
+		ServicesSubnet:               p.ServiceNetwork[0],
 	}
 	args := kubeAPIServerArgs{}
 	args.Set("advertise-address", p.AdvertiseAddress)
@@ -116,7 +143,7 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 	args.Set("authentication-token-webhook-config-file", cpath(kasVolumeAuthTokenWebhookConfig().Name, KubeconfigKey))
 	args.Set("authentication-token-webhook-version", "v1")
 	args.Set("authorization-mode", "Scope", "SystemMasters", "RBAC", "Node")
-	args.Set("client-ca-file", cpath(kasVolumeClientCA().Name, pki.CASignerCertMapKey))
+	args.Set("client-ca-file", cpath(kasVolumeClientCA().Name, certs.CASignerCertMapKey))
 	if p.CloudProviderConfigRef != nil {
 		args.Set("cloud-config", cloudProviderConfig(p.CloudProviderConfigRef.Name, p.CloudProvider))
 	}
@@ -127,11 +154,19 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 		args.Set("audit-webhook-config-file", auditWebhookConfigFile())
 		args.Set("audit-webhook-mode", "batch")
 	}
+	if p.DisableProfiling {
+		args.Set("profiling", "false")
+	}
 	args.Set("egress-selector-config-file", cpath(kasVolumeEgressSelectorConfig().Name, EgressSelectorConfigMapKey))
 	args.Set("enable-admission-plugins", admissionPlugins()...)
+	if version.Minor == 10 {
+		// This is explicitly disabled in OCP 4.10
+		// This is enabled by default in 4.11 but currently disabled by OCP. It is planned to get re-enabled but currently
+		// breaks conformance testing, ref: https://github.com/openshift/cluster-kube-apiserver-operator/pull/1262
+		args.Set("disable-admission-plugins", "PodSecurity")
+	}
 	args.Set("enable-aggregator-routing", "true")
 	args.Set("enable-logs-handler", "false")
-	args.Set("enable-swagger-ui", "true")
 	args.Set("endpoint-reconciler-type", "lease")
 	args.Set("etcd-cafile", cpath(kasVolumeEtcdClientCert().Name, pki.EtcdClientCAKey))
 	args.Set("etcd-certfile", cpath(kasVolumeEtcdClientCert().Name, pki.EtcdClientCrtKey))
@@ -142,7 +177,7 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 	args.Set("feature-gates", p.FeatureGates...)
 	args.Set("goaway-chance", "0")
 	args.Set("http2-max-streams-per-connection", "2000")
-	args.Set("kubelet-certificate-authority", cpath(kasVolumeKubeletClientCA().Name, pki.CASignerCertMapKey))
+	args.Set("kubelet-certificate-authority", cpath(kasVolumeKubeletClientCA().Name, certs.CASignerCertMapKey))
 	args.Set("kubelet-client-certificate", cpath(kasVolumeKubeletClientCert().Name, corev1.TLSCertKey))
 	args.Set("kubelet-client-key", cpath(kasVolumeKubeletClientCert().Name, corev1.TLSPrivateKeyKey))
 	args.Set("kubelet-preferred-address-types", "InternalIP")
@@ -154,7 +189,7 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 	args.Set("proxy-client-cert-file", cpath(kasVolumeAggregatorCert().Name, corev1.TLSCertKey))
 	args.Set("proxy-client-key-file", cpath(kasVolumeAggregatorCert().Name, corev1.TLSPrivateKeyKey))
 	args.Set("requestheader-allowed-names", requestHeaderAllowedNames()...)
-	args.Set("requestheader-client-ca-file", cpath(kasVolumeAggregatorCA().Name, pki.CASignerCertMapKey))
+	args.Set("requestheader-client-ca-file", cpath(kasVolumeAggregatorCA().Name, certs.CASignerCertMapKey))
 	args.Set("requestheader-extra-headers-prefix", "X-Remote-Extra-")
 	args.Set("requestheader-group-headers", "X-Remote-Group")
 	args.Set("requestheader-username-headers", "X-Remote-User")
@@ -164,7 +199,8 @@ func generateConfig(p KubeAPIServerConfigParams) *kcpv1.KubeAPIServerConfig {
 	args.Set("service-account-lookup", "true")
 	args.Set("service-account-signing-key-file", cpath(kasVolumeServiceAccountKey().Name, pki.ServiceSignerPrivateKey))
 	args.Set("service-node-port-range", p.NodePortRange)
-	args.Set("shutdown-delay-duration", "10s")
+	args.Set("shutdown-delay-duration", "70s")
+	args.Set("shutdown-send-retry-after", "true")
 	args.Set("storage-backend", "etcd3")
 	args.Set("storage-media-type", "application/vnd.kubernetes.protobuf")
 	args.Set("tls-cert-file", cpath(kasVolumeServerCert().Name, corev1.TLSCertKey))
@@ -198,11 +234,13 @@ func externalIPRangerConfig(externalIPConfig *configv1.ExternalIPConfig) runtime
 	return cfg
 }
 
-func restrictedEndpointsAdmission(clusterNetwork, serviceNetwork string) runtime.Object {
+func restrictedEndpointsAdmission(clusterNetwork, serviceNetwork []string) runtime.Object {
 	cfg := &unstructured.Unstructured{}
 	cfg.SetAPIVersion("network.openshift.io/v1")
 	cfg.SetKind("RestrictedEndpointsAdmissionConfig")
-	restrictedCIDRs := []string{clusterNetwork, serviceNetwork}
+	var restrictedCIDRs []string
+	restrictedCIDRs = append(restrictedCIDRs, clusterNetwork...)
+	restrictedCIDRs = append(restrictedCIDRs, serviceNetwork...)
 	unstructured.SetNestedStringSlice(cfg.Object, restrictedCIDRs, "restrictedCIDRs")
 	return cfg
 }

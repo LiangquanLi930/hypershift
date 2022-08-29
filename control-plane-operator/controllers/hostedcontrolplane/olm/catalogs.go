@@ -10,12 +10,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	// TODO: Switch to k8s.io/api/batch/v1 when all management clusters at 1.21+ OR 4.8_openshift+
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/metrics"
 	"github.com/openshift/hypershift/support/util"
 )
 
@@ -96,20 +96,20 @@ var (
 	redHatOperatorsCatalogRolloutCronJob   = MustCronJob("assets/catalog-redhat-operators-rollout.cronjob.yaml")
 )
 
-func ReconcileCertifiedOperatorsCronJob(cronJob *batchv1beta1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
+func ReconcileCertifiedOperatorsCronJob(cronJob *batchv1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
 	return reconcileCatalogCronJob(cronJob, ownerRef, cliImage, certifiedCatalogRolloutCronJob)
 }
-func ReconcileCommunityOperatorsCronJob(cronJob *batchv1beta1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
+func ReconcileCommunityOperatorsCronJob(cronJob *batchv1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
 	return reconcileCatalogCronJob(cronJob, ownerRef, cliImage, communityCatalogRolloutCronJob)
 }
-func ReconcileRedHatMarketplaceOperatorsCronJob(cronJob *batchv1beta1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
+func ReconcileRedHatMarketplaceOperatorsCronJob(cronJob *batchv1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
 	return reconcileCatalogCronJob(cronJob, ownerRef, cliImage, redHatMarketplaceCatalogRolloutCronJob)
 }
-func ReconcileRedHatOperatorsCronJob(cronJob *batchv1beta1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
+func ReconcileRedHatOperatorsCronJob(cronJob *batchv1.CronJob, ownerRef config.OwnerRef, cliImage string) error {
 	return reconcileCatalogCronJob(cronJob, ownerRef, cliImage, redHatOperatorsCatalogRolloutCronJob)
 }
 
-func reconcileCatalogCronJob(cronJob *batchv1beta1.CronJob, ownerRef config.OwnerRef, cliImage string, sourceCronJob *batchv1beta1.CronJob) error {
+func reconcileCatalogCronJob(cronJob *batchv1.CronJob, ownerRef config.OwnerRef, cliImage string, sourceCronJob *batchv1.CronJob) error {
 	ownerRef.ApplyTo(cronJob)
 	cronJob.Spec = sourceCronJob.DeepCopy().Spec
 	cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = cliImage
@@ -151,7 +151,7 @@ func ReconcileCatalogRolloutRoleBinding(roleBinding *rbacv1.RoleBinding, ownerRe
 	return nil
 }
 
-func ReconcileCatalogServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string) error {
+func ReconcileCatalogServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string, metricsSet metrics.MetricsSet) error {
 	ownerRef.ApplyTo(sm)
 
 	sm.Spec.Selector.MatchLabels = catalogLabels()
@@ -191,13 +191,7 @@ func ReconcileCatalogServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, own
 					},
 				},
 			},
-			MetricRelabelConfigs: []*prometheusoperatorv1.RelabelConfig{
-				{
-					Action:       "drop",
-					Regex:        "etcd_(debugging|disk|server).*",
-					SourceLabels: []string{"__name__"},
-				},
-			},
+			MetricRelabelConfigs: metrics.CatalogOperatorRelabelConfigs(metricsSet),
 		},
 	}
 

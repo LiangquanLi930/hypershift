@@ -10,7 +10,6 @@ import (
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
 	"github.com/openshift/hypershift/cmd/cluster/core"
 	awsinfra "github.com/openshift/hypershift/cmd/infra/aws"
-	"github.com/openshift/hypershift/cmd/log"
 	"github.com/openshift/hypershift/cmd/util"
 	"github.com/openshift/hypershift/support/infraid"
 	"github.com/spf13/cobra"
@@ -44,6 +43,7 @@ func NewCreateCommand(opts *core.CreateOptions) *cobra.Command {
 	cmd.Flags().StringSliceVar(&opts.AWSPlatform.AdditionalTags, "additional-tags", opts.AWSPlatform.AdditionalTags, "Additional tags to set on AWS resources")
 	cmd.Flags().StringVar(&opts.AWSPlatform.EndpointAccess, "endpoint-access", opts.AWSPlatform.EndpointAccess, "Access for control plane endpoints (Public, PublicAndPrivate, Private)")
 	cmd.Flags().StringVar(&opts.AWSPlatform.EtcdKMSKeyARN, "kms-key-arn", opts.AWSPlatform.EtcdKMSKeyARN, "The ARN of the KMS key to use for Etcd encryption. If not supplied, etcd encryption will default to using a generated AESCBC key.")
+	cmd.Flags().BoolVar(&opts.AWSPlatform.EnableProxy, "enable-proxy", opts.AWSPlatform.EnableProxy, "If a proxy should be set up, rather than allowing direct internet access from the nodes")
 
 	cmd.MarkFlagRequired("aws-creds")
 
@@ -56,7 +56,7 @@ func NewCreateCommand(opts *core.CreateOptions) *cobra.Command {
 		}
 
 		if err := CreateCluster(ctx, opts); err != nil {
-			log.Log.Error(err, "Failed to create cluster")
+			opts.Log.Error(err, "Failed to create cluster")
 			return err
 		}
 		return nil
@@ -110,8 +110,10 @@ func applyPlatformSpecificsValues(ctx context.Context, exampleOptions *apifixtur
 			BaseDomain:         opts.BaseDomain,
 			AdditionalTags:     opts.AWSPlatform.AdditionalTags,
 			Zones:              opts.AWSPlatform.Zones,
+			EnableProxy:        opts.AWSPlatform.EnableProxy,
+			SSHKeyFile:         opts.SSHKeyFile,
 		}
-		infra, err = opt.CreateInfra(ctx)
+		infra, err = opt.CreateInfra(ctx, opts.Log)
 		if err != nil {
 			return fmt.Errorf("failed to create infra: %w", err)
 		}
@@ -155,7 +157,7 @@ func applyPlatformSpecificsValues(ctx context.Context, exampleOptions *apifixtur
 	}
 
 	exampleOptions.BaseDomain = infra.BaseDomain
-	exampleOptions.ComputeCIDR = infra.ComputeCIDR
+	exampleOptions.MachineCIDR = infra.MachineCIDR
 	exampleOptions.IssuerURL = iamInfo.IssuerURL
 	exampleOptions.PrivateZoneID = infra.PrivateZoneID
 	exampleOptions.PublicZoneID = infra.PublicZoneID
@@ -169,23 +171,21 @@ func applyPlatformSpecificsValues(ctx context.Context, exampleOptions *apifixtur
 		})
 	}
 	exampleOptions.AWS = &apifixtures.ExampleAWSOptions{
-		Region:                      infra.Region,
-		Zones:                       zones,
-		VPCID:                       infra.VPCID,
-		SecurityGroupID:             infra.SecurityGroupID,
-		InstanceProfile:             iamInfo.ProfileName,
-		InstanceType:                opts.AWSPlatform.InstanceType,
-		Roles:                       iamInfo.Roles,
-		KubeCloudControllerRoleARN:  iamInfo.KubeCloudControllerRoleARN,
-		NodePoolManagementRoleARN:   iamInfo.NodePoolManagementRoleARN,
-		ControlPlaneOperatorRoleARN: iamInfo.ControlPlaneOperatorRoleARN,
-		KMSProviderRoleARN:          iamInfo.KMSProviderRoleARN,
-		KMSKeyARN:                   iamInfo.KMSKeyARN,
-		RootVolumeSize:              opts.AWSPlatform.RootVolumeSize,
-		RootVolumeType:              opts.AWSPlatform.RootVolumeType,
-		RootVolumeIOPS:              opts.AWSPlatform.RootVolumeIOPS,
-		ResourceTags:                tags,
-		EndpointAccess:              opts.AWSPlatform.EndpointAccess,
+		Region:             infra.Region,
+		Zones:              zones,
+		VPCID:              infra.VPCID,
+		SecurityGroupID:    infra.SecurityGroupID,
+		InstanceProfile:    iamInfo.ProfileName,
+		InstanceType:       opts.AWSPlatform.InstanceType,
+		Roles:              iamInfo.Roles,
+		KMSProviderRoleARN: iamInfo.KMSProviderRoleARN,
+		KMSKeyARN:          iamInfo.KMSKeyARN,
+		RootVolumeSize:     opts.AWSPlatform.RootVolumeSize,
+		RootVolumeType:     opts.AWSPlatform.RootVolumeType,
+		RootVolumeIOPS:     opts.AWSPlatform.RootVolumeIOPS,
+		ResourceTags:       tags,
+		EndpointAccess:     opts.AWSPlatform.EndpointAccess,
+		ProxyAddress:       infra.ProxyAddr,
 	}
 	return nil
 }

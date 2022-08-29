@@ -14,8 +14,8 @@ type OpenShiftControllerManagerParams struct {
 	OpenShiftControllerManagerImage string
 	DockerBuilderImage              string
 	DeployerImage                   string
-	APIServer                       *configv1.APIServer
-	Network                         *configv1.Network
+	APIServer                       *configv1.APIServerSpec
+	Network                         *configv1.NetworkSpec
 	Build                           *configv1.Build
 	Image                           *configv1.Image
 
@@ -23,15 +23,17 @@ type OpenShiftControllerManagerParams struct {
 	config.OwnerRef
 }
 
-func NewOpenShiftControllerManagerParams(hcp *hyperv1.HostedControlPlane, globalConfig globalconfig.GlobalConfig, images map[string]string, setDefaultSecurityContext bool) *OpenShiftControllerManagerParams {
+func NewOpenShiftControllerManagerParams(hcp *hyperv1.HostedControlPlane, observedConfig *globalconfig.ObservedConfig, images map[string]string, setDefaultSecurityContext bool) *OpenShiftControllerManagerParams {
 	params := &OpenShiftControllerManagerParams{
 		OpenShiftControllerManagerImage: images["openshift-controller-manager"],
 		DockerBuilderImage:              images["docker-builder"],
 		DeployerImage:                   images["deployer"],
-		APIServer:                       globalConfig.APIServer,
-		Network:                         globalConfig.Network,
-		Build:                           globalConfig.Build,
-		Image:                           globalConfig.Image,
+		Build:                           observedConfig.Build,
+		Image:                           observedConfig.Image,
+	}
+	if hcp.Spec.Configuration != nil {
+		params.APIServer = hcp.Spec.Configuration.APIServer
+		params.Network = hcp.Spec.Configuration.Network
 	}
 
 	params.DeploymentConfig = config.DeploymentConfig{
@@ -47,18 +49,8 @@ func NewOpenShiftControllerManagerParams(hcp *hyperv1.HostedControlPlane, global
 			},
 		},
 	}
-	params.DeploymentConfig.SetColocation(hcp)
 	params.DeploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
-	params.DeploymentConfig.SetReleaseImageAnnotation(hcp.Spec.ReleaseImage)
-	params.DeploymentConfig.SetControlPlaneIsolation(hcp)
-	switch hcp.Spec.ControllerAvailabilityPolicy {
-	case hyperv1.HighlyAvailable:
-		params.DeploymentConfig.Replicas = 3
-		params.DeploymentConfig.SetMultizoneSpread(openShiftControllerManagerLabels())
-	default:
-		params.DeploymentConfig.Replicas = 1
-	}
-
+	params.DeploymentConfig.SetDefaults(hcp, openShiftControllerManagerLabels(), nil)
 	params.DeploymentConfig.SetDefaultSecurityContext = setDefaultSecurityContext
 
 	params.OwnerRef = config.OwnerRefFrom(hcp)
@@ -67,14 +59,14 @@ func NewOpenShiftControllerManagerParams(hcp *hyperv1.HostedControlPlane, global
 
 func (p *OpenShiftControllerManagerParams) MinTLSVersion() string {
 	if p.APIServer != nil {
-		return config.MinTLSVersion(p.APIServer.Spec.TLSSecurityProfile)
+		return config.MinTLSVersion(p.APIServer.TLSSecurityProfile)
 	}
 	return config.MinTLSVersion(nil)
 }
 
 func (p *OpenShiftControllerManagerParams) CipherSuites() []string {
 	if p.APIServer != nil {
-		return config.CipherSuites(p.APIServer.Spec.TLSSecurityProfile)
+		return config.CipherSuites(p.APIServer.TLSSecurityProfile)
 	}
 	return config.CipherSuites(nil)
 }

@@ -10,6 +10,7 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	securityv1 "github.com/openshift/api/security/v1"
 	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	mcfgv1 "github.com/openshift/hypershift/thirdparty/machineconfigoperator/pkg/apis/machineconfiguration.openshift.io/v1"
 	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -17,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	kasv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
-	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1beta1"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/config/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
@@ -37,6 +38,10 @@ var (
 	YamlSerializer = json.NewSerializerWithOptions(
 		json.DefaultMetaFactory, Scheme, Scheme,
 		json.SerializerOptions{Yaml: true, Pretty: true, Strict: true},
+	)
+	TolerantYAMLSerializer = json.NewSerializerWithOptions(
+		json.DefaultMetaFactory, Scheme, Scheme,
+		json.SerializerOptions{Yaml: true, Pretty: true, Strict: false},
 	)
 )
 
@@ -62,4 +67,5 @@ func init() {
 	v1alpha1.AddToScheme(Scheme)
 	apiserverconfigv1.AddToScheme(Scheme)
 	prometheusoperatorv1.AddToScheme(Scheme)
+	mcfgv1.AddToScheme(Scheme)
 }

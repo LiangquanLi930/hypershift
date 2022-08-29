@@ -17,6 +17,7 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/metrics"
 	"github.com/openshift/hypershift/support/util"
 )
 
@@ -66,17 +67,28 @@ var (
 		"0000_50_operator-marketplace_10_clusteroperator.yaml",
 		"0000_50_operator-marketplace_11_service_monitor.yaml",
 		"0000_50_cluster-ingress-operator_02-deployment-ibm-cloud-managed.yaml",
+		"0000_70_cluster-network-operator_02_rbac.yaml",
+		"0000_70_cluster-network-operator_03_deployment-ibm-cloud-managed.yaml",
+		"0000_80_machine-config-operator_01_machineconfig.crd.yaml",
+		"0000_80_machine-config-operator_01_machineconfigpool.crd.yaml",
+		"0000_50_cluster-node-tuning-operator_50-operator-ibm-cloud-managed.yaml",
+		"0000_50_cluster-node-tuning-operator_60-clusteroperator.yaml",
+		"0000_50_cluster-image-registry-operator_07-operator-ibm-cloud-managed.yaml",
+		"0000_50_cluster-image-registry-operator_07-operator-service.yaml",
+		"0000_90_cluster-image-registry-operator_02_operator-servicemonitor.yaml",
 
 		// TODO: Remove these when cluster profiles annotations are fixed
-		// for cco and auth  operators
 		"0000_50_cloud-credential-operator_01-operator-config.yaml",
 		"0000_50_cluster-authentication-operator_02_config.cr.yaml",
+		"0000_90_etcd-operator_03_prometheusrule.yaml",
 	}
 )
 
 func cvoLabels() map[string]string {
 	return map[string]string{
-		"app":                         "cluster-version-operator",
+		"app": "cluster-version-operator",
+		// value for compatibility with roks-toolkit clusters
+		"k8s-app":                     "cluster-version-operator",
 		hyperv1.ControlPlaneComponent: "cluster-version-operator",
 	}
 }
@@ -91,11 +103,14 @@ func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef
 	if mainContainer != nil {
 		deploymentConfig.SetContainerResourcesIfPresent(mainContainer)
 	}
-
-	deployment.Spec = appsv1.DeploymentSpec{
-		Selector: &metav1.LabelSelector{
+	selector := deployment.Spec.Selector
+	if selector == nil {
+		selector = &metav1.LabelSelector{
 			MatchLabels: cvoLabels(),
-		},
+		}
+	}
+	deployment.Spec = appsv1.DeploymentSpec{
+		Selector: selector,
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: cvoLabels(),
@@ -182,9 +197,58 @@ func buildCVOContainerBootstrap(image, clusterID string) func(*corev1.Container)
 	}
 }
 
+type resourceDesc struct {
+	name       string
+	namespace  string
+	apiVersion string
+	kind       string
+}
+
+func resourcesToRemove() []resourceDesc {
+	return []resourceDesc{
+		{
+			apiVersion: "apps/v1",
+			kind:       "Deployment",
+			name:       "network-operator",
+			namespace:  "openshift-network-operator",
+		},
+		{
+			apiVersion: "rbac.authorization.k8s.io/v1",
+			kind:       "ClusterRoleBinding",
+			name:       "default-account-cluster-network-operator",
+		},
+		/* TODO: Add these to the remove list when no longer used for POCs (IBM) */
+		/*
+			{
+				apiVersion: "apiextensions.k8s.io/v1",
+				kind:       "CustomResourceDefinition",
+				name:       "machineconfigs.machineconfiguration.openshift.io",
+			},
+			{
+				apiVersion: "apiextensions.k8s.io/v1",
+				kind:       "CustomResourceDefinition",
+				name:       "machineconfigpools.machineconfiguration.openshift.io",
+			},
+		*/
+		{
+			apiVersion: "apps/v1",
+			kind:       "Deployment",
+			name:       "cluster-node-tuning-operator",
+			namespace:  "openshift-cluster-node-tuning-operator",
+		},
+		{
+			apiVersion: "apps/v1",
+			kind:       "Deployment",
+			name:       "cluster-image-registry-operator",
+			namespace:  "openshift-image-registry",
+		},
+	}
+}
+
 func preparePayloadScript() string {
 	payloadDir := volumeMounts.Path(cvoContainerPrepPayload().Name, cvoVolumePayload().Name)
-	stmts := make([]string, 0, len(manifestsToOmit)+2)
+	var stmts []string
+
 	stmts = append(stmts,
 		fmt.Sprintf("cp -R /manifests %s/", payloadDir),
 		fmt.Sprintf("rm %s/manifests/*_deployment.yaml", payloadDir),
@@ -193,6 +257,30 @@ func preparePayloadScript() string {
 	)
 	for _, manifest := range manifestsToOmit {
 		stmts = append(stmts, fmt.Sprintf("rm %s", path.Join(payloadDir, "release-manifests", manifest)))
+	}
+	toRemove := resourcesToRemove()
+	if len(toRemove) > 0 {
+		// NOTE: the name of the cleanup file indicates the CVO runlevel for the cleanup.
+		// A level of 0000_01 forces the cleanup to happen first without waiting for any cluster operators to
+		// become available.
+		stmts = append(stmts, fmt.Sprintf("cat > %s/release-manifests/0000_01_cleanup.yaml <<EOF", payloadDir))
+	}
+	for _, desc := range resourcesToRemove() {
+		stmts = append(stmts,
+			"---",
+			fmt.Sprintf("apiVersion: %s", desc.apiVersion),
+			fmt.Sprintf("kind: %s", desc.kind),
+			"metadata:",
+			fmt.Sprintf("  name: %s", desc.name),
+		)
+		if desc.namespace != "" {
+			stmts = append(stmts, fmt.Sprintf("  namespace: %s", desc.namespace))
+		}
+		stmts = append(stmts,
+			"  annotations:",
+			"    include.release.openshift.io/ibm-cloud-managed: \"true\"",
+			"    release.openshift.io/delete: \"true\"",
+		)
 	}
 	return strings.Join(stmts, "\n")
 }
@@ -346,7 +434,7 @@ func ReconcileService(svc *corev1.Service, owner config.OwnerRef) error {
 	return nil
 }
 
-func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string) error {
+func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef config.OwnerRef, clusterID string, metricsSet metrics.MetricsSet) error {
 	ownerRef.ApplyTo(sm)
 
 	sm.Spec.Selector.MatchLabels = cvoLabels()
@@ -386,13 +474,7 @@ func ReconcileServiceMonitor(sm *prometheusoperatorv1.ServiceMonitor, ownerRef c
 					},
 				},
 			},
-			MetricRelabelConfigs: []*prometheusoperatorv1.RelabelConfig{
-				{
-					Action:       "drop",
-					Regex:        "etcd_(debugging|disk|server).*",
-					SourceLabels: []string{"__name__"},
-				},
-			},
+			MetricRelabelConfigs: metrics.CVORelabelConfigs(metricsSet),
 		},
 	}
 

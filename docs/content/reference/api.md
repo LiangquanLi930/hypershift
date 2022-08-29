@@ -179,7 +179,7 @@ AvailabilityPolicy
 <em>(Optional)</em>
 <p>InfrastructureAvailabilityPolicy specifies the availability policy applied
 to infrastructure services which run on cluster nodes. The default value is
-HighlyAvailable.</p>
+SingleReplica.</p>
 <p>
 Value must be one of:
 &#34;HighlyAvailable&#34;, 
@@ -306,6 +306,24 @@ validation.</p>
 </tr>
 <tr>
 <td>
+<code>serviceAccountSigningKey</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ServiceAccountSigningKey is a reference to a secret containing the private key
+used by the service account token issuer. The secret is expected to contain
+a single key named &ldquo;key&rdquo;. If not specified, a service account signing key will
+be generated automatically for the cluster. When specifying a service account
+signing key, a IssuerURL must also be specified.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>configuration</code></br>
 <em>
 <a href="#hypershift.openshift.io/v1alpha1.ClusterConfiguration">
@@ -353,6 +371,21 @@ name that corresponds to the constant AuditWebhookKubeconfigKey.</p>
 <em>(Optional)</em>
 <p>ImageContentSources specifies image mirrors that can be used by cluster
 nodes to pull content.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>additionalTrustBundle</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AdditionalTrustBundle is a reference to a ConfigMap containing a
+PEM-encoded X.509 certificate bundle that will be added to the hosted controlplane and nodes</p>
 </td>
 </tr>
 <tr>
@@ -419,6 +452,18 @@ Value must be one of:
 &#34;guest&#34;, 
 &#34;management&#34;
 </p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nodeSelector</code></br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeSelector when specified, must be true for the pods managed by the HostedCluster to be scheduled.</p>
 </td>
 </tr>
 </table>
@@ -548,7 +593,20 @@ int32
 </td>
 <td>
 <em>(Optional)</em>
-<p>NodeCount is the desired number of nodes the pool should maintain. If
+<p>Deprecated: Use Replicas instead. NodeCount will be dropped in the next
+api release.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>replicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Replicas is the desired number of nodes the pool should maintain. If
 unset, the default value is 0.</p>
 </td>
 </tr>
@@ -593,13 +651,9 @@ NodePoolAutoScaling
 <p>Config is a list of references to ConfigMaps containing serialized
 MachineConfig resources to be injected into the ignition configurations of
 nodes in the NodePool. The MachineConfig API schema is defined here:</p>
-<p><a href="https://github.com/openshift/machine-config-operator/blob/master/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L172">https://github.com/openshift/machine-config-operator/blob/master/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L172</a></p>
+<p><a href="https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185">https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185</a></p>
 <p>Each ConfigMap must have a single key named &ldquo;config&rdquo; whose value is the
 JSON or YAML of a serialized MachineConfig.</p>
-<p>TODO (alberto): this ConfigMaps are meant to contain MachineConfig,
-KubeletConfig and ContainerRuntimeConfig but MCO only supports
-MachineConfig in bootstrap mode atm. See:
-<a href="https://github.com/openshift/machine-config-operator/blob/9c6c2bfd7ed498bfbc296d530d1839bd6a177b0b/pkg/controller/bootstrap/bootstrap.go#L104-L119">https://github.com/openshift/machine-config-operator/blob/9c6c2bfd7ed498bfbc296d530d1839bd6a177b0b/pkg/controller/bootstrap/bootstrap.go#L104-L119</a></p>
 </td>
 </tr>
 <tr>
@@ -619,6 +673,21 @@ NOTE: NodeDrainTimeout is different from <code>kubectl drain --timeout</code>
 TODO (alberto): Today changing this field will trigger a recreate rolling update, which kind of defeats
 the purpose of the change. In future we plan to propagate this field in-place.
 <a href="https://github.com/kubernetes-sigs/cluster-api/issues/5880">https://github.com/kubernetes-sigs/cluster-api/issues/5880</a></p>
+</td>
+</tr>
+<tr>
+<td>
+<code>pausedUntil</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PausedUntil is a field that can be used to pause reconciliation on a resource.
+Either a date can be provided in RFC3339 format or a boolean. If a date is
+provided: reconciliation is paused on the resource until that date. If the boolean true is
+provided: reconciliation is paused on the resource until the field is removed.</p>
 </td>
 </tr>
 </table>
@@ -726,6 +795,21 @@ int32
 <p>Port is the port at which the APIServer is exposed inside a node. Other
 pods using host networking cannot listen on this port. If not specified,
 6443 is used.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>allowedCIDRBlocks</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.CIDRBlock">
+[]CIDRBlock
+</a>
+</em>
+</td>
+<td>
+<p>AllowedCIDRBlocks is an allow list of CIDR blocks that can access the APIServer
+If not specified, traffic is allowed from all addresses.
+This depends on underlying support by the cloud provider for Service LoadBalancerSourceRanges</p>
 </td>
 </tr>
 </tbody>
@@ -1106,8 +1190,10 @@ AWSCloudProviderConfig
 <td>
 <em>(Optional)</em>
 <p>CloudProviderConfig specifies AWS networking configuration for the control
-plane.</p>
-<p>TODO(dan): should this be named AWSNetworkConfig?</p>
+plane.
+This is mainly used for cloud provider controller config:
+<a href="https://github.com/kubernetes/kubernetes/blob/f5be5052e3d0808abb904aebd3218fe4a5c2dd82/staging/src/k8s.io/legacy-cloud-providers/aws/aws.go#L1347-L1364">https://github.com/kubernetes/kubernetes/blob/f5be5052e3d0808abb904aebd3218fe4a5c2dd82/staging/src/k8s.io/legacy-cloud-providers/aws/aws.go#L1347-L1364</a>
+TODO(dan): should this be named AWSNetworkConfig?</p>
 </td>
 </tr>
 <tr>
@@ -1128,6 +1214,20 @@ the default service endpoint of specific AWS Services.</p>
 </tr>
 <tr>
 <td>
+<code>rolesRef</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.AWSRolesRef">
+AWSRolesRef
+</a>
+</em>
+</td>
+<td>
+<p>RolesRef contains references to various AWS IAM roles required to enable
+integrations such as OIDC.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>roles</code></br>
 <em>
 <a href="#hypershift.openshift.io/v1alpha1.AWSRoleCredentials">
@@ -1136,16 +1236,9 @@ the default service endpoint of specific AWS Services.</p>
 </em>
 </td>
 <td>
-<p>Roles must contain exactly 4 entries representing the locators for roles
-supporting the following OCP services:</p>
-<ul>
-<li>openshift-ingress-operator/cloud-credentials</li>
-<li>openshift-image-registry/installer-cloud-credentials</li>
-<li>openshift-cluster-csi-drivers/ebs-cloud-credentials</li>
-<li>cloud-network-config-controller/cloud-credentials</li>
-</ul>
-<p>Each role has unique permission requirements whose documentation is TBD.</p>
-<p>TODO(dan): revisit this field; it&rsquo;s really 3 required fields with specific content requirements</p>
+<p>Deprecated
+This field will be removed in the next API release.
+Use RolesRef instead.</p>
 </td>
 </tr>
 <tr>
@@ -1158,11 +1251,9 @@ Kubernetes core/v1.LocalObjectReference
 </em>
 </td>
 <td>
-<p>KubeCloudControllerCreds is a reference to a secret containing cloud
-credentials with permissions matching the cloud controller policy. The
-secret should have exactly one key, <code>credentials</code>, whose value is an AWS
-credentials file.</p>
-<p>TODO(dan): document the &ldquo;cloud controller policy&rdquo;</p>
+<p>Deprecated
+This field will be removed in the next API release.
+Use RolesRef instead.</p>
 </td>
 </tr>
 <tr>
@@ -1175,11 +1266,9 @@ Kubernetes core/v1.LocalObjectReference
 </em>
 </td>
 <td>
-<p>NodePoolManagementCreds is a reference to a secret containing cloud
-credentials with permissions matching the node pool management policy. The
-secret should have exactly one key, <code>credentials</code>, whose value is an AWS
-credentials file.</p>
-<p>TODO(dan): document the &ldquo;node pool management policy&rdquo;</p>
+<p>Deprecated
+This field will be removed in the next API release.
+Use RolesRef instead.</p>
 </td>
 </tr>
 <tr>
@@ -1192,11 +1281,9 @@ Kubernetes core/v1.LocalObjectReference
 </em>
 </td>
 <td>
-<p>ControlPlaneOperatorCreds is a reference to a secret containing cloud
-credentials with permissions matching the control-plane-operator policy.
-The secret should have exactly one key, <code>credentials</code>, whose value is
-an AWS credentials file.</p>
-<p>TODO(dan): document the &ldquo;control plane operator policy&rdquo;</p>
+<p>Deprecated
+This field will be removed in the next API release.
+Use RolesRef instead.</p>
 </td>
 </tr>
 <tr>
@@ -1393,6 +1480,401 @@ string
 </tr>
 </tbody>
 </table>
+###AWSRolesRef { #hypershift.openshift.io/v1alpha1.AWSRolesRef }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
+</p>
+<p>
+<p>AWSRolesRef contains references to various AWS IAM roles required for operators to make calls against the AWS API.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>ingressARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>The referenced role must have a trust relationship that allows it to be assumed via web identity.
+<a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html">https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html</a>.
+Example:
+{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Principal&rdquo;: {
+&ldquo;Federated&rdquo;: &ldquo;{{ .ProviderARN }}&rdquo;
+},
+&ldquo;Action&rdquo;: &ldquo;sts:AssumeRoleWithWebIdentity&rdquo;,
+&ldquo;Condition&rdquo;: {
+&ldquo;StringEquals&rdquo;: {
+&ldquo;{{ .ProviderName }}:sub&rdquo;: {{ .ServiceAccounts }}
+}
+}
+}
+]
+}</p>
+<p>IngressARN is an ARN value referencing a role appropriate for the Ingress Operator.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;elasticloadbalancing:DescribeLoadBalancers&rdquo;,
+&ldquo;tag:GetResources&rdquo;,
+&ldquo;route53:ListHostedZones&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;*&rdquo;
+},
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;route53:ChangeResourceRecordSets&rdquo;
+],
+&ldquo;Resource&rdquo;: [
+&ldquo;arn:aws:route53:::PUBLIC_ZONE_ID&rdquo;,
+&ldquo;arn:aws:route53:::PRIVATE_ZONE_ID&rdquo;
+]
+}
+]
+}</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>imageRegistryARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>ImageRegistryARN is an ARN value referencing a role appropriate for the Image Registry Operator.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;s3:CreateBucket&rdquo;,
+&ldquo;s3:DeleteBucket&rdquo;,
+&ldquo;s3:PutBucketTagging&rdquo;,
+&ldquo;s3:GetBucketTagging&rdquo;,
+&ldquo;s3:PutBucketPublicAccessBlock&rdquo;,
+&ldquo;s3:GetBucketPublicAccessBlock&rdquo;,
+&ldquo;s3:PutEncryptionConfiguration&rdquo;,
+&ldquo;s3:GetEncryptionConfiguration&rdquo;,
+&ldquo;s3:PutLifecycleConfiguration&rdquo;,
+&ldquo;s3:GetLifecycleConfiguration&rdquo;,
+&ldquo;s3:GetBucketLocation&rdquo;,
+&ldquo;s3:ListBucket&rdquo;,
+&ldquo;s3:GetObject&rdquo;,
+&ldquo;s3:PutObject&rdquo;,
+&ldquo;s3:DeleteObject&rdquo;,
+&ldquo;s3:ListBucketMultipartUploads&rdquo;,
+&ldquo;s3:AbortMultipartUpload&rdquo;,
+&ldquo;s3:ListMultipartUploadParts&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;*&rdquo;
+}
+]
+}</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>storageARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>StorageARN is an ARN value referencing a role appropriate for the Storage Operator.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;ec2:AttachVolume&rdquo;,
+&ldquo;ec2:CreateSnapshot&rdquo;,
+&ldquo;ec2:CreateTags&rdquo;,
+&ldquo;ec2:CreateVolume&rdquo;,
+&ldquo;ec2:DeleteSnapshot&rdquo;,
+&ldquo;ec2:DeleteTags&rdquo;,
+&ldquo;ec2:DeleteVolume&rdquo;,
+&ldquo;ec2:DescribeInstances&rdquo;,
+&ldquo;ec2:DescribeSnapshots&rdquo;,
+&ldquo;ec2:DescribeTags&rdquo;,
+&ldquo;ec2:DescribeVolumes&rdquo;,
+&ldquo;ec2:DescribeVolumesModifications&rdquo;,
+&ldquo;ec2:DetachVolume&rdquo;,
+&ldquo;ec2:ModifyVolume&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;*&rdquo;
+}
+]
+}</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>networkARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>NetworkARN is an ARN value referencing a role appropriate for the Network Operator.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;ec2:DescribeInstances&rdquo;,
+&ldquo;ec2:DescribeInstanceStatus&rdquo;,
+&ldquo;ec2:DescribeInstanceTypes&rdquo;,
+&ldquo;ec2:UnassignPrivateIpAddresses&rdquo;,
+&ldquo;ec2:AssignPrivateIpAddresses&rdquo;,
+&ldquo;ec2:UnassignIpv6Addresses&rdquo;,
+&ldquo;ec2:AssignIpv6Addresses&rdquo;,
+&ldquo;ec2:DescribeSubnets&rdquo;,
+&ldquo;ec2:DescribeNetworkInterfaces&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;*&rdquo;
+}
+]
+}</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>kubeCloudControllerARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>KubeCloudControllerARN is an ARN value referencing a role appropriate for the KCM/KCC.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Action&rdquo;: [
+&ldquo;ec2:DescribeInstances&rdquo;,
+&ldquo;ec2:DescribeImages&rdquo;,
+&ldquo;ec2:DescribeRegions&rdquo;,
+&ldquo;ec2:DescribeRouteTables&rdquo;,
+&ldquo;ec2:DescribeSecurityGroups&rdquo;,
+&ldquo;ec2:DescribeSubnets&rdquo;,
+&ldquo;ec2:DescribeVolumes&rdquo;,
+&ldquo;ec2:CreateSecurityGroup&rdquo;,
+&ldquo;ec2:CreateTags&rdquo;,
+&ldquo;ec2:CreateVolume&rdquo;,
+&ldquo;ec2:ModifyInstanceAttribute&rdquo;,
+&ldquo;ec2:ModifyVolume&rdquo;,
+&ldquo;ec2:AttachVolume&rdquo;,
+&ldquo;ec2:AuthorizeSecurityGroupIngress&rdquo;,
+&ldquo;ec2:CreateRoute&rdquo;,
+&ldquo;ec2:DeleteRoute&rdquo;,
+&ldquo;ec2:DeleteSecurityGroup&rdquo;,
+&ldquo;ec2:DeleteVolume&rdquo;,
+&ldquo;ec2:DetachVolume&rdquo;,
+&ldquo;ec2:RevokeSecurityGroupIngress&rdquo;,
+&ldquo;ec2:DescribeVpcs&rdquo;,
+&ldquo;elasticloadbalancing:AddTags&rdquo;,
+&ldquo;elasticloadbalancing:AttachLoadBalancerToSubnets&rdquo;,
+&ldquo;elasticloadbalancing:ApplySecurityGroupsToLoadBalancer&rdquo;,
+&ldquo;elasticloadbalancing:CreateLoadBalancer&rdquo;,
+&ldquo;elasticloadbalancing:CreateLoadBalancerPolicy&rdquo;,
+&ldquo;elasticloadbalancing:CreateLoadBalancerListeners&rdquo;,
+&ldquo;elasticloadbalancing:ConfigureHealthCheck&rdquo;,
+&ldquo;elasticloadbalancing:DeleteLoadBalancer&rdquo;,
+&ldquo;elasticloadbalancing:DeleteLoadBalancerListeners&rdquo;,
+&ldquo;elasticloadbalancing:DescribeLoadBalancers&rdquo;,
+&ldquo;elasticloadbalancing:DescribeLoadBalancerAttributes&rdquo;,
+&ldquo;elasticloadbalancing:DetachLoadBalancerFromSubnets&rdquo;,
+&ldquo;elasticloadbalancing:DeregisterInstancesFromLoadBalancer&rdquo;,
+&ldquo;elasticloadbalancing:ModifyLoadBalancerAttributes&rdquo;,
+&ldquo;elasticloadbalancing:RegisterInstancesWithLoadBalancer&rdquo;,
+&ldquo;elasticloadbalancing:SetLoadBalancerPoliciesForBackendServer&rdquo;,
+&ldquo;elasticloadbalancing:AddTags&rdquo;,
+&ldquo;elasticloadbalancing:CreateListener&rdquo;,
+&ldquo;elasticloadbalancing:CreateTargetGroup&rdquo;,
+&ldquo;elasticloadbalancing:DeleteListener&rdquo;,
+&ldquo;elasticloadbalancing:DeleteTargetGroup&rdquo;,
+&ldquo;elasticloadbalancing:DescribeListeners&rdquo;,
+&ldquo;elasticloadbalancing:DescribeLoadBalancerPolicies&rdquo;,
+&ldquo;elasticloadbalancing:DescribeTargetGroups&rdquo;,
+&ldquo;elasticloadbalancing:DescribeTargetHealth&rdquo;,
+&ldquo;elasticloadbalancing:ModifyListener&rdquo;,
+&ldquo;elasticloadbalancing:ModifyTargetGroup&rdquo;,
+&ldquo;elasticloadbalancing:RegisterTargets&rdquo;,
+&ldquo;elasticloadbalancing:SetLoadBalancerPoliciesOfListener&rdquo;,
+&ldquo;iam:CreateServiceLinkedRole&rdquo;,
+&ldquo;kms:DescribeKey&rdquo;
+],
+&ldquo;Resource&rdquo;: [
+&ldquo;*&rdquo;
+],
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;
+}
+]
+}</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nodePoolManagementARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>NodePoolManagementARN is an ARN value referencing a role appropriate for the CAPI Controller.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Action&rdquo;: [
+&ldquo;ec2:AllocateAddress&rdquo;,
+&ldquo;ec2:AssociateRouteTable&rdquo;,
+&ldquo;ec2:AttachInternetGateway&rdquo;,
+&ldquo;ec2:AuthorizeSecurityGroupIngress&rdquo;,
+&ldquo;ec2:CreateInternetGateway&rdquo;,
+&ldquo;ec2:CreateNatGateway&rdquo;,
+&ldquo;ec2:CreateRoute&rdquo;,
+&ldquo;ec2:CreateRouteTable&rdquo;,
+&ldquo;ec2:CreateSecurityGroup&rdquo;,
+&ldquo;ec2:CreateSubnet&rdquo;,
+&ldquo;ec2:CreateTags&rdquo;,
+&ldquo;ec2:DeleteInternetGateway&rdquo;,
+&ldquo;ec2:DeleteNatGateway&rdquo;,
+&ldquo;ec2:DeleteRouteTable&rdquo;,
+&ldquo;ec2:DeleteSecurityGroup&rdquo;,
+&ldquo;ec2:DeleteSubnet&rdquo;,
+&ldquo;ec2:DeleteTags&rdquo;,
+&ldquo;ec2:DescribeAccountAttributes&rdquo;,
+&ldquo;ec2:DescribeAddresses&rdquo;,
+&ldquo;ec2:DescribeAvailabilityZones&rdquo;,
+&ldquo;ec2:DescribeImages&rdquo;,
+&ldquo;ec2:DescribeInstances&rdquo;,
+&ldquo;ec2:DescribeInternetGateways&rdquo;,
+&ldquo;ec2:DescribeNatGateways&rdquo;,
+&ldquo;ec2:DescribeNetworkInterfaces&rdquo;,
+&ldquo;ec2:DescribeNetworkInterfaceAttribute&rdquo;,
+&ldquo;ec2:DescribeRouteTables&rdquo;,
+&ldquo;ec2:DescribeSecurityGroups&rdquo;,
+&ldquo;ec2:DescribeSubnets&rdquo;,
+&ldquo;ec2:DescribeVpcs&rdquo;,
+&ldquo;ec2:DescribeVpcAttribute&rdquo;,
+&ldquo;ec2:DescribeVolumes&rdquo;,
+&ldquo;ec2:DetachInternetGateway&rdquo;,
+&ldquo;ec2:DisassociateRouteTable&rdquo;,
+&ldquo;ec2:DisassociateAddress&rdquo;,
+&ldquo;ec2:ModifyInstanceAttribute&rdquo;,
+&ldquo;ec2:ModifyNetworkInterfaceAttribute&rdquo;,
+&ldquo;ec2:ModifySubnetAttribute&rdquo;,
+&ldquo;ec2:ReleaseAddress&rdquo;,
+&ldquo;ec2:RevokeSecurityGroupIngress&rdquo;,
+&ldquo;ec2:RunInstances&rdquo;,
+&ldquo;ec2:TerminateInstances&rdquo;,
+&ldquo;tag:GetResources&rdquo;,
+&ldquo;ec2:CreateLaunchTemplate&rdquo;,
+&ldquo;ec2:CreateLaunchTemplateVersion&rdquo;,
+&ldquo;ec2:DescribeLaunchTemplates&rdquo;,
+&ldquo;ec2:DescribeLaunchTemplateVersions&rdquo;,
+&ldquo;ec2:DeleteLaunchTemplate&rdquo;,
+&ldquo;ec2:DeleteLaunchTemplateVersions&rdquo;
+],
+&ldquo;Resource&rdquo;: [
+&ldquo;<em>&rdquo;
+],
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;
+},
+{
+&ldquo;Condition&rdquo;: {
+&ldquo;StringLike&rdquo;: {
+&ldquo;iam:AWSServiceName&rdquo;: &ldquo;elasticloadbalancing.amazonaws.com&rdquo;
+}
+},
+&ldquo;Action&rdquo;: [
+&ldquo;iam:CreateServiceLinkedRole&rdquo;
+],
+&ldquo;Resource&rdquo;: [
+&ldquo;arn:</em>:iam::<em>:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing&rdquo;
+],
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;
+},
+{
+&ldquo;Action&rdquo;: [
+&ldquo;iam:PassRole&rdquo;
+],
+&ldquo;Resource&rdquo;: [
+&ldquo;arn:</em>:iam::<em>:role/</em>-worker-role&rdquo;
+],
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;
+}
+]
+}</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>controlPlaneOperatorARN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>ControlPlaneOperatorARN  is an ARN value referencing a role appropriate for the Control Plane Operator.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;ec2:CreateVpcEndpoint&rdquo;,
+&ldquo;ec2:DescribeVpcEndpoints&rdquo;,
+&ldquo;ec2:ModifyVpcEndpoint&rdquo;,
+&ldquo;ec2:DeleteVpcEndpoints&rdquo;,
+&ldquo;ec2:CreateTags&rdquo;,
+&ldquo;route53:ListHostedZones&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;*&rdquo;
+},
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;route53:ChangeResourceRecordSets&rdquo;,
+&ldquo;route53:ListResourceRecordSets&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;arn:aws:route53:::%s&rdquo;
+}
+]
+}</p>
+</td>
+</tr>
+</tbody>
+</table>
 ###AWSServiceEndpoint { #hypershift.openshift.io/v1alpha1.AWSServiceEndpoint }
 <p>
 (<em>Appears on:</em>
@@ -1581,6 +2063,24 @@ int32
 </tr>
 <tr>
 <td>
+<code>diskStorageAccountType</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DiskStorageAccountType is the disk storage account type to use. Valid values are:
+* Standard_LRS: HDD
+* StandardSSD_LRS: Standard SSD
+* Premium_LRS: Premium SDD
+* UltraSSD_LRS: Ultra SDD</p>
+<p>Defaults to Premium_LRS. For more details, visit the Azure documentation:
+<a href="https://docs.microsoft.com/en-us/azure/virtual-machines/disks-types#disk-type-comparison">https://docs.microsoft.com/en-us/azure/virtual-machines/disks-types#disk-type-comparison</a></p>
+</td>
+</tr>
+<tr>
+<td>
 <code>availabilityZone</code></br>
 <em>
 string
@@ -1703,10 +2203,19 @@ string
 </tr>
 </tbody>
 </table>
+###CIDRBlock { #hypershift.openshift.io/v1alpha1.CIDRBlock }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.APIServerNetworking">APIServerNetworking</a>, 
+<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+</p>
+<p>
+</p>
 ###ClusterAutoscaling { #hypershift.openshift.io/v1alpha1.ClusterAutoscaling }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>)
+<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ClusterAutoscaling specifies auto-scaling behavior that applies to all
@@ -1810,6 +2319,8 @@ configuration API.</p>
 <em>(Optional)</em>
 <p>SecretRefs holds references to any secrets referenced by configuration
 entries. Entries can reference the secrets using local object references.</p>
+<p>Deprecated
+This field is deprecated and will be removed in a future release</p>
 </td>
 </tr>
 <tr>
@@ -1826,6 +2337,8 @@ entries. Entries can reference the secrets using local object references.</p>
 <p>ConfigMapRefs holds references to any configmaps referenced by
 configuration entries. Entries can reference the configmaps using local
 object references.</p>
+<p>Deprecated
+This field is deprecated and will be removed in a future release</p>
 </td>
 </tr>
 <tr>
@@ -1840,6 +2353,194 @@ object references.</p>
 <td>
 <em>(Optional)</em>
 <p>Items embeds the serialized configuration resources.</p>
+<p>Deprecated
+This field is deprecated and will be removed in a future release</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>apiServer</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.APIServerSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>APIServer holds configuration (like serving certificates, client CA and CORS domains)
+shared by all API servers in the system, among them especially kube-apiserver
+and openshift-apiserver.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>authentication</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.AuthenticationSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Authentication specifies cluster-wide settings for authentication (like OAuth and
+webhook token authenticators).</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>featureGate</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.FeatureGateSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>FeatureGate holds cluster-wide information about feature gates.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>image</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.ImageSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Image governs policies related to imagestream imports and runtime configuration
+for external registries. It allows cluster admins to configure which registries
+OpenShift is allowed to import images from, extra CA trust bundles for external
+registries, and policies to block or allow registry hostnames.
+When exposing OpenShift&rsquo;s image registry to the public, this also lets cluster
+admins specify the external hostname.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>ingress</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.IngressSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Ingress holds cluster-wide information about ingress, including the default ingress domain
+used for routes.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>network</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.NetworkSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Network holds cluster-wide information about the network. It is used to configure the desired network configuration, such as: IP address pools for services/pod IPs, network plugin, etc.
+Please view network.spec for an explanation on what applies when configuring this resource.
+TODO (csrwng): Add validation here to exclude changes that conflict with networking settings in the HostedCluster.Spec.Networking field.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>oauth</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.OAuthSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OAuth holds cluster-wide information about OAuth.
+It is used to configure the integrated OAuth server.
+This configuration is only honored when the top level Authentication config has type set to IntegratedOAuth.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>scheduler</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.SchedulerSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Scheduler holds cluster-wide config information to run the Kubernetes Scheduler
+and influence its placement decisions. The canonical name for this config is <code>cluster</code>.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>proxy</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.ProxySpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Proxy holds cluster-wide information on how to configure default proxies for the cluster.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###ClusterNetworkEntry { #hypershift.openshift.io/v1alpha1.ClusterNetworkEntry }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+</p>
+<p>
+<p>ClusterNetworkEntry is a single IP address block for pod IP blocks. IP blocks
+are allocated with size 2^HostSubnetLength.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>cidr</code></br>
+<em>
+<a href="#">
+github.com/openshift/hypershift/api/util/ipnet.IPNet
+</a>
+</em>
+</td>
+<td>
+<p>CIDR is the IP block address pool.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>hostPrefix</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>HostPrefix is the prefix size to allocate to each node from the CIDR.
+For example, 24 would allocate 2^8=256 adresses to each node. If this
+field is not used by the plugin, it can be left unset.</p>
 </td>
 </tr>
 </tbody>
@@ -1847,7 +2548,8 @@ object references.</p>
 ###ClusterNetworking { #hypershift.openshift.io/v1alpha1.ClusterNetworking }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>)
+<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ClusterNetworking specifies network configuration for a cluster.</p>
@@ -1868,8 +2570,10 @@ string
 </em>
 </td>
 <td>
-<p>ServiceCIDR is&hellip;</p>
-<p>TODO(dan): document it</p>
+<em>(Optional)</em>
+<p>Deprecated
+This field will be removed in the next API release.
+Use ServiceNetwork instead</p>
 </td>
 </tr>
 <tr>
@@ -1880,8 +2584,10 @@ string
 </em>
 </td>
 <td>
-<p>PodCIDR is&hellip;</p>
-<p>TODO(dan): document it</p>
+<em>(Optional)</em>
+<p>Deprecated
+This field will be removed in the next API release.
+Use ClusterNetwork instead</p>
 </td>
 </tr>
 <tr>
@@ -1892,8 +2598,56 @@ string
 </em>
 </td>
 <td>
-<p>MachineCIDR is&hellip;</p>
-<p>TODO(dan): document it</p>
+<em>(Optional)</em>
+<p>Deprecated
+This field will be removed in the next API release.
+Use MachineNetwork instead</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>machineNetwork</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.MachineNetworkEntry">
+[]MachineNetworkEntry
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MachineNetwork is the list of IP address pools for machines.
+TODO: make this required in the next version of the API</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>clusterNetwork</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworkEntry">
+[]ClusterNetworkEntry
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ClusterNetwork is the list of IP address pools for pods.
+TODO: make this required in the next version of the API</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>serviceNetwork</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.ServiceNetworkEntry">
+[]ServiceNetworkEntry
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ServiceNetwork is the list of IP address pools for services.
+NOTE: currently only one entry is supported.
+TODO: make this required in the next version of the API</p>
 </td>
 </tr>
 <tr>
@@ -1910,7 +2664,9 @@ NetworkType
 <p>
 Value must be one of:
 &#34;Calico&#34;, 
-&#34;OpenShiftSDN&#34;
+&#34;OVNKubernetes&#34;, 
+&#34;OpenShiftSDN&#34;, 
+&#34;Other&#34;
 </p>
 </td>
 </tr>
@@ -1969,7 +2725,9 @@ with the information available, which may be an image or a tag.</p>
 <td>
 <code>history</code></br>
 <em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
 []github.com/openshift/api/config/v1.UpdateHistory
+</a>
 </em>
 </td>
 <td>
@@ -2016,6 +2774,10 @@ created in the guest VPC</p>
 <td><p>AWSEndpointServiceAvailable indicates whether the AWS Endpoint Service
 has been created for the specified NLB in the management VPC</p>
 </td>
+</tr><tr><td><p>&#34;CVOScaledDown&#34;</p></td>
+<td></td>
+</tr><tr><td><p>&#34;CloudResourcesDestroyed&#34;</p></td>
+<td></td>
 </tr><tr><td><p>&#34;ClusterVersionFailing&#34;</p></td>
 <td></td>
 </tr><tr><td><p>&#34;ClusterVersionSucceeding&#34;</p></td>
@@ -2023,13 +2785,29 @@ has been created for the specified NLB in the management VPC</p>
 version of the HostedCluster as indicated by the Failing condition in the
 underlying cluster&rsquo;s ClusterVersion.</p>
 </td>
+</tr><tr><td><p>&#34;ClusterVersionUpgradeable&#34;</p></td>
+<td><p>ClusterVersionUpgradeable indicates the Upgradeable condition in the
+underlying cluster&rsquo;s ClusterVersion.</p>
+</td>
 </tr><tr><td><p>&#34;EtcdAvailable&#34;</p></td>
+<td></td>
+</tr><tr><td><p>&#34;EtcdSnapshotRestored&#34;</p></td>
 <td></td>
 </tr><tr><td><p>&#34;Available&#34;</p></td>
 <td><p>HostedClusterAvailable indicates whether the HostedCluster has a healthy
 control plane.</p>
 </td>
+</tr><tr><td><p>&#34;Degraded&#34;</p></td>
+<td><p>HostedClusterDegraded indicates whether the HostedCluster is encountering
+an error that may require user intervention to resolve.</p>
+</td>
+</tr><tr><td><p>&#34;Progressing&#34;</p></td>
+<td><p>HostedClusterProgressing indicates whether the HostedCluster is attempting
+an initial deployment or upgrade.</p>
+</td>
 </tr><tr><td><p>&#34;Available&#34;</p></td>
+<td></td>
+</tr><tr><td><p>&#34;Degraded&#34;</p></td>
 <td></td>
 </tr><tr><td><p>&#34;IgnitionEndpointAvailable&#34;</p></td>
 <td><p>IgnitionEndpointAvailable indicates whether the ignition server for the
@@ -2039,13 +2817,17 @@ HostedCluster is available to handle ignition requests.</p>
 <td></td>
 </tr><tr><td><p>&#34;KubeAPIServerAvailable&#34;</p></td>
 <td></td>
-</tr><tr><td><p>&#34;OIDCConfigurationInvalid&#34;</p></td>
-<td><p>OIDCConfigurationInvalid indicates if an AWS cluster&rsquo;s OIDC condition is
-detected as invalid.</p>
+</tr><tr><td><p>&#34;PlatformCredentialsFound&#34;</p></td>
+<td><p>PlatformCredentialsFound indicates that credentials required for the
+desired platform are valid.</p>
 </td>
-</tr><tr><td><p>&#34;ReconciliationPaused&#34;</p></td>
-<td><p>ReconciliationPaused indicates if reconciliation of the hostedcluster is
-paused.</p>
+</tr><tr><td><p>&#34;ReconciliationActive&#34;</p></td>
+<td><p>ReconciliationActive indicates if reconciliation of the hostedcluster is
+active or paused.</p>
+</td>
+</tr><tr><td><p>&#34;ReconciliationSucceeded&#34;</p></td>
+<td><p>ReconciliationSucceeded indicates if the hostedcluster reconciliation
+succeeded.</p>
 </td>
 </tr><tr><td><p>&#34;SupportedHostedCluster&#34;</p></td>
 <td><p>SupportedHostedCluster indicates whether a HostedCluster is supported by
@@ -2064,6 +2846,16 @@ ClusterConfiguration specified for the HostedCluster is valid.</p>
 </td>
 </tr><tr><td><p>&#34;ValidHostedControlPlaneConfiguration&#34;</p></td>
 <td></td>
+</tr><tr><td><p>&#34;ValidOIDCConfiguration&#34;</p></td>
+<td><p>ValidOIDCConfiguration indicates if an AWS cluster&rsquo;s OIDC condition is
+detected as invalid.</p>
+</td>
+</tr><tr><td><p>&#34;ValidReleaseImage&#34;</p></td>
+<td><p>ValidReleaseImage indicates if the release image set in the spec is valid
+for the HostedCluster. For example, this can be set false if the
+HostedCluster itself attempts an unsupported version before 4.9 or an
+unsupported upgrade e.g y-stream upgrade before 4.11.</p>
+</td>
 </tr></tbody>
 </table>
 ###DNSSpec { #hypershift.openshift.io/v1alpha1.DNSSpec }
@@ -2402,7 +3194,7 @@ AvailabilityPolicy
 <em>(Optional)</em>
 <p>InfrastructureAvailabilityPolicy specifies the availability policy applied
 to infrastructure services which run on cluster nodes. The default value is
-HighlyAvailable.</p>
+SingleReplica.</p>
 <p>
 Value must be one of:
 &#34;HighlyAvailable&#34;, 
@@ -2529,6 +3321,24 @@ validation.</p>
 </tr>
 <tr>
 <td>
+<code>serviceAccountSigningKey</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ServiceAccountSigningKey is a reference to a secret containing the private key
+used by the service account token issuer. The secret is expected to contain
+a single key named &ldquo;key&rdquo;. If not specified, a service account signing key will
+be generated automatically for the cluster. When specifying a service account
+signing key, a IssuerURL must also be specified.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>configuration</code></br>
 <em>
 <a href="#hypershift.openshift.io/v1alpha1.ClusterConfiguration">
@@ -2576,6 +3386,21 @@ name that corresponds to the constant AuditWebhookKubeconfigKey.</p>
 <em>(Optional)</em>
 <p>ImageContentSources specifies image mirrors that can be used by cluster
 nodes to pull content.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>additionalTrustBundle</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AdditionalTrustBundle is a reference to a ConfigMap containing a
+PEM-encoded X.509 certificate bundle that will be added to the hosted controlplane and nodes</p>
 </td>
 </tr>
 <tr>
@@ -2642,6 +3467,18 @@ Value must be one of:
 &#34;guest&#34;, 
 &#34;management&#34;
 </p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nodeSelector</code></br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeSelector when specified, must be true for the pods managed by the HostedCluster to be scheduled.</p>
 </td>
 </tr>
 </tbody>
@@ -2722,6 +3559,20 @@ It exposes the config for instances to become kubernetes nodes.</p>
 </tr>
 <tr>
 <td>
+<code>oauthCallbackURLTemplate</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>OAuthCallbackURLTemplate contains a template for the URL to use as a callback
+for identity providers. The [identity-provider-name] placeholder must be replaced
+with the name of an identity provider defined on the HostedCluster.
+This is populated after the infrastructure is ready.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>conditions</code></br>
 <em>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#condition-v1-meta">
@@ -2782,12 +3633,30 @@ string
 </tr>
 <tr>
 <td>
+<code>networking</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">
+ClusterNetworking
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Networking specifies network configuration for the cluster.
+Temporarily optional for backward compatibility, required in future releases.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>serviceCIDR</code></br>
 <em>
 string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
+<p>deprecated
+use networking.ServiceNetwork</p>
 </td>
 </tr>
 <tr>
@@ -2798,6 +3667,9 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
+<p>deprecated
+use networking.ClusterNetwork</p>
 </td>
 </tr>
 <tr>
@@ -2808,6 +3680,9 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
+<p>deprecated
+use networking.MachineNetwork</p>
 </td>
 </tr>
 <tr>
@@ -2820,11 +3695,16 @@ NetworkType
 </em>
 </td>
 <td>
-<p>NetworkType specifies the SDN provider used for cluster networking.</p>
+<em>(Optional)</em>
+<p>deprecated
+use networking.NetworkType
+NetworkType specifies the SDN provider used for cluster networking.</p>
 <p>
 Value must be one of:
 &#34;Calico&#34;, 
-&#34;OpenShiftSDN&#34;
+&#34;OVNKubernetes&#34;, 
+&#34;OpenShiftSDN&#34;, 
+&#34;Other&#34;
 </p>
 </td>
 </tr>
@@ -2891,6 +3771,23 @@ DNSSpec
 </tr>
 <tr>
 <td>
+<code>serviceAccountSigningKey</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ServiceAccountSigningKey is a reference to a secret containing the private key
+used by the service account token issuer. The secret is expected to contain
+a single key named &ldquo;key&rdquo;. If not specified, a service account signing key will
+be generated automatically for the cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>apiPort</code></br>
 <em>
 int32
@@ -2898,7 +3795,9 @@ int32
 </td>
 <td>
 <em>(Optional)</em>
-<p>APIPort is the port at which the APIServer listens inside a worker</p>
+<p>deprecated
+use networking.apiServer.APIPort
+APIPort is the port at which the APIServer listens inside a worker</p>
 </td>
 </tr>
 <tr>
@@ -2910,8 +3809,28 @@ string
 </td>
 <td>
 <em>(Optional)</em>
-<p>APIAdvertiseAddress is the address at which the APIServer listens
+<p>deprecated
+use networking.apiServer.AdvertiseAddress
+APIAdvertiseAddress is the address at which the APIServer listens
 inside a worker.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>apiAllowedCIDRBlocks</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.CIDRBlock">
+[]CIDRBlock
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>deprecated
+use networking.apiServer.APIAllowedCIDRBlocks
+APIAllowedCIDRBlocks is an allow list of CIDR blocks that can access the APIServer
+If not specified, traffic is allowed from all addresses.
+This depends on underlying support by the cloud provider for Service LoadBalancerSourceRanges</p>
 </td>
 </tr>
 <tr>
@@ -2925,8 +3844,8 @@ AvailabilityPolicy
 </td>
 <td>
 <em>(Optional)</em>
-<p>ControllerAvailabilityPolicy specifies whether to run control plane controllers in HA mode
-Defaults to SingleReplica when not set</p>
+<p>ControllerAvailabilityPolicy specifies the availability policy applied to
+critical control plane components. The default value is SingleReplica.</p>
 <p>
 Value must be one of:
 &#34;HighlyAvailable&#34;, 
@@ -2945,9 +3864,9 @@ AvailabilityPolicy
 </td>
 <td>
 <em>(Optional)</em>
-<p>InfrastructureAvailabilityPolicy specifies whether to run infrastructure services that
-run on the guest cluster nodes in HA mode
-Defaults to HighlyAvailable when not set</p>
+<p>InfrastructureAvailabilityPolicy specifies the availability policy applied
+to infrastructure services which run on cluster nodes. The default value is
+SingleReplica.</p>
 <p>
 Value must be one of:
 &#34;HighlyAvailable&#34;, 
@@ -3058,6 +3977,20 @@ ClusterConfiguration
 </tr>
 <tr>
 <td>
+<code>additionalTrustBundle</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AdditionalTrustBundle references a ConfigMap containing a PEM-encoded X.509 certificate bundle</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>secretEncryption</code></br>
 <em>
 <a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">
@@ -3106,6 +4039,33 @@ Value must be one of:
 &#34;guest&#34;, 
 &#34;management&#34;
 </p>
+</td>
+</tr>
+<tr>
+<td>
+<code>autoscaling</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.ClusterAutoscaling">
+ClusterAutoscaling
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Autoscaling specifies auto-scaling behavior that applies to all NodePools
+associated with the control plane.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nodeSelector</code></br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeSelector when specified, must be true for the pods managed by the HostedCluster to be scheduled.</p>
 </td>
 </tr>
 </tbody>
@@ -3176,6 +4136,20 @@ APIEndpoint
 <p>ControlPlaneEndpoint contains the endpoint information by which
 external clients can access the control plane.  This is populated
 after the infrastructure is ready.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>oauthCallbackURLTemplate</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>OAuthCallbackURLTemplate contains a template for the URL to use as a callback
+for identity providers. The [identity-provider-name] placeholder must be replaced
+with the name of an identity provider defined on the HostedCluster.
+This is populated after the infrastructure is ready.</p>
 </td>
 </tr>
 <tr>
@@ -3541,7 +4515,9 @@ call IBM Cloud KMS APIs</p>
 <td>
 <code>providerType</code></br>
 <em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
 github.com/openshift/api/config/v1.IBMCloudProviderType
+</a>
 </em>
 </td>
 <td>
@@ -3690,6 +4666,80 @@ AWSKMSSpec
 </tr>
 </tbody>
 </table>
+###KubevirtCompute { #hypershift.openshift.io/v1alpha1.KubevirtCompute }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform">KubevirtNodePoolPlatform</a>)
+</p>
+<p>
+<p>KubevirtCompute contains values associated with the virtual compute hardware requested for the VM.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>memory</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#quantity-resource-api">
+k8s.io/apimachinery/pkg/api/resource.Quantity
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Memory represents how much guest memory the VM should have</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>cores</code></br>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Cores represents how many cores the guest VM should have</p>
+</td>
+</tr>
+</tbody>
+</table>
+###KubevirtDiskImage { #hypershift.openshift.io/v1alpha1.KubevirtDiskImage }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtRootVolume">KubevirtRootVolume</a>)
+</p>
+<p>
+<p>KubevirtDiskImage contains values representing where the rhcos image is located</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>containerDiskImage</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ContainerDiskImage is a string representing the container image that holds the root disk</p>
+</td>
+</tr>
+</tbody>
+</table>
 ###KubevirtNodePoolPlatform { #hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform }
 <p>
 (<em>Appears on:</em>
@@ -3709,16 +4759,211 @@ on KubeVirt platform.</p>
 <tbody>
 <tr>
 <td>
-<code>nodeTemplate</code></br>
+<code>rootVolume</code></br>
 <em>
-sigs.k8s.io/cluster-api-provider-kubevirt/api/v1alpha1.VirtualMachineTemplateSpec
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtRootVolume">
+KubevirtRootVolume
+</a>
 </em>
 </td>
 <td>
-<p>NodeTemplate Spec contains the VirtualMachineInstance specification.</p>
+<p>RootVolume represents values associated with the VM volume that will host rhcos</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>compute</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtCompute">
+KubevirtCompute
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Compute contains values representing the virtual hardware requested for the VM</p>
 </td>
 </tr>
 </tbody>
+</table>
+###KubevirtPersistentVolume { #hypershift.openshift.io/v1alpha1.KubevirtPersistentVolume }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolume">KubevirtVolume</a>)
+</p>
+<p>
+<p>KubevirtPersistentVolume contains the values involved with provisioning persistent storage for a KubeVirt VM.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>size</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#quantity-resource-api">
+k8s.io/apimachinery/pkg/api/resource.Quantity
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Size is the size of the persistent storage volume</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>storageClass</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>StorageClass is the storageClass used for the underlying PVC that hosts the volume</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>accessModes</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.PersistentVolumeAccessMode">
+[]PersistentVolumeAccessMode
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AccessModes is an array that contains the desired Access Modes the root volume should have.
+More info: <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes</a></p>
+</td>
+</tr>
+</tbody>
+</table>
+###KubevirtRootVolume { #hypershift.openshift.io/v1alpha1.KubevirtRootVolume }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform">KubevirtNodePoolPlatform</a>)
+</p>
+<p>
+<p>KubevirtRootVolume represents the volume that the rhcos disk will be stored and run from.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>diskImage</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtDiskImage">
+KubevirtDiskImage
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Image represents what rhcos image to use for the node pool</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>KubevirtVolume</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolume">
+KubevirtVolume
+</a>
+</em>
+</td>
+<td>
+<p>
+(Members of <code>KubevirtVolume</code> are embedded into this type.)
+</p>
+<p>KubevirtVolume represents of type of storage to run the image on</p>
+</td>
+</tr>
+</tbody>
+</table>
+###KubevirtVolume { #hypershift.openshift.io/v1alpha1.KubevirtVolume }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtRootVolume">KubevirtRootVolume</a>)
+</p>
+<p>
+<p>KubevirtVolume represents what kind of storage to use for a KubeVirt VM volume</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>type</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolumeType">
+KubevirtVolumeType
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Type represents the type of storage to associate with the kubevirt VMs.</p>
+<p>
+Value must be one of:
+&#34;Persistent&#34;
+</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>persistent</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtPersistentVolume">
+KubevirtPersistentVolume
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Persistent volume type means the VM&rsquo;s storage is backed by a PVC
+VMs that use persistent volumes can survive disruption events like restart and eviction
+This is the default type used when no storage type is defined.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###KubevirtVolumeType { #hypershift.openshift.io/v1alpha1.KubevirtVolumeType }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolume">KubevirtVolume</a>)
+</p>
+<p>
+<p>KubevirtVolumeType is a specific supported KubeVirt volumes</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;Persistent&#34;</p></td>
+<td><p>KubevirtVolumeTypePersistent represents persistent volume for kubevirt VMs</p>
+</td>
+</tr></tbody>
 </table>
 ###LoadBalancerPublishingStrategy { #hypershift.openshift.io/v1alpha1.LoadBalancerPublishingStrategy }
 <p>
@@ -3746,6 +4991,37 @@ string
 <td>
 <em>(Optional)</em>
 <p>Hostname is the name of the DNS record that will be created pointing to the LoadBalancer.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###MachineNetworkEntry { #hypershift.openshift.io/v1alpha1.MachineNetworkEntry }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+</p>
+<p>
+<p>MachineNetworkEntry is a single IP address block for node IP blocks.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>cidr</code></br>
+<em>
+<a href="#">
+github.com/openshift/hypershift/api/util/ipnet.IPNet
+</a>
+</em>
+</td>
+<td>
+<p>CIDR is the IP block address pool for machines within the cluster.</p>
 </td>
 </tr>
 </tbody>
@@ -3832,6 +5108,22 @@ etcd member (either 1 or 3 depending on the HostedCluster control plane
 availability configuration).</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>restoreSnapshotURL</code></br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RestoreSnapshotURL allows an optional list of URLs to be provided where
+an etcd snapshot can be downloaded, for example a pre-signed URL
+referencing a storage service, one URL per replica.
+This snapshot will be restored on initial startup, only when the etcd PV
+is empty.</p>
+</td>
+</tr>
 </tbody>
 </table>
 ###ManagedEtcdStorageType { #hypershift.openshift.io/v1alpha1.ManagedEtcdStorageType }
@@ -3873,8 +5165,14 @@ availability configuration).</p>
 <tbody><tr><td><p>&#34;Calico&#34;</p></td>
 <td><p>Calico specifies Calico as the SDN provider</p>
 </td>
+</tr><tr><td><p>&#34;OVNKubernetes&#34;</p></td>
+<td><p>OVNKubernetes specifies OVN as the SDN provider</p>
+</td>
 </tr><tr><td><p>&#34;OpenShiftSDN&#34;</p></td>
-<td><p>OpenShiftSDN specifies OpenshiftSDN as the SDN provider</p>
+<td><p>OpenShiftSDN specifies OpenShiftSDN as the SDN provider</p>
+</td>
+</tr><tr><td><p>&#34;Other&#34;</p></td>
+<td><p>Other specifies an undefined SDN provider</p>
 </td>
 </tr></tbody>
 </table>
@@ -4141,7 +5439,8 @@ Value must be one of:
 &#34;Azure&#34;, 
 &#34;IBMCloud&#34;, 
 &#34;KubeVirt&#34;, 
-&#34;None&#34;
+&#34;None&#34;, 
+&#34;PowerVS&#34;
 </p>
 </td>
 </tr>
@@ -4212,6 +5511,20 @@ AzureNodePoolPlatform
 <td>
 </td>
 </tr>
+<tr>
+<td>
+<code>powervs</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSNodePoolPlatform">
+PowerVSNodePoolPlatform
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PowerVS specifies the configuration used when using IBMCloud PowerVS platform.</p>
+</td>
+</tr>
 </tbody>
 </table>
 ###NodePoolSpec { #hypershift.openshift.io/v1alpha1.NodePoolSpec }
@@ -4280,7 +5593,20 @@ int32
 </td>
 <td>
 <em>(Optional)</em>
-<p>NodeCount is the desired number of nodes the pool should maintain. If
+<p>Deprecated: Use Replicas instead. NodeCount will be dropped in the next
+api release.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>replicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Replicas is the desired number of nodes the pool should maintain. If
 unset, the default value is 0.</p>
 </td>
 </tr>
@@ -4325,13 +5651,9 @@ NodePoolAutoScaling
 <p>Config is a list of references to ConfigMaps containing serialized
 MachineConfig resources to be injected into the ignition configurations of
 nodes in the NodePool. The MachineConfig API schema is defined here:</p>
-<p><a href="https://github.com/openshift/machine-config-operator/blob/master/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L172">https://github.com/openshift/machine-config-operator/blob/master/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L172</a></p>
+<p><a href="https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185">https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185</a></p>
 <p>Each ConfigMap must have a single key named &ldquo;config&rdquo; whose value is the
 JSON or YAML of a serialized MachineConfig.</p>
-<p>TODO (alberto): this ConfigMaps are meant to contain MachineConfig,
-KubeletConfig and ContainerRuntimeConfig but MCO only supports
-MachineConfig in bootstrap mode atm. See:
-<a href="https://github.com/openshift/machine-config-operator/blob/9c6c2bfd7ed498bfbc296d530d1839bd6a177b0b/pkg/controller/bootstrap/bootstrap.go#L104-L119">https://github.com/openshift/machine-config-operator/blob/9c6c2bfd7ed498bfbc296d530d1839bd6a177b0b/pkg/controller/bootstrap/bootstrap.go#L104-L119</a></p>
 </td>
 </tr>
 <tr>
@@ -4351,6 +5673,21 @@ NOTE: NodeDrainTimeout is different from <code>kubectl drain --timeout</code>
 TODO (alberto): Today changing this field will trigger a recreate rolling update, which kind of defeats
 the purpose of the change. In future we plan to propagate this field in-place.
 <a href="https://github.com/kubernetes-sigs/cluster-api/issues/5880">https://github.com/kubernetes-sigs/cluster-api/issues/5880</a></p>
+</td>
+</tr>
+<tr>
+<td>
+<code>pausedUntil</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PausedUntil is a field that can be used to pause reconciliation on a resource.
+Either a date can be provided in RFC3339 format or a boolean. If a date is
+provided: reconciliation is paused on the resource until that date. If the boolean true is
+provided: reconciliation is paused on the resource until the field is removed.</p>
 </td>
 </tr>
 </tbody>
@@ -4373,14 +5710,14 @@ the purpose of the change. In future we plan to propagate this field in-place.
 <tbody>
 <tr>
 <td>
-<code>nodeCount</code></br>
+<code>replicas</code></br>
 <em>
 int32
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>NodeCount is the latest observed number of nodes in the pool.</p>
+<p>Replicas is the latest observed number of nodes in the pool.</p>
 </td>
 </tr>
 <tr>
@@ -4478,6 +5815,13 @@ the management cluster.</p>
 </td>
 </tr></tbody>
 </table>
+###PersistentVolumeAccessMode { #hypershift.openshift.io/v1alpha1.PersistentVolumeAccessMode }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.KubevirtPersistentVolume">KubevirtPersistentVolume</a>)
+</p>
+<p>
+</p>
 ###PersistentVolumeEtcdStorageSpec { #hypershift.openshift.io/v1alpha1.PersistentVolumeEtcdStorageSpec }
 <p>
 (<em>Appears on:</em>
@@ -4560,7 +5904,8 @@ Value must be one of:
 &#34;Azure&#34;, 
 &#34;IBMCloud&#34;, 
 &#34;KubeVirt&#34;, 
-&#34;None&#34;
+&#34;None&#34;, 
+&#34;PowerVS&#34;
 </p>
 </td>
 </tr>
@@ -4618,6 +5963,21 @@ AzurePlatformSpec
 <p>Azure defines azure specific settings</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>powervs</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec">
+PowerVSPlatformSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PowerVS specifies configuration for clusters running on IBMCloud Power VS Service.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
 </tbody>
 </table>
 ###PlatformType { #hypershift.openshift.io/v1alpha1.PlatformType }
@@ -4654,7 +6014,461 @@ AzurePlatformSpec
 </tr><tr><td><p>&#34;None&#34;</p></td>
 <td><p>NonePlatform represents user supplied (e.g. bare metal) infrastructure.</p>
 </td>
+</tr><tr><td><p>&#34;PowerVS&#34;</p></td>
+<td><p>PowerVSPlatform represents PowerVS infrastructure.</p>
+</td>
 </tr></tbody>
+</table>
+###PowerVSNodePoolPlatform { #hypershift.openshift.io/v1alpha1.PowerVSNodePoolPlatform }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>)
+</p>
+<p>
+<p>PowerVSNodePoolPlatform specifies the configuration of a NodePool when operating
+on IBMCloud PowerVS platform.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>systemType</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SystemType is the System type used to host the instance.
+systemType determines the number of cores and memory that is available.
+Few of the supported SystemTypes are s922,e880,e980.
+e880 systemType available only in Dallas Datacenters.
+e980 systemType available in Datacenters except Dallas and Washington.
+When omitted, this means that the user has no opinion and the platform is left to choose a
+reasonable default. The current default is s922 which is generally available.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>processorType</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ProcessorType is the VM instance processor type.
+It must be set to one of the following values: Dedicated, Capped or Shared.</p>
+<p>Dedicated: resources are allocated for a specific client, The hypervisor makes a 1:1 binding of a partition’s processor to a physical processor core.
+Shared: Shared among other clients.
+Capped: Shared, but resources do not expand beyond those that are requested, the amount of CPU time is Capped to the value specified for the entitlement.</p>
+<p>if the processorType is selected as Dedicated, then Processors value cannot be fractional.
+When omitted, this means that the user has no opinion and the platform is left to choose a
+reasonable default. The current default is Shared.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>processors</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#intorstring-intstr-util">
+k8s.io/apimachinery/pkg/util/intstr.IntOrString
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Processors is the number of virtual processors in a virtual machine.
+when the processorType is selected as Dedicated the processors value cannot be fractional.
+maximum value for the Processors depends on the selected SystemType.
+when SystemType is set to e880 or e980 maximum Processors value is 143.
+when SystemType is set to s922 maximum Processors value is 15.
+minimum value for Processors depends on the selected ProcessorType.
+when ProcessorType is set as Shared or Capped, The minimum processors is 0.5.
+when ProcessorType is set as Dedicated, The minimum processors is 1.
+When omitted, this means that the user has no opinion and the platform is left to choose a
+reasonable default. The default is set based on the selected ProcessorType.
+when ProcessorType selected as Dedicated, the default is set to 1.
+when ProcessorType selected as Shared or Capped, the default is set to 0.5.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>memoryGiB</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MemoryGiB is the size of a virtual machine&rsquo;s memory, in GiB.
+maximum value for the MemoryGiB depends on the selected SystemType.
+when SystemType is set to e880 maximum MemoryGiB value is 7463 GiB.
+when SystemType is set to e980 maximum MemoryGiB value is 15307 GiB.
+when SystemType is set to s922 maximum MemoryGiB value is 942 GiB.
+The minimum memory is 32 GiB.</p>
+<p>When omitted, this means the user has no opinion and the platform is left to choose a reasonable
+default. The current default is 32.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>image</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSResourceReference">
+PowerVSResourceReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Image used for deploying the nodes. If unspecified, the default
+is chosen based on the NodePool release payload image.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>storageType</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>StorageType for the image and nodes, this will be ignored if Image is specified.
+The storage tiers in PowerVS are based on I/O operations per second (IOPS).
+It means that the performance of your storage volumes is limited to the maximum number of IOPS based on volume size and storage tier.
+Although, the exact numbers might change over time, the Tier 3 storage is currently set to 3 IOPS/GB, and the Tier 1 storage is currently set to 10 IOPS/GB.</p>
+<p>The default is tier1</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>imageDeletePolicy</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ImageDeletePolicy is policy for the image deletion.</p>
+<p>delete: delete the image from the infrastructure.
+retain: delete the image from the openshift but retain in the infrastructure.</p>
+<p>The default is delete</p>
+</td>
+</tr>
+</tbody>
+</table>
+###PowerVSPlatformSpec { #hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+</p>
+<p>
+<p>PowerVSPlatformSpec defines IBMCloud PowerVS specific settings for components</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>accountID</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>AccountID is the IBMCloud account id.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>cisInstanceCRN</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>CISInstanceCRN is the IBMCloud CIS Service Instance&rsquo;s Cloud Resource Name
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>resourceGroup</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>ResourceGroup is the IBMCloud Resource Group in which the cluster resides.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>region</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Region is the IBMCloud region in which the cluster resides. This configures the
+OCP control plane cloud integrations, and is used by NodePool to resolve
+the correct boot image for a given release.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>zone</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Zone is the availability zone where control plane cloud resources are
+created.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>subnet</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSResourceReference">
+PowerVSResourceReference
+</a>
+</em>
+</td>
+<td>
+<p>Subnet is the subnet to use for control plane cloud resources.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>serviceInstanceID</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>ServiceInstance is the reference to the Power VS service on which the server instance(VM) will be created.
+Power VS service is a container for all Power VS instances at a specific geographic region.
+serviceInstance can be created via IBM Cloud catalog or CLI.
+ServiceInstanceID is the unique identifier that can be obtained from IBM Cloud UI or IBM Cloud cli.</p>
+<p>More detail about Power VS service instance.
+<a href="https://cloud.ibm.com/docs/power-iaas?topic=power-iaas-creating-power-virtual-server">https://cloud.ibm.com/docs/power-iaas?topic=power-iaas-creating-power-virtual-server</a></p>
+<p>This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>vpc</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSVPC">
+PowerVSVPC
+</a>
+</em>
+</td>
+<td>
+<p>VPC specifies IBM Cloud PowerVS Load Balancing configuration for the control
+plane.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>kubeCloudControllerCreds</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>KubeCloudControllerCreds is a reference to a secret containing cloud
+credentials with permissions matching the cloud controller policy.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+<p>TODO(dan): document the &ldquo;cloud controller policy&rdquo;</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nodePoolManagementCreds</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>NodePoolManagementCreds is a reference to a secret containing cloud
+credentials with permissions matching the node pool management policy.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+<p>TODO(dan): document the &ldquo;node pool management policy&rdquo;</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>controlPlaneOperatorCreds</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>ControlPlaneOperatorCreds is a reference to a secret containing cloud
+credentials with permissions matching the control-plane-operator policy.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+<p>TODO(dan): document the &ldquo;control plane operator policy&rdquo;</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>ingressOperatorCloudCreds</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>IngressOperatorCloudCreds is a reference to a secret containing ibm cloud
+credentials for ingress operator to get authenticated with ibm cloud.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###PowerVSResourceReference { #hypershift.openshift.io/v1alpha1.PowerVSResourceReference }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSNodePoolPlatform">PowerVSNodePoolPlatform</a>, 
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec">PowerVSPlatformSpec</a>)
+</p>
+<p>
+<p>PowerVSResourceReference is a reference to a specific IBMCloud PowerVS resource by ID, or Name.
+Only one of ID, or Name may be specified. Specifying more than one will result in
+a validation error.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>id</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ID of resource</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>name</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Name of resource</p>
+</td>
+</tr>
+</tbody>
+</table>
+###PowerVSVPC { #hypershift.openshift.io/v1alpha1.PowerVSVPC }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec">PowerVSPlatformSpec</a>)
+</p>
+<p>
+<p>PowerVSVPC specifies IBM Cloud PowerVS LoadBalancer configuration for the control
+plane.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>name</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Name for VPC to used for all the service load balancer.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>region</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Region is the IBMCloud region in which VPC gets created, this VPC used for all the ingress traffic
+into the OCP cluster.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>zone</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Zone is the availability zone where load balancer cloud resources are
+created.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>subnet</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Subnet is the subnet to use for load balancer.
+This field is immutable. Once set, It can&rsquo;t be changed.</p>
+</td>
+</tr>
+</tbody>
 </table>
 ###PublishingStrategyType { #hypershift.openshift.io/v1alpha1.PublishingStrategyType }
 <p>
@@ -4933,6 +6747,37 @@ AESCBCSpec
 <td><p>KMS integrates with a cloud provider&rsquo;s key management service to do secret encryption</p>
 </td>
 </tr></tbody>
+</table>
+###ServiceNetworkEntry { #hypershift.openshift.io/v1alpha1.ServiceNetworkEntry }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+</p>
+<p>
+<p>ServiceNetworkEntry is a single IP address block for the service network.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>cidr</code></br>
+<em>
+<a href="#">
+github.com/openshift/hypershift/api/util/ipnet.IPNet
+</a>
+</em>
+</td>
+<td>
+<p>CIDR is the IP block address pool for services within the cluster.</p>
+</td>
+</tr>
+</tbody>
 </table>
 ###ServicePublishingStrategy { #hypershift.openshift.io/v1alpha1.ServicePublishingStrategy }
 <p>

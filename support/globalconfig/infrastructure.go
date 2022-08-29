@@ -22,12 +22,6 @@ func InfrastructureConfig() *configv1.Infrastructure {
 func ReconcileInfrastructure(infra *configv1.Infrastructure, hcp *hyperv1.HostedControlPlane) {
 
 	platformType := hcp.Spec.Platform.Type
-	switch hcp.Spec.Platform.Type {
-	// In case of KubeVirtPlatform, set the Infrastructure to NonePlatform
-	// This is done in order to prevent error in machine-config-server
-	case hyperv1.KubevirtPlatform:
-		platformType = hyperv1.NonePlatform
-	}
 
 	apiServerAddress := hcp.Status.ControlPlaneEndpoint.Host
 	apiServerPort := hcp.Status.ControlPlaneEndpoint.Port
@@ -44,10 +38,10 @@ func ReconcileInfrastructure(infra *configv1.Infrastructure, hcp *hyperv1.Hosted
 	}
 
 	switch hcp.Spec.InfrastructureAvailabilityPolicy {
-	case hyperv1.SingleReplica:
-		infra.Status.InfrastructureTopology = configv1.SingleReplicaTopologyMode
-	default:
+	case hyperv1.HighlyAvailable:
 		infra.Status.InfrastructureTopology = configv1.HighlyAvailableTopologyMode
+	default:
+		infra.Status.InfrastructureTopology = configv1.SingleReplicaTopologyMode
 	}
 
 	switch platformType {
@@ -74,6 +68,12 @@ func ReconcileInfrastructure(infra *configv1.Infrastructure, hcp *hyperv1.Hosted
 		infra.Status.PlatformStatus.Azure = &configv1.AzurePlatformStatus{
 			CloudName:         configv1.AzurePublicCloud,
 			ResourceGroupName: hcp.Spec.Platform.Azure.ResourceGroupName,
+		}
+	case hyperv1.PowerVSPlatform:
+		infra.Status.PlatformStatus.PowerVS = &configv1.PowerVSPlatformStatus{
+			Region:         hcp.Spec.Platform.PowerVS.Region,
+			Zone:           hcp.Spec.Platform.PowerVS.Zone,
+			CISInstanceCRN: hcp.Spec.Platform.PowerVS.CISInstanceCRN,
 		}
 	}
 }
