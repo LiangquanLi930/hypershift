@@ -1,11 +1,8 @@
 package controllers
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
@@ -13,7 +10,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/support/util"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,7 +28,12 @@ const (
 	TokenSecretTokenKey            = "token"
 	TokenSecretOldTokenKey         = "old_token"
 	TokenSecretPayloadKey          = "payload"
+	TokenSecretMessageKey          = "message"
+	TokenSecretPullSecretHashKey   = "pull-secret-hash"
+	InvalidConfigReason            = "InvalidConfig"
+	TokenSecretReasonKey           = "reason"
 	TokenSecretAnnotation          = "hypershift.openshift.io/ignition-config"
+	TokenSecretNodePoolUpgradeType = "hypershift.openshift.io/node-pool-upgrade-type"
 	TokenSecretTokenGenerationTime = "hypershift.openshift.io/last-token-generation-time"
 	// Set the ttl 1h above the reconcile resync period so every existing
 	// token Secret has the chance to rotate their token ID during a reconciliation cycle
@@ -75,7 +78,7 @@ func NewPayloadStore() *ExpiringCache {
 type IgnitionProvider interface {
 	// GetPayload returns the ignition payload content for
 	// the provided release image and a config string containing 0..N MachineConfig yaml definitions.
-	GetPayload(ctx context.Context, payloadImage, config string) ([]byte, error)
+	GetPayload(ctx context.Context, payloadImage, config string, pullSecretHash string) ([]byte, error)
 }
 
 // TokenSecretReconciler watches token Secrets
@@ -83,14 +86,15 @@ type IgnitionProvider interface {
 // stores it in the PayloadsStore, and rotates the token ID periodically.
 // A token Secret is by contractual convention:
 // type: Secret
-//   metadata:
-//   annotations:
-// 	   hypershift.openshift.io/ignition-config: "true"
-//	 data:
-//     token: <authz token>
-//     old_token: <authz token>
-//     release: <release image string>
-//     config: |-
+//
+//	  metadata:
+//	  annotations:
+//		   hypershift.openshift.io/ignition-config: "true"
+//		 data:
+//	    token: <authz token>
+//	    old_token: <authz token>
+//	    release: <release image string>
+//	    config: |-
 type TokenSecretReconciler struct {
 	client.Client
 	IgnitionProvider IgnitionProvider
@@ -241,15 +245,22 @@ func (r *TokenSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	releaseImage := string(tokenSecret.Data[TokenSecretReleaseKey])
 	compressedConfig := tokenSecret.Data[TokenSecretConfigKey]
-	config, err := Decompress(compressedConfig)
+	config, err := util.DecodeAndDecompress(compressedConfig)
 	if err != nil {
+		patch := tokenSecret.DeepCopy()
+		patch.Data[TokenSecretReasonKey] = []byte(InvalidConfigReason)
+		patch.Data[TokenSecretMessageKey] = []byte(fmt.Sprintf("Failed to decode and decompress config: %s", err))
+		if err := r.Client.Patch(ctx, patch, client.MergeFrom(tokenSecret)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to patch tokenSecret with payload content: %w", err)
+		}
 		return ctrl.Result{}, err
 	}
 
 	PayloadCacheMissTotal.Inc()
+	pullSecretHash := string(tokenSecret.Data[TokenSecretPullSecretHashKey])
 	payload, err := func() ([]byte, error) {
 		start := time.Now()
-		payload, err := r.IgnitionProvider.GetPayload(ctx, releaseImage, string(config))
+		payload, err := r.IgnitionProvider.GetPayload(ctx, releaseImage, config.String(), pullSecretHash)
 		if err != nil {
 			return nil, fmt.Errorf("error getting ignition payload: %v", err)
 		}
@@ -259,6 +270,12 @@ func (r *TokenSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return payload, err
 	}()
 	if err != nil {
+		patch := tokenSecret.DeepCopy()
+		patch.Data[TokenSecretReasonKey] = []byte(InvalidConfigReason)
+		patch.Data[TokenSecretMessageKey] = []byte(fmt.Sprintf("Failed to generate payload: %s", err))
+		if err := r.Client.Patch(ctx, patch, client.MergeFrom(tokenSecret)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to patch tokenSecret with payload content: %w", err)
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -266,35 +283,25 @@ func (r *TokenSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	r.PayloadStore.Set(token, CacheValue{Payload: payload, SecretName: tokenSecret.Name})
 	oldToken, ok = tokenSecret.Data[TokenSecretOldTokenKey]
 	if ok {
-		// If we got here and there's an old token e.g ignition server pod was restarted, then we set it as well
+		// If we got here and there's an old token e.g. ignition server pod was restarted, then we set it as well
 		// So Machines that were given that token right before the restart can succeed.
 		r.PayloadStore.Set(string(oldToken), CacheValue{Payload: payload, SecretName: tokenSecret.Name})
 	}
 
-	// Store the cached payload in the secret to be consumed by in place upgrades.
 	patch := tokenSecret.DeepCopy()
 	patch.Data[TokenSecretPayloadKey] = payload
+	if string(hyperv1.UpgradeTypeReplace) == tokenSecret.Annotations[TokenSecretNodePoolUpgradeType] {
+		delete(patch.Data, TokenSecretPayloadKey)
+	}
+
+	patch.Data[TokenSecretReasonKey] = []byte(hyperv1.AsExpectedReason)
+	patch.Data[TokenSecretMessageKey] = []byte("Payload generated successfully")
+
 	if err := r.Client.Patch(ctx, patch, client.MergeFrom(tokenSecret)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to patch tokenSecret with payload content")
+		return ctrl.Result{}, fmt.Errorf("failed to patch tokenSecret with payload content: %w", err)
 	}
 
 	return ctrl.Result{RequeueAfter: ttl/2 - durationDeref(timeLived)}, nil
-}
-
-func Decompress(content []byte) ([]byte, error) {
-	if len(content) == 0 {
-		return nil, nil
-	}
-	gr, err := gzip.NewReader(bytes.NewBuffer(content))
-	if err != nil {
-		return nil, fmt.Errorf("failed to uncompress content: %w", err)
-	}
-	defer gr.Close()
-	data, err := ioutil.ReadAll(gr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read content: %w", err)
-	}
-	return data, nil
 }
 
 // getTokenIDTimeLived returns the duration a from TokenSecretLastUpdatedTokenIDAnnotation til now.

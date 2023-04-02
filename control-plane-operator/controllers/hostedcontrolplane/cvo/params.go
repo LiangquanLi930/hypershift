@@ -5,7 +5,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	utilpointer "k8s.io/utils/pointer"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 
 	"github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/util"
@@ -18,6 +18,7 @@ type CVOParams struct {
 	ClusterID               string
 	OwnerRef                config.OwnerRef
 	DeploymentConfig        config.DeploymentConfig
+	PlatformType            hyperv1.PlatformType
 }
 
 func NewCVOParams(hcp *hyperv1.HostedControlPlane, images map[string]string, setDefaultSecurityContext bool) *CVOParams {
@@ -27,6 +28,7 @@ func NewCVOParams(hcp *hyperv1.HostedControlPlane, images map[string]string, set
 		Image:                   hcp.Spec.ReleaseImage,
 		OwnerRef:                config.OwnerRefFrom(hcp),
 		ClusterID:               hcp.Spec.ClusterID,
+		PlatformType:            hcp.Spec.Platform.Type,
 	}
 	p.DeploymentConfig.Resources = config.ResourcesSpec{
 		cvoContainerPrepPayload().Name: {
@@ -37,7 +39,7 @@ func NewCVOParams(hcp *hyperv1.HostedControlPlane, images map[string]string, set
 		},
 		cvoContainerMain().Name: {
 			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("50Mi"),
+				corev1.ResourceMemory: resource.MustParse("70Mi"),
 				corev1.ResourceCPU:    resource.MustParse("20m"),
 			},
 		},

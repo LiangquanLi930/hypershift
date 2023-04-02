@@ -7,19 +7,22 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 
 	ignitionapi "github.com/coreos/ignition/v2/config/v3_2/types"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/cmd/cluster/core"
 	hyperapi "github.com/openshift/hypershift/support/api"
 	e2eutil "github.com/openshift/hypershift/test/e2e/util"
 	mcfgv1 "github.com/openshift/hypershift/thirdparty/machineconfigoperator/pkg/apis/machineconfiguration.openshift.io/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -29,48 +32,53 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestNodepoolMachineconfigGetsRolledout(t *testing.T) {
-	t.Parallel()
-	g := NewWithT(t)
+type NodePoolMachineconfigRolloutTest struct {
+	ctx        context.Context
+	mgmtClient crclient.Client
 
-	ctx, cancel := context.WithCancel(testContext)
-	defer cancel()
+	hostedCluster       *hyperv1.HostedCluster
+	hostedClusterClient crclient.Client
+	clusterOpts         core.CreateOptions
+}
 
-	client, err := e2eutil.GetClient()
-	g.Expect(err).NotTo(HaveOccurred(), "failed to get k8s client")
+func NewNodePoolMachineconfigRolloutTest(ctx context.Context, mgmtClient crclient.Client, hostedCluster *hyperv1.HostedCluster, hcClient crclient.Client, clusterOpts core.CreateOptions) *NodePoolMachineconfigRolloutTest {
+	return &NodePoolMachineconfigRolloutTest{
+		ctx:                 ctx,
+		hostedCluster:       hostedCluster,
+		hostedClusterClient: hcClient,
+		clusterOpts:         clusterOpts,
+		mgmtClient:          mgmtClient,
+	}
+}
 
-	clusterOpts := globalOpts.DefaultClusterOptions(t)
-	clusterOpts.ControlPlaneAvailabilityPolicy = string(hyperv1.SingleReplica)
-	clusterOpts.BeforeApply = func(o crclient.Object) {
-		nodePool, isNodepool := o.(*hyperv1.NodePool)
-		if !isNodepool {
-			return
-		}
-		nodePool.Spec.Management.Replace = &hyperv1.ReplaceUpgrade{
-			Strategy: hyperv1.UpgradeStrategyRollingUpdate,
-			RollingUpdate: &hyperv1.RollingUpdate{
-				MaxUnavailable: func(v intstr.IntOrString) *intstr.IntOrString { return &v }(intstr.FromInt(0)),
-				MaxSurge:       func(v intstr.IntOrString) *intstr.IntOrString { return &v }(intstr.FromInt(int(*nodePool.Spec.Replicas))),
-			},
-		}
+func (mc *NodePoolMachineconfigRolloutTest) Setup(t *testing.T) {
+}
+
+func (mc *NodePoolMachineconfigRolloutTest) BuildNodePoolManifest(defaultNodepool hyperv1.NodePool) (*hyperv1.NodePool, error) {
+	nodePool := &hyperv1.NodePool{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      mc.hostedCluster.Name + "-" + "test-machineconfig",
+			Namespace: mc.hostedCluster.Namespace,
+		},
+	}
+	defaultNodepool.Spec.DeepCopyInto(&nodePool.Spec)
+
+	nodePool.Spec.Replicas = &oneReplicas
+	nodePool.Spec.Management.Replace = &hyperv1.ReplaceUpgrade{
+		Strategy: hyperv1.UpgradeStrategyRollingUpdate,
+		RollingUpdate: &hyperv1.RollingUpdate{
+			MaxUnavailable: func(v intstr.IntOrString) *intstr.IntOrString { return &v }(intstr.FromInt(0)),
+			MaxSurge:       func(v intstr.IntOrString) *intstr.IntOrString { return &v }(intstr.FromInt(int(oneReplicas))),
+		},
 	}
 
-	hostedCluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, globalOpts.Platform, globalOpts.ArtifactDir)
+	return nodePool, nil
+}
 
-	// Sanity check the cluster by waiting for the nodes to report ready
-	t.Logf("Waiting for guest client to become available")
-	guestClient := e2eutil.WaitForGuestClient(t, testContext, client, hostedCluster)
+func (mc *NodePoolMachineconfigRolloutTest) Run(t *testing.T, nodePool hyperv1.NodePool, nodes []corev1.Node) {
+	g := NewWithT(t)
 
-	// Wait for Nodes to be Ready
-	numNodes := int32(globalOpts.configurableClusterOptions.NodePoolReplicas * len(clusterOpts.AWSPlatform.Zones))
-	e2eutil.WaitForNReadyNodes(t, testContext, guestClient, numNodes, hostedCluster.Spec.Platform.Type)
-
-	// Wait for the rollout to be complete
-	t.Logf("Waiting for cluster rollout. Image: %s", globalOpts.LatestReleaseImage)
-	e2eutil.WaitForImageRollout(t, testContext, client, guestClient, hostedCluster, globalOpts.LatestReleaseImage)
-	err = client.Get(testContext, crclient.ObjectKeyFromObject(hostedCluster), hostedCluster)
-	g.Expect(err).NotTo(HaveOccurred(), "failed to get hostedcluster")
-
+	// MachineConfig Actions
 	ignitionConfig := ignitionapi.Config{
 		Ignition: ignitionapi.Ignition{
 			Version: "3.2.0",
@@ -105,51 +113,43 @@ func TestNodepoolMachineconfigGetsRolledout(t *testing.T) {
 	machineConfigConfigMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "custom-machine-config",
-			Namespace: hostedCluster.Namespace,
+			Namespace: mc.hostedCluster.Namespace,
 		},
 		Data: map[string]string{"config": string(serializedMachineConfig)},
 	}
-	if err := client.Create(ctx, machineConfigConfigMap); err != nil {
+
+	ctx := mc.ctx
+	if err := mc.mgmtClient.Create(ctx, machineConfigConfigMap); err != nil {
 		t.Fatalf("failed to create configmap for custom machineconfig: %v", err)
 	}
 
-	nodepools := &hyperv1.NodePoolList{}
-	if err := client.List(ctx, nodepools, crclient.InNamespace(hostedCluster.Namespace)); err != nil {
-		t.Fatalf("failed to list nodepools in namespace %s: %v", hostedCluster.Namespace, err)
+	np := nodePool.DeepCopy()
+	nodePool.Spec.Config = append(nodePool.Spec.Config, corev1.LocalObjectReference{Name: machineConfigConfigMap.Name})
+	if err := mc.mgmtClient.Patch(ctx, &nodePool, crclient.MergeFrom(np)); err != nil {
+		t.Fatalf("failed to update nodepool %s after adding machineconfig: %v", nodePool.Name, err)
 	}
 
-	for _, nodepool := range nodepools.Items {
-		if nodepool.Spec.ClusterName != hostedCluster.Name {
-			continue
-		}
-		np := nodepool.DeepCopy()
-		nodepool.Spec.Config = append(nodepool.Spec.Config, corev1.LocalObjectReference{Name: machineConfigConfigMap.Name})
-		if err := client.Patch(ctx, &nodepool, crclient.MergeFrom(np)); err != nil {
-			t.Fatalf("failed to update nodepool %s after adding machineconfig: %v", nodepool.Name, err)
-		}
-	}
-
+	// DS Customization
 	ds := machineConfigUpdatedVerificationDS.DeepCopy()
-	if err := guestClient.Create(ctx, ds); err != nil {
+	dsName := ds.Name + "-replace"
+	e2eutil.CorrelateDaemonSet(ds, &nodePool, dsName)
+
+	if err := mc.hostedClusterClient.Create(ctx, ds); err != nil {
 		t.Fatalf("failed to create %s DaemonSet in guestcluster: %v", ds.Name, err)
 	}
 
 	t.Logf("waiting for rollout of updated nodepools")
-	err = wait.PollImmediateWithContext(ctx, 5*time.Second, 15*time.Minute, func(ctx context.Context) (bool, error) {
+	err = wait.PollImmediateWithContext(ctx, 10*time.Second, 15*time.Minute, func(ctx context.Context) (bool, error) {
 		if ctx.Err() != nil {
-			return false, err
+			return false, ctx.Err()
 		}
 		pods := &corev1.PodList{}
-		if err := guestClient.List(ctx, pods, crclient.InNamespace(ds.Namespace), crclient.MatchingLabels(ds.Spec.Selector.MatchLabels)); err != nil {
+		if err := mc.hostedClusterClient.List(ctx, pods, crclient.InNamespace(ds.Namespace), crclient.MatchingLabels(ds.Spec.Selector.MatchLabels)); err != nil {
 			t.Logf("WARNING: failed to list pods, will retry: %v", err)
 			return false, nil
 		}
-		nodes := &corev1.NodeList{}
-		if err := guestClient.List(ctx, nodes); err != nil {
-			t.Logf("WARNING: failed to list nodes, will retry: %v", err)
-			return false, nil
-		}
-		if len(pods.Items) != len(nodes.Items) {
+
+		if len(pods.Items) != len(nodes) {
 			return false, nil
 		}
 
@@ -161,15 +161,13 @@ func TestNodepoolMachineconfigGetsRolledout(t *testing.T) {
 
 		return true, nil
 	})
-	if err != nil {
-		t.Fatalf("failed waiting for all pods in the machine config update verification DS to be ready: %v", err)
-	}
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed waiting for all pods in the MachineConfig update verification DS to be ready: %v", err))
+	g.Expect(nodePool.Status.Replicas).To(BeEquivalentTo(len(nodes)))
 
-	e2eutil.EnsureNodeCountMatchesNodePoolReplicas(t, testContext, client, guestClient, hostedCluster.Namespace)
-	e2eutil.EnsureNoCrashingPods(t, ctx, client, hostedCluster)
-	e2eutil.EnsureAllContainersHavePullPolicyIfNotPresent(t, ctx, client, hostedCluster)
-	e2eutil.EnsureHCPContainersHaveResourceRequests(t, ctx, client, hostedCluster)
-	e2eutil.EnsureNoPodsWithTooHighPriority(t, ctx, client, hostedCluster)
+	e2eutil.EnsureNoCrashingPods(t, ctx, mc.mgmtClient, mc.hostedCluster)
+	e2eutil.EnsureAllContainersHavePullPolicyIfNotPresent(t, ctx, mc.mgmtClient, mc.hostedCluster)
+	e2eutil.EnsureHCPContainersHaveResourceRequests(t, ctx, mc.mgmtClient, mc.hostedCluster)
+	e2eutil.EnsureNoPodsWithTooHighPriority(t, ctx, mc.mgmtClient, mc.hostedCluster)
 }
 
 //go:embed nodepool_machineconfig_verification_ds.yaml

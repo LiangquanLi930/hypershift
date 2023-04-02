@@ -31,15 +31,15 @@ const capiLabel = "cluster.x-k8s.io/v1beta1"
 // to satisfy CAPI contracts. There might be a way to achieve this during CRD
 // generation, but for now we're just post-processing at runtime here.
 var capiResources = map[string]string{
-	"cluster-api-provider-aws/infrastructure.cluster.x-k8s.io_awsclusters.yaml":                      "v1beta1",
-	"cluster-api-provider-aws/infrastructure.cluster.x-k8s.io_awsmachines.yaml":                      "v1beta1",
-	"cluster-api-provider-aws/infrastructure.cluster.x-k8s.io_awsmachinetemplates.yaml":              "v1beta1",
+	"cluster-api-provider-aws/infrastructure.cluster.x-k8s.io_awsclusters.yaml":                      "v1beta2",
+	"cluster-api-provider-aws/infrastructure.cluster.x-k8s.io_awsmachines.yaml":                      "v1beta2",
+	"cluster-api-provider-aws/infrastructure.cluster.x-k8s.io_awsmachinetemplates.yaml":              "v1beta2",
 	"cluster-api-provider-ibmcloud/infrastructure.cluster.x-k8s.io_ibmpowervsclusters.yaml":          "v1beta1",
 	"cluster-api-provider-ibmcloud/infrastructure.cluster.x-k8s.io_ibmpowervsimages.yaml":            "v1beta1",
 	"cluster-api-provider-ibmcloud/infrastructure.cluster.x-k8s.io_ibmpowervsmachines.yaml":          "v1beta1",
 	"cluster-api-provider-ibmcloud/infrastructure.cluster.x-k8s.io_ibmpowervsmachinetemplates.yaml":  "v1beta1",
 	"cluster-api-provider-ibmcloud/infrastructure.cluster.x-k8s.io_ibmvpcclusters.yaml":              "v1alpha4",
-	"hypershift-operator/hypershift.openshift.io_hostedcontrolplanes.yaml":                           "v1alpha1",
+	"hypershift-operator/hypershift.openshift.io_hostedcontrolplanes.yaml":                           "v1beta1",
 	"cluster-api-provider-kubevirt/infrastructure.cluster.x-k8s.io_kubevirtclusters.yaml":            "v1alpha1",
 	"cluster-api-provider-kubevirt/infrastructure.cluster.x-k8s.io_kubevirtmachines.yaml":            "v1alpha1",
 	"cluster-api-provider-kubevirt/infrastructure.cluster.x-k8s.io_kubevirtmachinetemplates.yaml":    "v1alpha1",
@@ -69,7 +69,7 @@ func getContents(fs embed.FS, file string) []byte {
 }
 
 // CustomResourceDefinitions returns all existing CRDs as controller-runtime objects
-func CustomResourceDefinitions(include func(path string) bool) []crclient.Object {
+func CustomResourceDefinitions(include func(path string) bool, transform func(*apiextensionsv1.CustomResourceDefinition)) []crclient.Object {
 	var allCrds []crclient.Object
 	err := fs.WalkDir(crds, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -79,7 +79,11 @@ func CustomResourceDefinitions(include func(path string) bool) []crclient.Object
 			return nil
 		}
 		if include(path) {
-			allCrds = append(allCrds, getCustomResourceDefinition(crds, path))
+			crd := getCustomResourceDefinition(crds, path)
+			if transform != nil {
+				transform(crd)
+			}
+			allCrds = append(allCrds, crd)
 		}
 		return nil
 	})
@@ -108,9 +112,9 @@ func getCustomResourceDefinition(files embed.FS, file string) *apiextensionsv1.C
 	return &crd
 }
 
-// recordingRuleSpec is meant to return all prometheus rule groups in a PrometheusRuleSpec.
+// prometheusRuleSpec is meant to return all prometheus rule groups in a PrometheusRuleSpec.
 // At the moment we have only one.
-func recordingRuleSpec() prometheusoperatorv1.PrometheusRuleSpec {
+func prometheusRuleSpec() prometheusoperatorv1.PrometheusRuleSpec {
 	var spec prometheusoperatorv1.PrometheusRuleSpec
 	err := fs.WalkDir(recordingRules, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -119,7 +123,7 @@ func recordingRuleSpec() prometheusoperatorv1.PrometheusRuleSpec {
 		if filepath.Ext(path) != ".yaml" {
 			return nil
 		}
-		spec = getRecordingRuleSpec(recordingRules, path)
+		spec = getPrometheusRuleSpec(recordingRules, path)
 		return nil
 	})
 	if err != nil {
@@ -129,12 +133,12 @@ func recordingRuleSpec() prometheusoperatorv1.PrometheusRuleSpec {
 	return spec
 }
 
-// getRecordingRuleSpec unmarshals a prometheusoperatorv1.PrometheusRuleSpec from file.
-func getRecordingRuleSpec(files embed.FS, file string) prometheusoperatorv1.PrometheusRuleSpec {
-	var recordingRuleSpec prometheusoperatorv1.PrometheusRuleSpec
-	if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(getContents(files, file)), 100).Decode(&recordingRuleSpec); err != nil {
+// getPrometheusRuleSpec unmarshals a prometheusoperatorv1.PrometheusRuleSpec from file.
+func getPrometheusRuleSpec(files embed.FS, file string) prometheusoperatorv1.PrometheusRuleSpec {
+	var prometheusRuleSpec prometheusoperatorv1.PrometheusRuleSpec
+	if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(getContents(files, file)), 100).Decode(&prometheusRuleSpec); err != nil {
 		panic(err)
 	}
 
-	return recordingRuleSpec
+	return prometheusRuleSpec
 }

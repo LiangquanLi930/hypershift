@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/pointer"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	e2eutil "github.com/openshift/hypershift/test/e2e/util"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,7 +41,7 @@ func TestHAEtcdChaos(t *testing.T) {
 	clusterOpts.ControlPlaneAvailabilityPolicy = string(hyperv1.HighlyAvailable)
 	clusterOpts.NodePoolReplicas = 0
 
-	cluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, hyperv1.NonePlatform, globalOpts.ArtifactDir)
+	cluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, hyperv1.NonePlatform, globalOpts.ArtifactDir, globalOpts.ServiceAccountSigningKey)
 
 	t.Run("KillRandomMembers", testKillRandomMembers(ctx, client, cluster))
 	t.Run("KillAllMembers", testKillAllMembers(ctx, client, cluster))
@@ -61,10 +61,9 @@ func TestEtcdChaos(t *testing.T) {
 
 	// Create a cluster
 	clusterOpts := globalOpts.DefaultClusterOptions(t)
-	clusterOpts.ControlPlaneAvailabilityPolicy = string(hyperv1.SingleReplica)
 	clusterOpts.NodePoolReplicas = 0
 
-	cluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, hyperv1.NonePlatform, globalOpts.ArtifactDir)
+	cluster := e2eutil.CreateCluster(t, ctx, client, &clusterOpts, hyperv1.NonePlatform, globalOpts.ArtifactDir, globalOpts.ServiceAccountSigningKey)
 
 	t.Run("KillAllMembers", testKillAllMembers(ctx, client, cluster))
 }

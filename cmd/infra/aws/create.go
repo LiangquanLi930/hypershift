@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"time"
@@ -32,6 +31,7 @@ type CreateInfraOptions struct {
 	AWSSecretKey       string
 	Name               string
 	BaseDomain         string
+	BaseDomainPrefix   string
 	Zones              []string
 	OutputFile         string
 	AdditionalTags     []string
@@ -47,19 +47,20 @@ type CreateInfraOutputZone struct {
 }
 
 type CreateInfraOutput struct {
-	Region          string                   `json:"region"`
-	Zone            string                   `json:"zone"`
-	InfraID         string                   `json:"infraID"`
-	MachineCIDR     string                   `json:"machineCIDR"`
-	VPCID           string                   `json:"vpcID"`
-	Zones           []*CreateInfraOutputZone `json:"zones"`
-	SecurityGroupID string                   `json:"securityGroupID"`
-	Name            string                   `json:"Name"`
-	BaseDomain      string                   `json:"baseDomain"`
-	PublicZoneID    string                   `json:"publicZoneID"`
-	PrivateZoneID   string                   `json:"privateZoneID"`
-	LocalZoneID     string                   `json:"localZoneID"`
-	ProxyAddr       string                   `json:"proxyAddr"`
+	Region           string                   `json:"region"`
+	Zone             string                   `json:"zone"`
+	InfraID          string                   `json:"infraID"`
+	MachineCIDR      string                   `json:"machineCIDR"`
+	VPCID            string                   `json:"vpcID"`
+	Zones            []*CreateInfraOutputZone `json:"zones"`
+	SecurityGroupID  string                   `json:"securityGroupID"`
+	Name             string                   `json:"Name"`
+	BaseDomain       string                   `json:"baseDomain"`
+	BaseDomainPrefix string                   `json:"baseDomainPrefix"`
+	PublicZoneID     string                   `json:"publicZoneID"`
+	PrivateZoneID    string                   `json:"privateZoneID"`
+	LocalZoneID      string                   `json:"localZoneID"`
+	ProxyAddr        string                   `json:"proxyAddr"`
 }
 
 const (
@@ -90,7 +91,8 @@ func NewCreateCommand() *cobra.Command {
 	cmd.Flags().StringSliceVar(&opts.AdditionalTags, "additional-tags", opts.AdditionalTags, "Additional tags to set on AWS resources")
 	cmd.Flags().StringVar(&opts.Name, "name", opts.Name, "A name for the cluster")
 	cmd.Flags().StringVar(&opts.BaseDomain, "base-domain", opts.BaseDomain, "The ingress base domain for the cluster")
-	cmd.Flags().StringSliceVar(&opts.Zones, "zones", opts.Zones, "The availablity zones in which NodePool can be created")
+	cmd.Flags().StringVar(&opts.BaseDomainPrefix, "base-domain-prefix", opts.BaseDomainPrefix, "The ingress base domain prefix for the cluster, defaults to cluster name. Use 'none' for an empty prefix")
+	cmd.Flags().StringSliceVar(&opts.Zones, "zones", opts.Zones, "The availability zones in which NodePool can be created")
 	cmd.Flags().BoolVar(&opts.EnableProxy, "enable-proxy", opts.EnableProxy, "If a proxy should be set up, rather than allowing direct internet access from the nodes")
 
 	cmd.MarkFlagRequired("infra-id")
@@ -146,12 +148,14 @@ func (o *CreateInfraOptions) CreateInfra(ctx context.Context, l logr.Logger) (*C
 	if err = o.parseAdditionalTags(); err != nil {
 		return nil, err
 	}
+
 	result := &CreateInfraOutput{
-		InfraID:     o.InfraID,
-		MachineCIDR: DefaultCIDRBlock,
-		Region:      o.Region,
-		Name:        o.Name,
-		BaseDomain:  o.BaseDomain,
+		InfraID:          o.InfraID,
+		MachineCIDR:      DefaultCIDRBlock,
+		Region:           o.Region,
+		Name:             o.Name,
+		BaseDomain:       o.BaseDomain,
+		BaseDomainPrefix: o.BaseDomainPrefix,
 	}
 	if len(o.Zones) == 0 {
 		zone, err := o.firstZone(l, ec2Client)
@@ -232,7 +236,8 @@ func (o *CreateInfraOptions) CreateInfra(ctx context.Context, l logr.Logger) (*C
 	if err != nil {
 		return nil, err
 	}
-	result.PrivateZoneID, err = o.CreatePrivateZone(ctx, route53Client, fmt.Sprintf("%s.%s", o.Name, o.BaseDomain), result.VPCID)
+
+	result.PrivateZoneID, err = o.CreatePrivateZone(ctx, route53Client, ZoneName(o.Name, o.BaseDomainPrefix, o.BaseDomain), result.VPCID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +249,7 @@ func (o *CreateInfraOptions) CreateInfra(ctx context.Context, l logr.Logger) (*C
 	if o.EnableProxy {
 		var sshKeyFile []byte
 		if o.SSHKeyFile != "" {
-			sshKeyFile, err = ioutil.ReadFile(o.SSHKeyFile)
+			sshKeyFile, err = os.ReadFile(o.SSHKeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read ssh-key-file from %s: %w", o.SSHKeyFile, err)
 			}
@@ -345,6 +350,17 @@ func ec2Backoff() wait.Backoff {
 		Factor:   1.0,
 		Jitter:   0.1,
 	}
+}
+
+func ZoneName(clusterName, prefix, baseDomain string) string {
+	if prefix == "none" {
+		return baseDomain
+	}
+
+	if prefix == "" {
+		prefix = clusterName
+	}
+	return fmt.Sprintf("%s.%s", prefix, baseDomain)
 }
 
 const proxyConfigurationScript = `#!/bin/bash

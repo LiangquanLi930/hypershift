@@ -8,12 +8,12 @@ title: API
 <p>Packages:</p>
 <ul>
 <li>
-<a href="#hypershift.openshift.io%2fv1alpha1">hypershift.openshift.io/v1alpha1</a>
+<a href="#hypershift.openshift.io%2fv1beta1">hypershift.openshift.io/v1beta1</a>
 </li>
 </ul>
-<h2 id="hypershift.openshift.io/v1alpha1">hypershift.openshift.io/v1alpha1</h2>
+<h2 id="hypershift.openshift.io/v1beta1">hypershift.openshift.io/v1beta1</h2>
 <p>
-<p>Package v1alpha1 contains the HyperShift API.</p>
+<p>Package v1beta1 contains the HyperShift API.</p>
 <p>The HyperShift API enables creating and managing lightweight, flexible, heterogeneous
 OpenShift clusters at scale.</p>
 <p>HyperShift clusters are deployed in a topology which isolates the &ldquo;control plane&rdquo;
@@ -21,7 +21,7 @@ OpenShift clusters at scale.</p>
 worker nodes and their kubelets, and the infrastructure on which they run). This
 enables &ldquo;hosted control plane as a service&rdquo; use cases.</p>
 </p>
-##HostedCluster { #hypershift.openshift.io/v1alpha1.HostedCluster }
+##HostedCluster { #hypershift.openshift.io/v1beta1.HostedCluster }
 <p>
 <p>HostedCluster is the primary representation of a HyperShift cluster and encapsulates
 the control plane and common data plane configuration. Creating a HostedCluster
@@ -43,7 +43,7 @@ NodePool resources.</p>
 string</td>
 <td>
 <code>
-hypershift.openshift.io/v1alpha1
+hypershift.openshift.io/v1beta1
 </code>
 </td>
 </tr>
@@ -72,7 +72,7 @@ Refer to the Kubernetes API documentation for the fields of the
 <td>
 <code>spec</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">
 HostedClusterSpec
 </a>
 </em>
@@ -86,7 +86,7 @@ HostedClusterSpec
 <td>
 <code>release</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Release">
+<a href="#hypershift.openshift.io/v1beta1.Release">
 Release
 </a>
 </em>
@@ -120,6 +120,20 @@ immutable.</p>
 </tr>
 <tr>
 <td>
+<code>channel</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>channel is an identifier for explicitly requesting that a non-default
+set of updates be applied to this cluster. The default channel will be
+contain stable updates that are appropriate for production clusters.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>infraID</code></br>
 <em>
 string
@@ -136,7 +150,7 @@ and its associated NodePools.</p>
 <td>
 <code>platform</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">
 PlatformSpec
 </a>
 </em>
@@ -150,7 +164,7 @@ and is used to configure platform specific behavior.</p>
 <td>
 <code>controllerAvailabilityPolicy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AvailabilityPolicy">
+<a href="#hypershift.openshift.io/v1beta1.AvailabilityPolicy">
 AvailabilityPolicy
 </a>
 </em>
@@ -159,18 +173,13 @@ AvailabilityPolicy
 <em>(Optional)</em>
 <p>ControllerAvailabilityPolicy specifies the availability policy applied to
 critical control plane components. The default value is SingleReplica.</p>
-<p>
-Value must be one of:
-&#34;HighlyAvailable&#34;, 
-&#34;SingleReplica&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>infrastructureAvailabilityPolicy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AvailabilityPolicy">
+<a href="#hypershift.openshift.io/v1beta1.AvailabilityPolicy">
 AvailabilityPolicy
 </a>
 </em>
@@ -180,18 +189,13 @@ AvailabilityPolicy
 <p>InfrastructureAvailabilityPolicy specifies the availability policy applied
 to infrastructure services which run on cluster nodes. The default value is
 SingleReplica.</p>
-<p>
-Value must be one of:
-&#34;HighlyAvailable&#34;, 
-&#34;SingleReplica&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>dns</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.DNSSpec">
+<a href="#hypershift.openshift.io/v1beta1.DNSSpec">
 DNSSpec
 </a>
 </em>
@@ -204,7 +208,7 @@ DNSSpec
 <td>
 <code>networking</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">
 ClusterNetworking
 </a>
 </em>
@@ -217,7 +221,7 @@ ClusterNetworking
 <td>
 <code>autoscaling</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterAutoscaling">
+<a href="#hypershift.openshift.io/v1beta1.ClusterAutoscaling">
 ClusterAutoscaling
 </a>
 </em>
@@ -232,7 +236,7 @@ associated with the control plane.</p>
 <td>
 <code>etcd</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdSpec">
+<a href="#hypershift.openshift.io/v1beta1.EtcdSpec">
 EtcdSpec
 </a>
 </em>
@@ -247,7 +251,7 @@ changed.</p>
 <td>
 <code>services</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategyMapping">
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategyMapping">
 []ServicePublishingStrategyMapping
 </a>
 </em>
@@ -326,7 +330,7 @@ signing key, a IssuerURL must also be specified.</p>
 <td>
 <code>configuration</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterConfiguration">
+<a href="#hypershift.openshift.io/v1beta1.ClusterConfiguration">
 ClusterConfiguration
 </a>
 </em>
@@ -355,14 +359,13 @@ contains the webhook information for the audit webhook endpoint. It is a
 secret because if the endpoint has mTLS the kubeconfig will contain client
 keys. The kubeconfig needs to be stored in the secret with a secret key
 name that corresponds to the constant AuditWebhookKubeconfigKey.</p>
-<p>This field is currently only supported on the IBMCloud platform.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>imageContentSources</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ImageContentSource">
+<a href="#hypershift.openshift.io/v1beta1.ImageContentSource">
 []ImageContentSource
 </a>
 </em>
@@ -392,7 +395,7 @@ PEM-encoded X.509 certificate bundle that will be added to the hosted controlpla
 <td>
 <code>secretEncryption</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionSpec">
 SecretEncryptionSpec
 </a>
 </em>
@@ -436,7 +439,7 @@ provided: reconciliation is paused on the resource until the field is removed.</
 <td>
 <code>olmCatalogPlacement</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.OLMCatalogPlacement">
+<a href="#hypershift.openshift.io/v1beta1.OLMCatalogPlacement">
 OLMCatalogPlacement
 </a>
 </em>
@@ -447,11 +450,6 @@ OLMCatalogPlacement
 this is set to management and OLM catalog components are deployed onto the management
 cluster. If set to guest, the OLM catalog components will be deployed onto the guest
 cluster.</p>
-<p>
-Value must be one of:
-&#34;guest&#34;, 
-&#34;management&#34;
-</p>
 </td>
 </tr>
 <tr>
@@ -473,7 +471,7 @@ map[string]string
 <td>
 <code>status</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterStatus">
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterStatus">
 HostedClusterStatus
 </a>
 </em>
@@ -484,7 +482,7 @@ HostedClusterStatus
 </tr>
 </tbody>
 </table>
-##NodePool { #hypershift.openshift.io/v1alpha1.NodePool }
+##NodePool { #hypershift.openshift.io/v1beta1.NodePool }
 <p>
 <p>NodePool is a scalable set of worker nodes attached to a HostedCluster.
 NodePool machine architectures are uniform within a given pool, and are
@@ -504,7 +502,7 @@ independent of the control plane’s underlying machine architecture.</p>
 string</td>
 <td>
 <code>
-hypershift.openshift.io/v1alpha1
+hypershift.openshift.io/v1beta1
 </code>
 </td>
 </tr>
@@ -533,7 +531,7 @@ Refer to the Kubernetes API documentation for the fields of the
 <td>
 <code>spec</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolSpec">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolSpec">
 NodePoolSpec
 </a>
 </em>
@@ -559,7 +557,7 @@ string
 <td>
 <code>release</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Release">
+<a href="#hypershift.openshift.io/v1beta1.Release">
 Release
 </a>
 </em>
@@ -574,7 +572,7 @@ machine properties (e.g. an AMI on the AWS platform).</p>
 <td>
 <code>platform</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">
 NodePoolPlatform
 </a>
 </em>
@@ -582,19 +580,6 @@ NodePoolPlatform
 <td>
 <p>Platform specifies the underlying infrastructure provider for the NodePool
 and is used to configure platform specific behavior.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>nodeCount</code></br>
-<em>
-int32
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Deprecated: Use Replicas instead. NodeCount will be dropped in the next
-api release.</p>
 </td>
 </tr>
 <tr>
@@ -614,7 +599,7 @@ unset, the default value is 0.</p>
 <td>
 <code>management</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolManagement">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolManagement">
 NodePoolManagement
 </a>
 </em>
@@ -628,7 +613,7 @@ upgrade strategies and auto-repair behaviors.</p>
 <td>
 <code>autoScaling</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolAutoScaling">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolAutoScaling">
 NodePoolAutoScaling
 </a>
 </em>
@@ -653,7 +638,12 @@ MachineConfig resources to be injected into the ignition configurations of
 nodes in the NodePool. The MachineConfig API schema is defined here:</p>
 <p><a href="https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185">https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185</a></p>
 <p>Each ConfigMap must have a single key named &ldquo;config&rdquo; whose value is the
-JSON or YAML of a serialized MachineConfig.</p>
+JSON or YAML of a serialized Resource for machineconfiguration.openshift.io:
+KubeletConfig
+ContainerRuntimeConfig
+MachineConfig
+or
+ImageContentSourcePolicy</p>
 </td>
 </tr>
 <tr>
@@ -677,6 +667,33 @@ the purpose of the change. In future we plan to propagate this field in-place.
 </tr>
 <tr>
 <td>
+<code>nodeLabels</code></br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeLabels propagates a list of labels to Nodes, only once on creation.
+Valid values are those in <a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set">https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set</a></p>
+</td>
+</tr>
+<tr>
+<td>
+<code>taints</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.Taint">
+[]Taint
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Taints if specified, propagates a list of taints to Nodes, only once on creation.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>pausedUntil</code></br>
 <em>
 string
@@ -690,6 +707,24 @@ provided: reconciliation is paused on the resource until that date. If the boole
 provided: reconciliation is paused on the resource until the field is removed.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>tuningConfig</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+[]Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>TuningConfig is a list of references to ConfigMaps containing serialized
+Tuned resources to define the tuning configuration to be applied to
+nodes in the NodePool. The Tuned API is defined here:</p>
+<p><a href="https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go">https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go</a></p>
+<p>Each ConfigMap must have a single key named &ldquo;tuned&rdquo; whose value is the
+JSON or YAML of a serialized Tuned.</p>
+</td>
+</tr>
 </table>
 </td>
 </tr>
@@ -697,7 +732,7 @@ provided: reconciliation is paused on the resource until the field is removed.</
 <td>
 <code>status</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolStatus">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolStatus">
 NodePoolStatus
 </a>
 </em>
@@ -708,10 +743,10 @@ NodePoolStatus
 </tr>
 </tbody>
 </table>
-###AESCBCSpec { #hypershift.openshift.io/v1alpha1.AESCBCSpec }
+###AESCBCSpec { #hypershift.openshift.io/v1beta1.AESCBCSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">SecretEncryptionSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionSpec">SecretEncryptionSpec</a>)
 </p>
 <p>
 <p>AESCBCSpec defines metadata about the AESCBC secret encryption strategy</p>
@@ -754,10 +789,10 @@ secrets can continue to be decrypted until they are all re-encrypted with the ac
 </tr>
 </tbody>
 </table>
-###APIServerNetworking { #hypershift.openshift.io/v1alpha1.APIServerNetworking }
+###APIServerNetworking { #hypershift.openshift.io/v1beta1.APIServerNetworking }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">ClusterNetworking</a>)
 </p>
 <p>
 <p>APIServerNetworking specifies how the APIServer is exposed inside a cluster
@@ -801,7 +836,7 @@ pods using host networking cannot listen on this port. If not specified,
 <td>
 <code>allowedCIDRBlocks</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.CIDRBlock">
+<a href="#hypershift.openshift.io/v1beta1.CIDRBlock">
 []CIDRBlock
 </a>
 </em>
@@ -814,10 +849,10 @@ This depends on underlying support by the cloud provider for Service LoadBalance
 </tr>
 </tbody>
 </table>
-###AWSCloudProviderConfig { #hypershift.openshift.io/v1alpha1.AWSCloudProviderConfig }
+###AWSCloudProviderConfig { #hypershift.openshift.io/v1beta1.AWSCloudProviderConfig }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformSpec">AWSPlatformSpec</a>)
 </p>
 <p>
 <p>AWSCloudProviderConfig specifies AWS networking configuration.</p>
@@ -834,7 +869,7 @@ This depends on underlying support by the cloud provider for Service LoadBalance
 <td>
 <code>subnet</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSResourceReference">
+<a href="#hypershift.openshift.io/v1beta1.AWSResourceReference">
 AWSResourceReference
 </a>
 </em>
@@ -870,10 +905,10 @@ string
 </tr>
 </tbody>
 </table>
-###AWSEndpointAccessType { #hypershift.openshift.io/v1alpha1.AWSEndpointAccessType }
+###AWSEndpointAccessType { #hypershift.openshift.io/v1beta1.AWSEndpointAccessType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformSpec">AWSPlatformSpec</a>)
 </p>
 <p>
 <p>AWSEndpointAccessType specifies the publishing scope of cluster endpoints.</p>
@@ -899,13 +934,13 @@ private node communication with the control plane.</p>
 </td>
 </tr></tbody>
 </table>
-###AWSKMSAuthSpec { #hypershift.openshift.io/v1alpha1.AWSKMSAuthSpec }
+###AWSKMSAuthSpec { #hypershift.openshift.io/v1beta1.AWSKMSAuthSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSKMSSpec">AWSKMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSKMSSpec">AWSKMSSpec</a>)
 </p>
 <p>
-<p>AWSKMSAuthSpec defines metadata about the management of credentials used to interact with AWS KMS</p>
+<p>AWSKMSAuthSpec defines metadata about the management of credentials used to interact and encrypt data via AWS KMS key.</p>
 </p>
 <table>
 <thead>
@@ -917,25 +952,58 @@ private node communication with the control plane.</p>
 <tbody>
 <tr>
 <td>
-<code>credentials</code></br>
+<code>awsKms</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-Kubernetes core/v1.LocalObjectReference
-</a>
+string
 </em>
 </td>
 <td>
-<p>Credentials contains the name of the secret that holds the aws credentials that can be used
-to make the necessary KMS calls. It should at key AWSCredentialsFileSecretKey contain the
-aws credentials file that can be used to configure AWS SDKs</p>
+<p>The referenced role must have a trust relationship that allows it to be assumed via web identity.
+<a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html">https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html</a>.
+Example:
+{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Principal&rdquo;: {
+&ldquo;Federated&rdquo;: &ldquo;{{ .ProviderARN }}&rdquo;
+},
+&ldquo;Action&rdquo;: &ldquo;sts:AssumeRoleWithWebIdentity&rdquo;,
+&ldquo;Condition&rdquo;: {
+&ldquo;StringEquals&rdquo;: {
+&ldquo;{{ .ProviderName }}:sub&rdquo;: {{ .ServiceAccounts }}
+}
+}
+}
+]
+}</p>
+<p>AWSKMSARN is an ARN value referencing a role appropriate for managing the auth via the AWS KMS key.</p>
+<p>The following is an example of a valid policy document:</p>
+<p>{
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;kms:Encrypt&rdquo;,
+&ldquo;kms:Decrypt&rdquo;,
+&ldquo;kms:ReEncrypt<em>&rdquo;,
+&ldquo;kms:GenerateDataKey</em>&rdquo;,
+&ldquo;kms:DescribeKey&rdquo;
+],
+&ldquo;Resource&rdquo;: %q
+}
+]
+}</p>
 </td>
 </tr>
 </tbody>
 </table>
-###AWSKMSKeyEntry { #hypershift.openshift.io/v1alpha1.AWSKMSKeyEntry }
+###AWSKMSKeyEntry { #hypershift.openshift.io/v1beta1.AWSKMSKeyEntry }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSKMSSpec">AWSKMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSKMSSpec">AWSKMSSpec</a>)
 </p>
 <p>
 <p>AWSKMSKeyEntry defines metadata to locate the encryption key in AWS</p>
@@ -961,10 +1029,10 @@ string
 </tr>
 </tbody>
 </table>
-###AWSKMSSpec { #hypershift.openshift.io/v1alpha1.AWSKMSSpec }
+###AWSKMSSpec { #hypershift.openshift.io/v1beta1.AWSKMSSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KMSSpec">KMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.KMSSpec">KMSSpec</a>)
 </p>
 <p>
 <p>AWSKMSSpec defines metadata about the configuration of the AWS KMS Secret Encryption provider</p>
@@ -992,7 +1060,7 @@ string
 <td>
 <code>activeKey</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSKMSKeyEntry">
+<a href="#hypershift.openshift.io/v1beta1.AWSKMSKeyEntry">
 AWSKMSKeyEntry
 </a>
 </em>
@@ -1005,7 +1073,7 @@ AWSKMSKeyEntry
 <td>
 <code>backupKey</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSKMSKeyEntry">
+<a href="#hypershift.openshift.io/v1beta1.AWSKMSKeyEntry">
 AWSKMSKeyEntry
 </a>
 </em>
@@ -1020,7 +1088,7 @@ secrets can continue to be decrypted until they are all re-encrypted with the ac
 <td>
 <code>auth</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSKMSAuthSpec">
+<a href="#hypershift.openshift.io/v1beta1.AWSKMSAuthSpec">
 AWSKMSAuthSpec
 </a>
 </em>
@@ -1031,10 +1099,10 @@ AWSKMSAuthSpec
 </tr>
 </tbody>
 </table>
-###AWSNodePoolPlatform { #hypershift.openshift.io/v1alpha1.AWSNodePoolPlatform }
+###AWSNodePoolPlatform { #hypershift.openshift.io/v1beta1.AWSNodePoolPlatform }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>)
 </p>
 <p>
 <p>AWSNodePoolPlatform specifies the configuration of a NodePool when operating
@@ -1074,7 +1142,7 @@ string
 <td>
 <code>subnet</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSResourceReference">
+<a href="#hypershift.openshift.io/v1beta1.AWSResourceReference">
 AWSResourceReference
 </a>
 </em>
@@ -1101,7 +1169,7 @@ is chosen based on the NodePool release payload image.</p>
 <td>
 <code>securityGroups</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSResourceReference">
+<a href="#hypershift.openshift.io/v1beta1.AWSResourceReference">
 []AWSResourceReference
 </a>
 </em>
@@ -1116,7 +1184,7 @@ instances.</p>
 <td>
 <code>rootVolume</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Volume">
+<a href="#hypershift.openshift.io/v1beta1.Volume">
 Volume
 </a>
 </em>
@@ -1130,7 +1198,7 @@ Volume
 <td>
 <code>resourceTags</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSResourceTag">
+<a href="#hypershift.openshift.io/v1beta1.AWSResourceTag">
 []AWSResourceTag
 </a>
 </em>
@@ -1149,10 +1217,10 @@ for the user.</p>
 </tr>
 </tbody>
 </table>
-###AWSPlatformSpec { #hypershift.openshift.io/v1alpha1.AWSPlatformSpec }
+###AWSPlatformSpec { #hypershift.openshift.io/v1beta1.AWSPlatformSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
 </p>
 <p>
 <p>AWSPlatformSpec specifies configuration for clusters running on Amazon Web Services.</p>
@@ -1182,7 +1250,7 @@ the correct boot AMI for a given release.</p>
 <td>
 <code>cloudProviderConfig</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSCloudProviderConfig">
+<a href="#hypershift.openshift.io/v1beta1.AWSCloudProviderConfig">
 AWSCloudProviderConfig
 </a>
 </em>
@@ -1200,7 +1268,7 @@ TODO(dan): should this be named AWSNetworkConfig?</p>
 <td>
 <code>serviceEndpoints</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSServiceEndpoint">
+<a href="#hypershift.openshift.io/v1beta1.AWSServiceEndpoint">
 []AWSServiceEndpoint
 </a>
 </em>
@@ -1216,7 +1284,7 @@ the default service endpoint of specific AWS Services.</p>
 <td>
 <code>rolesRef</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSRolesRef">
+<a href="#hypershift.openshift.io/v1beta1.AWSRolesRef">
 AWSRolesRef
 </a>
 </em>
@@ -1228,69 +1296,9 @@ integrations such as OIDC.</p>
 </tr>
 <tr>
 <td>
-<code>roles</code></br>
-<em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSRoleCredentials">
-[]AWSRoleCredentials
-</a>
-</em>
-</td>
-<td>
-<p>Deprecated
-This field will be removed in the next API release.
-Use RolesRef instead.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>kubeCloudControllerCreds</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-Kubernetes core/v1.LocalObjectReference
-</a>
-</em>
-</td>
-<td>
-<p>Deprecated
-This field will be removed in the next API release.
-Use RolesRef instead.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>nodePoolManagementCreds</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-Kubernetes core/v1.LocalObjectReference
-</a>
-</em>
-</td>
-<td>
-<p>Deprecated
-This field will be removed in the next API release.
-Use RolesRef instead.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>controlPlaneOperatorCreds</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-Kubernetes core/v1.LocalObjectReference
-</a>
-</em>
-</td>
-<td>
-<p>Deprecated
-This field will be removed in the next API release.
-Use RolesRef instead.</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>resourceTags</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSResourceTag">
+<a href="#hypershift.openshift.io/v1beta1.AWSResourceTag">
 []AWSResourceTag
 </a>
 </em>
@@ -1309,7 +1317,7 @@ for the user.</p>
 <td>
 <code>endpointAccess</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSEndpointAccessType">
+<a href="#hypershift.openshift.io/v1beta1.AWSEndpointAccessType">
 AWSEndpointAccessType
 </a>
 </em>
@@ -1318,25 +1326,67 @@ AWSEndpointAccessType
 <em>(Optional)</em>
 <p>EndpointAccess specifies the publishing scope of cluster endpoints. The
 default is Public.</p>
-<p>
-Value must be one of:
-&#34;Private&#34;, 
-&#34;Public&#34;, 
-&#34;PublicAndPrivate&#34;
-</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>additionalAllowedPrincipals</code></br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AdditionalAllowedPrincipals specifies a list of additional allowed principal ARNs
+to be added to the hosted control plane&rsquo;s VPC Endpoint Service to enable additional
+VPC Endpoint connection requests to be automatically accepted.
+See <a href="https://docs.aws.amazon.com/vpc/latest/privatelink/configure-endpoint-service.html">https://docs.aws.amazon.com/vpc/latest/privatelink/configure-endpoint-service.html</a>
+for more details around VPC Endpoint Service allowed principals.</p>
 </td>
 </tr>
 </tbody>
 </table>
-###AWSResourceReference { #hypershift.openshift.io/v1alpha1.AWSResourceReference }
+###AWSPlatformStatus { #hypershift.openshift.io/v1beta1.AWSPlatformStatus }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSCloudProviderConfig">AWSCloudProviderConfig</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.AWSNodePoolPlatform">AWSNodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.PlatformStatus">PlatformStatus</a>)
 </p>
 <p>
-<p>AWSResourceReference is a reference to a specific AWS resource by ID, ARN, or filters.
-Only one of ID, ARN or Filters may be specified. Specifying more than one will result in
+<p>AWSPlatformStatus contains status specific to the AWS platform</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>defaultWorkerSecurityGroupID</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DefaultWorkerSecurityGroupID is the ID of a security group created by
+the control plane operator. It is used for NodePools that don&rsquo;t specify a
+security group.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###AWSResourceReference { #hypershift.openshift.io/v1beta1.AWSResourceReference }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.AWSCloudProviderConfig">AWSCloudProviderConfig</a>, 
+<a href="#hypershift.openshift.io/v1beta1.AWSNodePoolPlatform">AWSNodePoolPlatform</a>)
+</p>
+<p>
+<p>AWSResourceReference is a reference to a specific AWS resource by ID or filters.
+Only one of ID or Filters may be specified. Specifying more than one will result in
 a validation error.</p>
 </p>
 <table>
@@ -1361,21 +1411,9 @@ string
 </tr>
 <tr>
 <td>
-<code>arn</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>ARN of resource</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>filters</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Filter">
+<a href="#hypershift.openshift.io/v1beta1.Filter">
 []Filter
 </a>
 </em>
@@ -1389,11 +1427,11 @@ They are applied according to the rules defined by the AWS API:
 </tr>
 </tbody>
 </table>
-###AWSResourceTag { #hypershift.openshift.io/v1alpha1.AWSResourceTag }
+###AWSResourceTag { #hypershift.openshift.io/v1beta1.AWSResourceTag }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSNodePoolPlatform">AWSNodePoolPlatform</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSNodePoolPlatform">AWSNodePoolPlatform</a>, 
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformSpec">AWSPlatformSpec</a>)
 </p>
 <p>
 <p>AWSResourceTag is a tag to apply to AWS resources created for the cluster.</p>
@@ -1433,11 +1471,7 @@ requirements of all services.</p>
 </tr>
 </tbody>
 </table>
-###AWSRoleCredentials { #hypershift.openshift.io/v1alpha1.AWSRoleCredentials }
-<p>
-(<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
-</p>
+###AWSRoleCredentials { #hypershift.openshift.io/v1beta1.AWSRoleCredentials }
 <p>
 </p>
 <table>
@@ -1480,10 +1514,10 @@ string
 </tr>
 </tbody>
 </table>
-###AWSRolesRef { #hypershift.openshift.io/v1alpha1.AWSRolesRef }
+###AWSRolesRef { #hypershift.openshift.io/v1beta1.AWSRolesRef }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformSpec">AWSPlatformSpec</a>)
 </p>
 <p>
 <p>AWSRolesRef contains references to various AWS IAM roles required for operators to make calls against the AWS API.</p>
@@ -1670,13 +1704,18 @@ string
 </em>
 </td>
 <td>
-<p>KubeCloudControllerARN is an ARN value referencing a role appropriate for the KCM/KCC.</p>
+<p>KubeCloudControllerARN is an ARN value referencing a role appropriate for the KCM/KCC.
+Source: <a href="https://cloud-provider-aws.sigs.k8s.io/prerequisites/#iam-policies">https://cloud-provider-aws.sigs.k8s.io/prerequisites/#iam-policies</a></p>
 <p>The following is an example of a valid policy document:</p>
 <p>{
 &ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
 &ldquo;Statement&rdquo;: [
 {
 &ldquo;Action&rdquo;: [
+&ldquo;autoscaling:DescribeAutoScalingGroups&rdquo;,
+&ldquo;autoscaling:DescribeLaunchConfigurations&rdquo;,
+&ldquo;autoscaling:DescribeTags&rdquo;,
+&ldquo;ec2:DescribeAvailabilityZones&rdquo;,
 &ldquo;ec2:DescribeInstances&rdquo;,
 &ldquo;ec2:DescribeImages&rdquo;,
 &ldquo;ec2:DescribeRegions&rdquo;,
@@ -1719,6 +1758,7 @@ string
 &ldquo;elasticloadbalancing:CreateTargetGroup&rdquo;,
 &ldquo;elasticloadbalancing:DeleteListener&rdquo;,
 &ldquo;elasticloadbalancing:DeleteTargetGroup&rdquo;,
+&ldquo;elasticloadbalancing:DeregisterTargets&rdquo;,
 &ldquo;elasticloadbalancing:DescribeListeners&rdquo;,
 &ldquo;elasticloadbalancing:DescribeLoadBalancerPolicies&rdquo;,
 &ldquo;elasticloadbalancing:DescribeTargetGroups&rdquo;,
@@ -1831,6 +1871,31 @@ string
 &ldquo;arn:</em>:iam::<em>:role/</em>-worker-role&rdquo;
 ],
 &ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;
+},
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;kms:Decrypt&rdquo;,
+&ldquo;kms:Encrypt&rdquo;,
+&ldquo;kms:GenerateDataKey&rdquo;,
+&ldquo;kms:GenerateDataKeyWithoutPlainText&rdquo;,
+&ldquo;kms:DescribeKey&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;<em>&rdquo;
+},
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Action&rdquo;: [
+&ldquo;kms:RevokeGrant&rdquo;,
+&ldquo;kms:CreateGrant&rdquo;,
+&ldquo;kms:ListGrants&rdquo;
+],
+&ldquo;Resource&rdquo;: &ldquo;</em>&rdquo;,
+&ldquo;Condition&rdquo;: {
+&ldquo;Bool&rdquo;: {
+&ldquo;kms:GrantIsForAWSResource&rdquo;: true
+}
+}
 }
 ]
 }</p>
@@ -1857,7 +1922,15 @@ string
 &ldquo;ec2:ModifyVpcEndpoint&rdquo;,
 &ldquo;ec2:DeleteVpcEndpoints&rdquo;,
 &ldquo;ec2:CreateTags&rdquo;,
-&ldquo;route53:ListHostedZones&rdquo;
+&ldquo;route53:ListHostedZones&rdquo;,
+&ldquo;ec2:CreateSecurityGroup&rdquo;,
+&ldquo;ec2:AuthorizeSecurityGroupIngress&rdquo;,
+&ldquo;ec2:AuthorizeSecurityGroupEgress&rdquo;,
+&ldquo;ec2:DeleteSecurityGroup&rdquo;,
+&ldquo;ec2:RevokeSecurityGroupIngress&rdquo;,
+&ldquo;ec2:RevokeSecurityGroupEgress&rdquo;,
+&ldquo;ec2:DescribeSecurityGroups&rdquo;,
+&ldquo;ec2:DescribeVpcs&rdquo;,
 ],
 &ldquo;Resource&rdquo;: &ldquo;*&rdquo;
 },
@@ -1875,10 +1948,10 @@ string
 </tr>
 </tbody>
 </table>
-###AWSServiceEndpoint { #hypershift.openshift.io/v1alpha1.AWSServiceEndpoint }
+###AWSServiceEndpoint { #hypershift.openshift.io/v1beta1.AWSServiceEndpoint }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">AWSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformSpec">AWSPlatformSpec</a>)
 </p>
 <p>
 <p>AWSServiceEndpoint stores the configuration for services to
@@ -1919,10 +1992,10 @@ This must be provided and cannot be empty.</p>
 </tr>
 </tbody>
 </table>
-###AgentNodePoolPlatform { #hypershift.openshift.io/v1alpha1.AgentNodePoolPlatform }
+###AgentNodePoolPlatform { #hypershift.openshift.io/v1beta1.AgentNodePoolPlatform }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>)
 </p>
 <p>
 <p>AgentNodePoolPlatform specifies the configuration of a NodePool when operating
@@ -1953,10 +2026,10 @@ be selected for a Machine.</p>
 </tr>
 </tbody>
 </table>
-###AgentPlatformSpec { #hypershift.openshift.io/v1alpha1.AgentPlatformSpec }
+###AgentPlatformSpec { #hypershift.openshift.io/v1beta1.AgentPlatformSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
 </p>
 <p>
 <p>AgentPlatformSpec specifies configuration for agent-based installations.</p>
@@ -1982,11 +2055,11 @@ string
 </tr>
 </tbody>
 </table>
-###AvailabilityPolicy { #hypershift.openshift.io/v1alpha1.AvailabilityPolicy }
+###AvailabilityPolicy { #hypershift.openshift.io/v1beta1.AvailabilityPolicy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>AvailabilityPolicy specifies a high level availability policy for components.</p>
@@ -2012,10 +2085,10 @@ toleration of full disruption of the component.</p>
 </td>
 </tr></tbody>
 </table>
-###AzureNodePoolPlatform { #hypershift.openshift.io/v1alpha1.AzureNodePoolPlatform }
+###AzureNodePoolPlatform { #hypershift.openshift.io/v1beta1.AzureNodePoolPlatform }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>)
 </p>
 <p>
 </p>
@@ -2094,10 +2167,10 @@ in a location that does not support AvailabilityZone.</p>
 </tr>
 </tbody>
 </table>
-###AzurePlatformSpec { #hypershift.openshift.io/v1alpha1.AzurePlatformSpec }
+###AzurePlatformSpec { #hypershift.openshift.io/v1beta1.AzurePlatformSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
 </p>
 <p>
 </p>
@@ -2203,19 +2276,18 @@ string
 </tr>
 </tbody>
 </table>
-###CIDRBlock { #hypershift.openshift.io/v1alpha1.CIDRBlock }
+###CIDRBlock { #hypershift.openshift.io/v1beta1.CIDRBlock }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.APIServerNetworking">APIServerNetworking</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.APIServerNetworking">APIServerNetworking</a>)
 </p>
 <p>
 </p>
-###ClusterAutoscaling { #hypershift.openshift.io/v1alpha1.ClusterAutoscaling }
+###ClusterAutoscaling { #hypershift.openshift.io/v1beta1.ClusterAutoscaling }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ClusterAutoscaling specifies auto-scaling behavior that applies to all
@@ -2285,11 +2357,11 @@ resources available. The default is -10.</p>
 </tr>
 </tbody>
 </table>
-###ClusterConfiguration { #hypershift.openshift.io/v1alpha1.ClusterConfiguration }
+###ClusterConfiguration { #hypershift.openshift.io/v1beta1.ClusterConfiguration }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ClusterConfiguration specifies configuration for individual OCP components in the
@@ -2306,57 +2378,6 @@ configuration API.</p>
 </tr>
 </thead>
 <tbody>
-<tr>
-<td>
-<code>secretRefs</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-[]Kubernetes core/v1.LocalObjectReference
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>SecretRefs holds references to any secrets referenced by configuration
-entries. Entries can reference the secrets using local object references.</p>
-<p>Deprecated
-This field is deprecated and will be removed in a future release</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>configMapRefs</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-[]Kubernetes core/v1.LocalObjectReference
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>ConfigMapRefs holds references to any configmaps referenced by
-configuration entries. Entries can reference the configmaps using local
-object references.</p>
-<p>Deprecated
-This field is deprecated and will be removed in a future release</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>items</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#rawextension-runtime-pkg">
-[]k8s.io/apimachinery/pkg/runtime.RawExtension
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Items embeds the serialized configuration resources.</p>
-<p>Deprecated
-This field is deprecated and will be removed in a future release</p>
-</td>
-</tr>
 <tr>
 <td>
 <code>apiServer</code></br>
@@ -2499,10 +2520,10 @@ github.com/openshift/api/config/v1.ProxySpec
 </tr>
 </tbody>
 </table>
-###ClusterNetworkEntry { #hypershift.openshift.io/v1alpha1.ClusterNetworkEntry }
+###ClusterNetworkEntry { #hypershift.openshift.io/v1beta1.ClusterNetworkEntry }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">ClusterNetworking</a>)
 </p>
 <p>
 <p>ClusterNetworkEntry is a single IP address block for pod IP blocks. IP blocks
@@ -2545,11 +2566,11 @@ field is not used by the plugin, it can be left unset.</p>
 </tr>
 </tbody>
 </table>
-###ClusterNetworking { #hypershift.openshift.io/v1alpha1.ClusterNetworking }
+###ClusterNetworking { #hypershift.openshift.io/v1beta1.ClusterNetworking }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ClusterNetworking specifies network configuration for a cluster.</p>
@@ -2564,81 +2585,36 @@ field is not used by the plugin, it can be left unset.</p>
 <tbody>
 <tr>
 <td>
-<code>serviceCIDR</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Deprecated
-This field will be removed in the next API release.
-Use ServiceNetwork instead</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>podCIDR</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Deprecated
-This field will be removed in the next API release.
-Use ClusterNetwork instead</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>machineCIDR</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Deprecated
-This field will be removed in the next API release.
-Use MachineNetwork instead</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>machineNetwork</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.MachineNetworkEntry">
+<a href="#hypershift.openshift.io/v1beta1.MachineNetworkEntry">
 []MachineNetworkEntry
 </a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>MachineNetwork is the list of IP address pools for machines.
-TODO: make this required in the next version of the API</p>
+<p>MachineNetwork is the list of IP address pools for machines.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>clusterNetwork</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworkEntry">
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworkEntry">
 []ClusterNetworkEntry
 </a>
 </em>
 </td>
 <td>
-<em>(Optional)</em>
-<p>ClusterNetwork is the list of IP address pools for pods.
-TODO: make this required in the next version of the API</p>
+<p>ClusterNetwork is the list of IP address pools for pods.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>serviceNetwork</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ServiceNetworkEntry">
+<a href="#hypershift.openshift.io/v1beta1.ServiceNetworkEntry">
 []ServiceNetworkEntry
 </a>
 </em>
@@ -2646,35 +2622,27 @@ TODO: make this required in the next version of the API</p>
 <td>
 <em>(Optional)</em>
 <p>ServiceNetwork is the list of IP address pools for services.
-NOTE: currently only one entry is supported.
-TODO: make this required in the next version of the API</p>
+NOTE: currently only one entry is supported.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>networkType</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NetworkType">
+<a href="#hypershift.openshift.io/v1beta1.NetworkType">
 NetworkType
 </a>
 </em>
 </td>
 <td>
 <p>NetworkType specifies the SDN provider used for cluster networking.</p>
-<p>
-Value must be one of:
-&#34;Calico&#34;, 
-&#34;OVNKubernetes&#34;, 
-&#34;OpenShiftSDN&#34;, 
-&#34;Other&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>apiServer</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.APIServerNetworking">
+<a href="#hypershift.openshift.io/v1beta1.APIServerNetworking">
 APIServerNetworking
 </a>
 </em>
@@ -2686,10 +2654,11 @@ how the APIServer is exposed inside a cluster node.</p>
 </tr>
 </tbody>
 </table>
-###ClusterVersionStatus { #hypershift.openshift.io/v1alpha1.ClusterVersionStatus }
+###ClusterVersionStatus { #hypershift.openshift.io/v1beta1.ClusterVersionStatus }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterStatus">HostedClusterStatus</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterStatus">HostedClusterStatus</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneStatus">HostedControlPlaneStatus</a>)
 </p>
 <p>
 <p>ClusterVersionStatus reports the status of the cluster versioning,
@@ -2710,8 +2679,8 @@ progress, or is failing.</p>
 <td>
 <code>desired</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Release">
-Release
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+github.com/openshift/api/config/v1.Release
 </a>
 </em>
 </td>
@@ -2754,9 +2723,46 @@ If this value is not equal to metadata.generation, then the desired
 and conditions fields may represent a previous version.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>availableUpdates</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+[]github.com/openshift/api/config/v1.Release
+</a>
+</em>
+</td>
+<td>
+<p>availableUpdates contains updates recommended for this
+cluster. Updates which appear in conditionalUpdates but not in
+availableUpdates may expose this cluster to known issues. This list
+may be empty if no updates are recommended, if the update service
+is unavailable, or if an invalid channel has been specified.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>conditionalUpdates</code></br>
+<em>
+<a href="https://docs.openshift.com/container-platform/4.10/rest_api/config_apis/config-apis-index.html">
+[]github.com/openshift/api/config/v1.ConditionalUpdate
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>conditionalUpdates contains the list of updates that may be
+recommended for this cluster if it meets specific required
+conditions. Consumers interested in the set of updates that are
+actually recommended for this cluster should use
+availableUpdates. This list may be empty if no updates are
+recommended, if the update service is unavailable, or if an empty
+or invalid channel has been specified.</p>
+</td>
+</tr>
 </tbody>
 </table>
-###ConditionType { #hypershift.openshift.io/v1alpha1.ConditionType }
+###ConditionType { #hypershift.openshift.io/v1beta1.ConditionType }
 <p>
 </p>
 <table>
@@ -2766,20 +2772,40 @@ and conditions fields may represent a previous version.</p>
 <th>Description</th>
 </tr>
 </thead>
-<tbody><tr><td><p>&#34;EndpointAvailable&#34;</p></td>
+<tbody><tr><td><p>&#34;AWSDefaultSecurityGroupCreated&#34;</p></td>
+<td><p>AWSDefaultSecurityGroupCreated indicates whether the default security group
+for AWS workers has been created.
+A failure here indicates that NodePools without a security group will be
+blocked from creating machines.</p>
+</td>
+</tr><tr><td><p>&#34;AWSEndpointAvailable&#34;</p></td>
 <td><p>AWSEndpointServiceAvailable indicates whether the AWS Endpoint has been
 created in the guest VPC</p>
 </td>
-</tr><tr><td><p>&#34;EndpointServiceAvailable&#34;</p></td>
+</tr><tr><td><p>&#34;AWSEndpointServiceAvailable&#34;</p></td>
 <td><p>AWSEndpointServiceAvailable indicates whether the AWS Endpoint Service
 has been created for the specified NLB in the management VPC</p>
 </td>
 </tr><tr><td><p>&#34;CVOScaledDown&#34;</p></td>
 <td></td>
 </tr><tr><td><p>&#34;CloudResourcesDestroyed&#34;</p></td>
-<td></td>
+<td><p>CloudResourcesDestroyed bubbles up the same condition from HCP. It signals if the cloud provider infrastructure created by Kubernetes
+in the consumer cloud provider account was destroyed.
+A failure here may require external user intervention to resolve. E.g. cloud provider perms were corrupted. E.g. the guest cluster was broken
+and kube resource deletion that affects cloud infra like service type load balancer can&rsquo;t succeed.</p>
+</td>
+</tr><tr><td><p>&#34;ClusterVersionAvailable&#34;</p></td>
+<td><p>ClusterVersionAvailable bubbles up Failing configv1.OperatorAvailable from the CVO.</p>
+</td>
 </tr><tr><td><p>&#34;ClusterVersionFailing&#34;</p></td>
-<td></td>
+<td><p>ClusterVersionFailing bubbles up Failing from the CVO.</p>
+</td>
+</tr><tr><td><p>&#34;ClusterVersionProgressing&#34;</p></td>
+<td><p>ClusterVersionProgressing bubbles up configv1.OperatorProgressing from the CVO.</p>
+</td>
+</tr><tr><td><p>&#34;ClusterVersionReleaseAccepted&#34;</p></td>
+<td><p>ClusterVersionReleaseAccepted bubbles up Failing ReleaseAccepted from the CVO.</p>
+</td>
 </tr><tr><td><p>&#34;ClusterVersionSucceeding&#34;</p></td>
 <td><p>ClusterVersionSucceeding indicates the current status of the desired release
 version of the HostedCluster as indicated by the Failing condition in the
@@ -2790,12 +2816,20 @@ underlying cluster&rsquo;s ClusterVersion.</p>
 underlying cluster&rsquo;s ClusterVersion.</p>
 </td>
 </tr><tr><td><p>&#34;EtcdAvailable&#34;</p></td>
-<td></td>
+<td><p>EtcdAvailable bubbles up the same condition from HCP. It signals if etcd is available.
+A failure here often means a software bug or a non-stable cluster.</p>
+</td>
 </tr><tr><td><p>&#34;EtcdSnapshotRestored&#34;</p></td>
 <td></td>
+</tr><tr><td><p>&#34;ExternalDNSReachable&#34;</p></td>
+<td><p>ExternalDNSReachable bubbles up the same condition from HCP. It signals if the configured external DNS is reachable.
+A failure here requires external user intervention to resolve. E.g. changing the external DNS domain or making sure the domain is created
+and registered correctly.</p>
+</td>
 </tr><tr><td><p>&#34;Available&#34;</p></td>
 <td><p>HostedClusterAvailable indicates whether the HostedCluster has a healthy
-control plane.</p>
+control plane.
+When this is false for too long and there&rsquo;s no clear indication in the &ldquo;Reason&rdquo;, please check the remaining more granular conditions.</p>
 </td>
 </tr><tr><td><p>&#34;Degraded&#34;</p></td>
 <td><p>HostedClusterDegraded indicates whether the HostedCluster is encountering
@@ -2803,7 +2837,8 @@ an error that may require user intervention to resolve.</p>
 </td>
 </tr><tr><td><p>&#34;Progressing&#34;</p></td>
 <td><p>HostedClusterProgressing indicates whether the HostedCluster is attempting
-an initial deployment or upgrade.</p>
+an initial deployment or upgrade.
+When this is false for too long and there&rsquo;s no clear indication in the &ldquo;Reason&rdquo;, please check the remaining more granular conditions.</p>
 </td>
 </tr><tr><td><p>&#34;Available&#34;</p></td>
 <td></td>
@@ -2811,58 +2846,97 @@ an initial deployment or upgrade.</p>
 <td></td>
 </tr><tr><td><p>&#34;IgnitionEndpointAvailable&#34;</p></td>
 <td><p>IgnitionEndpointAvailable indicates whether the ignition server for the
-HostedCluster is available to handle ignition requests.</p>
+HostedCluster is available to handle ignition requests.
+A failure here often means a software bug or a non-stable cluster.</p>
 </td>
 </tr><tr><td><p>&#34;InfrastructureReady&#34;</p></td>
-<td></td>
+<td><p>InfrastructureReady bubbles up the same condition from HCP. It signals if the infrastructure for a control plane to be operational,
+e.g. load balancers were created successfully.
+A failure here may require external user intervention to resolve. E.g. hitting quotas on the cloud provider.</p>
+</td>
 </tr><tr><td><p>&#34;KubeAPIServerAvailable&#34;</p></td>
-<td></td>
+<td><p>KubeAPIServerAvailable bubbles up the same condition from HCP. It signals if the kube API server is available.
+A failure here often means a software bug or a non-stable cluster.</p>
+</td>
 </tr><tr><td><p>&#34;PlatformCredentialsFound&#34;</p></td>
 <td><p>PlatformCredentialsFound indicates that credentials required for the
-desired platform are valid.</p>
+desired platform are valid.
+A failure here is unlikely to resolve without the changing user input.</p>
 </td>
 </tr><tr><td><p>&#34;ReconciliationActive&#34;</p></td>
-<td><p>ReconciliationActive indicates if reconciliation of the hostedcluster is
-active or paused.</p>
+<td><p>ReconciliationActive indicates if reconciliation of the HostedCluster is
+active or paused hostedCluster.spec.pausedUntil.</p>
 </td>
 </tr><tr><td><p>&#34;ReconciliationSucceeded&#34;</p></td>
-<td><p>ReconciliationSucceeded indicates if the hostedcluster reconciliation
-succeeded.</p>
+<td><p>ReconciliationSucceeded indicates if the HostedCluster reconciliation
+succeeded.
+A failure here often means a software bug or a non-stable cluster.</p>
 </td>
 </tr><tr><td><p>&#34;SupportedHostedCluster&#34;</p></td>
 <td><p>SupportedHostedCluster indicates whether a HostedCluster is supported by
 the current configuration of the hypershift-operator.
 e.g. If HostedCluster requests endpointAcess Private but the hypershift-operator
 is running on a management cluster outside AWS or is not configured with AWS
-credentials, the HostedCluster is not supported.</p>
+credentials, the HostedCluster is not supported.
+A failure here is unlikely to resolve without the changing user input.</p>
 </td>
 </tr><tr><td><p>&#34;UnmanagedEtcdAvailable&#34;</p></td>
 <td><p>UnmanagedEtcdAvailable indicates whether a user-managed etcd cluster is
 healthy.</p>
 </td>
+</tr><tr><td><p>&#34;ValidAWSIdentityProvider&#34;</p></td>
+<td><p>ValidAWSIdentityProvider indicates if the Identity Provider referenced
+in the cloud credentials is healthy. E.g. for AWS the idp ARN is referenced in the iam roles.
+&ldquo;Version&rdquo;: &ldquo;2012-10-17&rdquo;,
+&ldquo;Statement&rdquo;: [
+{
+&ldquo;Effect&rdquo;: &ldquo;Allow&rdquo;,
+&ldquo;Principal&rdquo;: {
+&ldquo;Federated&rdquo;: &ldquo;{{ .ProviderARN }}&rdquo;
+},
+&ldquo;Action&rdquo;: &ldquo;sts:AssumeRoleWithWebIdentity&rdquo;,
+&ldquo;Condition&rdquo;: {
+&ldquo;StringEquals&rdquo;: {
+&ldquo;{{ .ProviderName }}:sub&rdquo;: {{ .ServiceAccounts }}
+}
+}
+}
+]</p>
+<p>A failure here may require external user intervention to resolve.</p>
+</td>
+</tr><tr><td><p>&#34;ValidAWSKMSConfig&#34;</p></td>
+<td><p>ValidAWSKMSConfig indicates whether the AWS KMS role and encryption key are valid and operational
+A failure here indicates that the role or the key are invalid, or the role doesn&rsquo;t have access to use the key.</p>
+</td>
 </tr><tr><td><p>&#34;ValidConfiguration&#34;</p></td>
-<td><p>ValidHostedClusterConfiguration indicates (if status is true) that the
-ClusterConfiguration specified for the HostedCluster is valid.</p>
+<td><p>ValidHostedClusterConfiguration signals if the hostedCluster input is valid and
+supported by the underlying management cluster.
+A failure here is unlikely to resolve without the changing user input.</p>
 </td>
 </tr><tr><td><p>&#34;ValidHostedControlPlaneConfiguration&#34;</p></td>
-<td></td>
+<td><p>ValidHostedControlPlaneConfiguration bubbles up the same condition from HCP. It signals if the hostedControlPlane input is valid and
+supported by the underlying management cluster.
+A failure here is unlikely to resolve without the changing user input.</p>
+</td>
 </tr><tr><td><p>&#34;ValidOIDCConfiguration&#34;</p></td>
 <td><p>ValidOIDCConfiguration indicates if an AWS cluster&rsquo;s OIDC condition is
-detected as invalid.</p>
+detected as invalid.
+A failure here may require external user intervention to resolve. E.g. oidc was deleted out of band.</p>
 </td>
 </tr><tr><td><p>&#34;ValidReleaseImage&#34;</p></td>
 <td><p>ValidReleaseImage indicates if the release image set in the spec is valid
 for the HostedCluster. For example, this can be set false if the
 HostedCluster itself attempts an unsupported version before 4.9 or an
-unsupported upgrade e.g y-stream upgrade before 4.11.</p>
+unsupported upgrade e.g y-stream upgrade before 4.11.
+A failure here is unlikely to resolve without the changing user input.</p>
 </td>
 </tr></tbody>
 </table>
-###DNSSpec { #hypershift.openshift.io/v1alpha1.DNSSpec }
+###DNSSpec { #hypershift.openshift.io/v1beta1.DNSSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>DNSSpec specifies the DNS configuration in the cluster.</p>
@@ -2884,6 +2958,19 @@ string
 </td>
 <td>
 <p>BaseDomain is the base domain of the cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>baseDomainPrefix</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>BaseDomainPrefix is the base domain prefix of the cluster.
+defaults to clusterName if not set. Set it to &ldquo;&rdquo; if you don&rsquo;t want a prefix to be prepended to BaseDomain.</p>
 </td>
 </tr>
 <tr>
@@ -2914,10 +3001,10 @@ available internally to the cluster exist.</p>
 </tr>
 </tbody>
 </table>
-###EtcdManagementType { #hypershift.openshift.io/v1alpha1.EtcdManagementType }
+###EtcdManagementType { #hypershift.openshift.io/v1beta1.EtcdManagementType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdSpec">EtcdSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.EtcdSpec">EtcdSpec</a>)
 </p>
 <p>
 <p>EtcdManagementType is a enum specifying the strategy for managing the cluster&rsquo;s etcd instance</p>
@@ -2939,11 +3026,11 @@ and the user is responsible for doing so.</p>
 </td>
 </tr></tbody>
 </table>
-###EtcdSpec { #hypershift.openshift.io/v1alpha1.EtcdSpec }
+###EtcdSpec { #hypershift.openshift.io/v1beta1.EtcdSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>EtcdSpec specifies configuration for a control plane etcd cluster.</p>
@@ -2960,25 +3047,20 @@ and the user is responsible for doing so.</p>
 <td>
 <code>managementType</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdManagementType">
+<a href="#hypershift.openshift.io/v1beta1.EtcdManagementType">
 EtcdManagementType
 </a>
 </em>
 </td>
 <td>
 <p>ManagementType defines how the etcd cluster is managed.</p>
-<p>
-Value must be one of:
-&#34;Managed&#34;, 
-&#34;Unmanaged&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>managed</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ManagedEtcdSpec">
+<a href="#hypershift.openshift.io/v1beta1.ManagedEtcdSpec">
 ManagedEtcdSpec
 </a>
 </em>
@@ -2992,7 +3074,7 @@ ManagedEtcdSpec
 <td>
 <code>unmanaged</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.UnmanagedEtcdSpec">
+<a href="#hypershift.openshift.io/v1beta1.UnmanagedEtcdSpec">
 UnmanagedEtcdSpec
 </a>
 </em>
@@ -3005,10 +3087,10 @@ integrate with an eternally managed etcd cluster.</p>
 </tr>
 </tbody>
 </table>
-###EtcdTLSConfig { #hypershift.openshift.io/v1alpha1.EtcdTLSConfig }
+###EtcdTLSConfig { #hypershift.openshift.io/v1beta1.EtcdTLSConfig }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.UnmanagedEtcdSpec">UnmanagedEtcdSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.UnmanagedEtcdSpec">UnmanagedEtcdSpec</a>)
 </p>
 <p>
 <p>EtcdTLSConfig specifies TLS configuration for HTTPS etcd client endpoints.</p>
@@ -3041,10 +3123,10 @@ etcd-client.key: Client certificate key value
 </tr>
 </tbody>
 </table>
-###Filter { #hypershift.openshift.io/v1alpha1.Filter }
+###Filter { #hypershift.openshift.io/v1beta1.Filter }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSResourceReference">AWSResourceReference</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSResourceReference">AWSResourceReference</a>)
 </p>
 <p>
 <p>Filter is a filter used to identify an AWS resource</p>
@@ -3081,10 +3163,10 @@ string
 </tr>
 </tbody>
 </table>
-###HostedClusterSpec { #hypershift.openshift.io/v1alpha1.HostedClusterSpec }
+###HostedClusterSpec { #hypershift.openshift.io/v1beta1.HostedClusterSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedCluster">HostedCluster</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedCluster">HostedCluster</a>)
 </p>
 <p>
 <p>HostedClusterSpec is the desired behavior of a HostedCluster.</p>
@@ -3101,7 +3183,7 @@ string
 <td>
 <code>release</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Release">
+<a href="#hypershift.openshift.io/v1beta1.Release">
 Release
 </a>
 </em>
@@ -3135,6 +3217,20 @@ immutable.</p>
 </tr>
 <tr>
 <td>
+<code>channel</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>channel is an identifier for explicitly requesting that a non-default
+set of updates be applied to this cluster. The default channel will be
+contain stable updates that are appropriate for production clusters.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>infraID</code></br>
 <em>
 string
@@ -3151,7 +3247,7 @@ and its associated NodePools.</p>
 <td>
 <code>platform</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">
 PlatformSpec
 </a>
 </em>
@@ -3165,7 +3261,7 @@ and is used to configure platform specific behavior.</p>
 <td>
 <code>controllerAvailabilityPolicy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AvailabilityPolicy">
+<a href="#hypershift.openshift.io/v1beta1.AvailabilityPolicy">
 AvailabilityPolicy
 </a>
 </em>
@@ -3174,18 +3270,13 @@ AvailabilityPolicy
 <em>(Optional)</em>
 <p>ControllerAvailabilityPolicy specifies the availability policy applied to
 critical control plane components. The default value is SingleReplica.</p>
-<p>
-Value must be one of:
-&#34;HighlyAvailable&#34;, 
-&#34;SingleReplica&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>infrastructureAvailabilityPolicy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AvailabilityPolicy">
+<a href="#hypershift.openshift.io/v1beta1.AvailabilityPolicy">
 AvailabilityPolicy
 </a>
 </em>
@@ -3195,18 +3286,13 @@ AvailabilityPolicy
 <p>InfrastructureAvailabilityPolicy specifies the availability policy applied
 to infrastructure services which run on cluster nodes. The default value is
 SingleReplica.</p>
-<p>
-Value must be one of:
-&#34;HighlyAvailable&#34;, 
-&#34;SingleReplica&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>dns</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.DNSSpec">
+<a href="#hypershift.openshift.io/v1beta1.DNSSpec">
 DNSSpec
 </a>
 </em>
@@ -3219,7 +3305,7 @@ DNSSpec
 <td>
 <code>networking</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">
 ClusterNetworking
 </a>
 </em>
@@ -3232,7 +3318,7 @@ ClusterNetworking
 <td>
 <code>autoscaling</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterAutoscaling">
+<a href="#hypershift.openshift.io/v1beta1.ClusterAutoscaling">
 ClusterAutoscaling
 </a>
 </em>
@@ -3247,7 +3333,7 @@ associated with the control plane.</p>
 <td>
 <code>etcd</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdSpec">
+<a href="#hypershift.openshift.io/v1beta1.EtcdSpec">
 EtcdSpec
 </a>
 </em>
@@ -3262,7 +3348,7 @@ changed.</p>
 <td>
 <code>services</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategyMapping">
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategyMapping">
 []ServicePublishingStrategyMapping
 </a>
 </em>
@@ -3341,7 +3427,7 @@ signing key, a IssuerURL must also be specified.</p>
 <td>
 <code>configuration</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterConfiguration">
+<a href="#hypershift.openshift.io/v1beta1.ClusterConfiguration">
 ClusterConfiguration
 </a>
 </em>
@@ -3370,14 +3456,13 @@ contains the webhook information for the audit webhook endpoint. It is a
 secret because if the endpoint has mTLS the kubeconfig will contain client
 keys. The kubeconfig needs to be stored in the secret with a secret key
 name that corresponds to the constant AuditWebhookKubeconfigKey.</p>
-<p>This field is currently only supported on the IBMCloud platform.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>imageContentSources</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ImageContentSource">
+<a href="#hypershift.openshift.io/v1beta1.ImageContentSource">
 []ImageContentSource
 </a>
 </em>
@@ -3407,7 +3492,7 @@ PEM-encoded X.509 certificate bundle that will be added to the hosted controlpla
 <td>
 <code>secretEncryption</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionSpec">
 SecretEncryptionSpec
 </a>
 </em>
@@ -3451,7 +3536,7 @@ provided: reconciliation is paused on the resource until the field is removed.</
 <td>
 <code>olmCatalogPlacement</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.OLMCatalogPlacement">
+<a href="#hypershift.openshift.io/v1beta1.OLMCatalogPlacement">
 OLMCatalogPlacement
 </a>
 </em>
@@ -3462,11 +3547,6 @@ OLMCatalogPlacement
 this is set to management and OLM catalog components are deployed onto the management
 cluster. If set to guest, the OLM catalog components will be deployed onto the guest
 cluster.</p>
-<p>
-Value must be one of:
-&#34;guest&#34;, 
-&#34;management&#34;
-</p>
 </td>
 </tr>
 <tr>
@@ -3483,10 +3563,10 @@ map[string]string
 </tr>
 </tbody>
 </table>
-###HostedClusterStatus { #hypershift.openshift.io/v1alpha1.HostedClusterStatus }
+###HostedClusterStatus { #hypershift.openshift.io/v1beta1.HostedClusterStatus }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedCluster">HostedCluster</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedCluster">HostedCluster</a>)
 </p>
 <p>
 <p>HostedClusterStatus is the latest observed status of a HostedCluster.</p>
@@ -3503,7 +3583,7 @@ map[string]string
 <td>
 <code>version</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterVersionStatus">
+<a href="#hypershift.openshift.io/v1beta1.ClusterVersionStatus">
 ClusterVersionStatus
 </a>
 </em>
@@ -3559,6 +3639,21 @@ It exposes the config for instances to become kubernetes nodes.</p>
 </tr>
 <tr>
 <td>
+<code>controlPlaneEndpoint</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.APIEndpoint">
+APIEndpoint
+</a>
+</em>
+</td>
+<td>
+<p>ControlPlaneEndpoint contains the endpoint information by which
+external clients can access the control plane. This is populated
+after the infrastructure is ready.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>oauthCallbackURLTemplate</code></br>
 <em>
 string
@@ -3581,13 +3676,28 @@ This is populated after the infrastructure is ready.</p>
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Conditions represents the latest available observations of a control
 plane&rsquo;s current state.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>platform</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.PlatformStatus">
+PlatformStatus
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Platform contains platform-specific status of the HostedCluster</p>
+</td>
+</tr>
 </tbody>
 </table>
-###HostedControlPlaneSpec { #hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec }
+###HostedControlPlaneSpec { #hypershift.openshift.io/v1beta1.HostedControlPlaneSpec }
 <p>
 <p>HostedControlPlaneSpec defines the desired state of HostedControlPlane</p>
 </p>
@@ -3607,6 +3717,21 @@ string
 </em>
 </td>
 <td>
+<p>ReleaseImage is the release image applied to the hosted control plane.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>channel</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>channel is an identifier for explicitly requesting that a non-default
+set of updates be applied to this cluster. The default channel will be
+contain stable updates that are appropriate for production clusters.</p>
 </td>
 </tr>
 <tr>
@@ -3629,13 +3754,17 @@ string
 </em>
 </td>
 <td>
+<p>IssuerURL is an OIDC issuer URL which is used as the issuer in all
+ServiceAccount tokens generated by the control plane API server. The
+default value is kubernetes.default.svc, which only works for in-cluster
+validation.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>networking</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">
 ClusterNetworking
 </a>
 </em>
@@ -3644,68 +3773,6 @@ ClusterNetworking
 <em>(Optional)</em>
 <p>Networking specifies network configuration for the cluster.
 Temporarily optional for backward compatibility, required in future releases.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>serviceCIDR</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.ServiceNetwork</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>podCIDR</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.ClusterNetwork</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>machineCIDR</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.MachineNetwork</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>networkType</code></br>
-<em>
-<a href="#hypershift.openshift.io/v1alpha1.NetworkType">
-NetworkType
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.NetworkType
-NetworkType specifies the SDN provider used for cluster networking.</p>
-<p>
-Value must be one of:
-&#34;Calico&#34;, 
-&#34;OVNKubernetes&#34;, 
-&#34;OpenShiftSDN&#34;, 
-&#34;Other&#34;
-</p>
 </td>
 </tr>
 <tr>
@@ -3749,7 +3816,7 @@ string
 <td>
 <code>platform</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">
 PlatformSpec
 </a>
 </em>
@@ -3761,7 +3828,7 @@ PlatformSpec
 <td>
 <code>dns</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.DNSSpec">
+<a href="#hypershift.openshift.io/v1beta1.DNSSpec">
 DNSSpec
 </a>
 </em>
@@ -3788,56 +3855,9 @@ be generated automatically for the cluster.</p>
 </tr>
 <tr>
 <td>
-<code>apiPort</code></br>
-<em>
-int32
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.apiServer.APIPort
-APIPort is the port at which the APIServer listens inside a worker</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>apiAdvertiseAddress</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.apiServer.AdvertiseAddress
-APIAdvertiseAddress is the address at which the APIServer listens
-inside a worker.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>apiAllowedCIDRBlocks</code></br>
-<em>
-<a href="#hypershift.openshift.io/v1alpha1.CIDRBlock">
-[]CIDRBlock
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>deprecated
-use networking.apiServer.APIAllowedCIDRBlocks
-APIAllowedCIDRBlocks is an allow list of CIDR blocks that can access the APIServer
-If not specified, traffic is allowed from all addresses.
-This depends on underlying support by the cloud provider for Service LoadBalancerSourceRanges</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>controllerAvailabilityPolicy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AvailabilityPolicy">
+<a href="#hypershift.openshift.io/v1beta1.AvailabilityPolicy">
 AvailabilityPolicy
 </a>
 </em>
@@ -3846,18 +3866,13 @@ AvailabilityPolicy
 <em>(Optional)</em>
 <p>ControllerAvailabilityPolicy specifies the availability policy applied to
 critical control plane components. The default value is SingleReplica.</p>
-<p>
-Value must be one of:
-&#34;HighlyAvailable&#34;, 
-&#34;SingleReplica&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>infrastructureAvailabilityPolicy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AvailabilityPolicy">
+<a href="#hypershift.openshift.io/v1beta1.AvailabilityPolicy">
 AvailabilityPolicy
 </a>
 </em>
@@ -3867,11 +3882,6 @@ AvailabilityPolicy
 <p>InfrastructureAvailabilityPolicy specifies the availability policy applied
 to infrastructure services which run on cluster nodes. The default value is
 SingleReplica.</p>
-<p>
-Value must be one of:
-&#34;HighlyAvailable&#34;, 
-&#34;SingleReplica&#34;
-</p>
 </td>
 </tr>
 <tr>
@@ -3890,7 +3900,7 @@ bool
 <td>
 <code>kubeconfig</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubeconfigSecretRef">
+<a href="#hypershift.openshift.io/v1beta1.KubeconfigSecretRef">
 KubeconfigSecretRef
 </a>
 </em>
@@ -3904,7 +3914,7 @@ KubeconfigSecretRef
 <td>
 <code>services</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategyMapping">
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategyMapping">
 []ServicePublishingStrategyMapping
 </a>
 </em>
@@ -3937,7 +3947,7 @@ in the secret with a secret key name that corresponds to the constant AuditWebho
 <td>
 <code>etcd</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdSpec">
+<a href="#hypershift.openshift.io/v1beta1.EtcdSpec">
 EtcdSpec
 </a>
 </em>
@@ -3951,7 +3961,7 @@ use to store data.</p>
 <td>
 <code>configuration</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterConfiguration">
+<a href="#hypershift.openshift.io/v1beta1.ClusterConfiguration">
 ClusterConfiguration
 </a>
 </em>
@@ -3965,7 +3975,7 @@ ClusterConfiguration
 <td>
 <code>imageContentSources</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ImageContentSource">
+<a href="#hypershift.openshift.io/v1beta1.ImageContentSource">
 []ImageContentSource
 </a>
 </em>
@@ -3993,7 +4003,7 @@ Kubernetes core/v1.LocalObjectReference
 <td>
 <code>secretEncryption</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionSpec">
 SecretEncryptionSpec
 </a>
 </em>
@@ -4023,7 +4033,7 @@ provided: reconciliation is paused on the resource until the field is removed.</
 <td>
 <code>olmCatalogPlacement</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.OLMCatalogPlacement">
+<a href="#hypershift.openshift.io/v1beta1.OLMCatalogPlacement">
 OLMCatalogPlacement
 </a>
 </em>
@@ -4034,18 +4044,13 @@ OLMCatalogPlacement
 this is set to management and OLM catalog components are deployed onto the management
 cluster. If set to guest, the OLM catalog components will be deployed onto the guest
 cluster.</p>
-<p>
-Value must be one of:
-&#34;guest&#34;, 
-&#34;management&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>autoscaling</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterAutoscaling">
+<a href="#hypershift.openshift.io/v1beta1.ClusterAutoscaling">
 ClusterAutoscaling
 </a>
 </em>
@@ -4070,7 +4075,7 @@ map[string]string
 </tr>
 </tbody>
 </table>
-###HostedControlPlaneStatus { #hypershift.openshift.io/v1alpha1.HostedControlPlaneStatus }
+###HostedControlPlaneStatus { #hypershift.openshift.io/v1beta1.HostedControlPlaneStatus }
 <p>
 <p>HostedControlPlaneStatus defines the observed state of HostedControlPlane</p>
 </p>
@@ -4127,7 +4132,7 @@ is managed by an external service.
 <td>
 <code>controlPlaneEndpoint</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.APIEndpoint">
+<a href="#hypershift.openshift.io/v1beta1.APIEndpoint">
 APIEndpoint
 </a>
 </em>
@@ -4154,6 +4159,21 @@ This is populated after the infrastructure is ready.</p>
 </tr>
 <tr>
 <td>
+<code>versionStatus</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.ClusterVersionStatus">
+ClusterVersionStatus
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>versionStatus is the status of the release version applied by the
+hosted control plane operator.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>version</code></br>
 <em>
 string
@@ -4162,6 +4182,7 @@ string
 <td>
 <p>Version is the semantic version of the release applied by
 the hosted control plane operator</p>
+<p>Deprecated: Use versionStatus.desired.version instead.</p>
 </td>
 </tr>
 <tr>
@@ -4172,7 +4193,9 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>ReleaseImage is the release image applied to the hosted control plane.</p>
+<p>Deprecated: Use versionStatus.desired.image instead.</p>
 </td>
 </tr>
 <tr>
@@ -4187,13 +4210,14 @@ Kubernetes meta/v1.Time
 <td>
 <p>lastReleaseImageTransitionTime is the time of the last update to the current
 releaseImage property.</p>
+<p>Deprecated: Use versionStatus.history[0].startedTime instead.</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>kubeConfig</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubeconfigSecretRef">
+<a href="#hypershift.openshift.io/v1beta1.KubeconfigSecretRef">
 KubeconfigSecretRef
 </a>
 </em>
@@ -4228,16 +4252,31 @@ for the guest cluster.</p>
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Condition contains details for one aspect of the current state of the HostedControlPlane.
 Current condition types are: &ldquo;Available&rdquo;</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>platform</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.PlatformStatus">
+PlatformStatus
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Platform contains platform-specific status of the HostedCluster</p>
+</td>
+</tr>
 </tbody>
 </table>
-###IBMCloudKMSAuthSpec { #hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthSpec }
+###IBMCloudKMSAuthSpec { #hypershift.openshift.io/v1beta1.IBMCloudKMSAuthSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSSpec">IBMCloudKMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSSpec">IBMCloudKMSSpec</a>)
 </p>
 <p>
 <p>IBMCloudKMSAuthSpec defines metadata for how authentication is done with IBM Cloud KMS</p>
@@ -4254,25 +4293,20 @@ Current condition types are: &ldquo;Available&rdquo;</p>
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthType">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSAuthType">
 IBMCloudKMSAuthType
 </a>
 </em>
 </td>
 <td>
 <p>Type defines the IBM Cloud KMS authentication strategy</p>
-<p>
-Value must be one of:
-&#34;Managed&#34;, 
-&#34;Unmanaged&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>unmanaged</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSUnmanagedAuthSpec">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSUnmanagedAuthSpec">
 IBMCloudKMSUnmanagedAuthSpec
 </a>
 </em>
@@ -4286,7 +4320,7 @@ IBMCloudKMSUnmanagedAuthSpec
 <td>
 <code>managed</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSManagedAuthSpec">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSManagedAuthSpec">
 IBMCloudKMSManagedAuthSpec
 </a>
 </em>
@@ -4299,10 +4333,10 @@ KMS system (all provider managed).</p>
 </tr>
 </tbody>
 </table>
-###IBMCloudKMSAuthType { #hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthType }
+###IBMCloudKMSAuthType { #hypershift.openshift.io/v1beta1.IBMCloudKMSAuthType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthSpec">IBMCloudKMSAuthSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSAuthSpec">IBMCloudKMSAuthSpec</a>)
 </p>
 <p>
 <p>IBMCloudKMSAuthType defines the IBM Cloud KMS authentication strategy</p>
@@ -4324,10 +4358,10 @@ authentication to interact with IBM Cloud KMS APIs</p>
 </td>
 </tr></tbody>
 </table>
-###IBMCloudKMSKeyEntry { #hypershift.openshift.io/v1alpha1.IBMCloudKMSKeyEntry }
+###IBMCloudKMSKeyEntry { #hypershift.openshift.io/v1beta1.IBMCloudKMSKeyEntry }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSSpec">IBMCloudKMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSSpec">IBMCloudKMSSpec</a>)
 </p>
 <p>
 <p>IBMCloudKMSKeyEntry defines metadata for an IBM Cloud KMS encryption key</p>
@@ -4398,19 +4432,19 @@ key is enabled for data encryption.</p>
 </tr>
 </tbody>
 </table>
-###IBMCloudKMSManagedAuthSpec { #hypershift.openshift.io/v1alpha1.IBMCloudKMSManagedAuthSpec }
+###IBMCloudKMSManagedAuthSpec { #hypershift.openshift.io/v1beta1.IBMCloudKMSManagedAuthSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthSpec">IBMCloudKMSAuthSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSAuthSpec">IBMCloudKMSAuthSpec</a>)
 </p>
 <p>
 <p>IBMCloudKMSManagedAuthSpec defines metadata around the service to service authentication strategy for the IBM Cloud
 KMS system (all provider managed).</p>
 </p>
-###IBMCloudKMSSpec { #hypershift.openshift.io/v1alpha1.IBMCloudKMSSpec }
+###IBMCloudKMSSpec { #hypershift.openshift.io/v1beta1.IBMCloudKMSSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KMSSpec">KMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.KMSSpec">KMSSpec</a>)
 </p>
 <p>
 <p>IBMCloudKMSSpec defines metadata for the IBM Cloud KMS encryption strategy</p>
@@ -4438,7 +4472,7 @@ string
 <td>
 <code>auth</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthSpec">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSAuthSpec">
 IBMCloudKMSAuthSpec
 </a>
 </em>
@@ -4451,7 +4485,7 @@ IBMCloudKMSAuthSpec
 <td>
 <code>keyList</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSKeyEntry">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSKeyEntry">
 []IBMCloudKMSKeyEntry
 </a>
 </em>
@@ -4462,10 +4496,10 @@ IBMCloudKMSAuthSpec
 </tr>
 </tbody>
 </table>
-###IBMCloudKMSUnmanagedAuthSpec { #hypershift.openshift.io/v1alpha1.IBMCloudKMSUnmanagedAuthSpec }
+###IBMCloudKMSUnmanagedAuthSpec { #hypershift.openshift.io/v1beta1.IBMCloudKMSUnmanagedAuthSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSAuthSpec">IBMCloudKMSAuthSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSAuthSpec">IBMCloudKMSAuthSpec</a>)
 </p>
 <p>
 <p>IBMCloudKMSUnmanagedAuthSpec defines the auth metadata the customer provides to interact with IBM Cloud KMS</p>
@@ -4494,11 +4528,11 @@ call IBM Cloud KMS APIs</p>
 </tr>
 </tbody>
 </table>
-###IBMCloudPlatformSpec { #hypershift.openshift.io/v1alpha1.IBMCloudPlatformSpec }
+###IBMCloudPlatformSpec { #hypershift.openshift.io/v1beta1.IBMCloudPlatformSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>, 
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
 </p>
 <p>
 <p>IBMCloudPlatformSpec defines IBMCloud specific settings for components</p>
@@ -4526,11 +4560,11 @@ github.com/openshift/api/config/v1.IBMCloudProviderType
 </tr>
 </tbody>
 </table>
-###ImageContentSource { #hypershift.openshift.io/v1alpha1.ImageContentSource }
+###ImageContentSource { #hypershift.openshift.io/v1beta1.ImageContentSource }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ImageContentSource specifies image mirrors that can be used by cluster nodes
@@ -4572,19 +4606,53 @@ specifications.</p>
 </tr>
 </tbody>
 </table>
-###InPlaceUpgrade { #hypershift.openshift.io/v1alpha1.InPlaceUpgrade }
+###InPlaceUpgrade { #hypershift.openshift.io/v1beta1.InPlaceUpgrade }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolManagement">NodePoolManagement</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolManagement">NodePoolManagement</a>)
 </p>
 <p>
 <p>InPlaceUpgrade specifies an upgrade strategy which upgrades nodes in-place
 without any new nodes being created or any old nodes being deleted.</p>
 </p>
-###KMSProvider { #hypershift.openshift.io/v1alpha1.KMSProvider }
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>maxUnavailable</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#intorstring-intstr-util">
+k8s.io/apimachinery/pkg/util/intstr.IntOrString
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaxUnavailable is the maximum number of nodes that can be unavailable
+during the update.</p>
+<p>Value can be an absolute number (ex: 5) or a percentage of desired nodes
+(ex: 10%).</p>
+<p>Absolute number is calculated from percentage by rounding down.</p>
+<p>Defaults to 1.</p>
+<p>Example: when this is set to 30%, a max of 30% of the nodes can be made
+unschedulable/unavailable immediately when the update starts. Once a set
+of nodes is updated, more nodes can be made unschedulable for update,
+ensuring that the total number of nodes schedulable at all times during
+the update is at least 70% of desired nodes.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###KMSProvider { #hypershift.openshift.io/v1beta1.KMSProvider }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KMSSpec">KMSSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.KMSSpec">KMSSpec</a>)
 </p>
 <p>
 <p>KMSProvider defines the supported KMS providers</p>
@@ -4602,10 +4670,10 @@ without any new nodes being created or any old nodes being deleted.</p>
 <td></td>
 </tr></tbody>
 </table>
-###KMSSpec { #hypershift.openshift.io/v1alpha1.KMSSpec }
+###KMSSpec { #hypershift.openshift.io/v1beta1.KMSSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">SecretEncryptionSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionSpec">SecretEncryptionSpec</a>)
 </p>
 <p>
 <p>KMSSpec defines metadata about the kms secret encryption strategy</p>
@@ -4622,25 +4690,20 @@ without any new nodes being created or any old nodes being deleted.</p>
 <td>
 <code>provider</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KMSProvider">
+<a href="#hypershift.openshift.io/v1beta1.KMSProvider">
 KMSProvider
 </a>
 </em>
 </td>
 <td>
 <p>Provider defines the KMS provider</p>
-<p>
-Value must be one of:
-&#34;AWS&#34;, 
-&#34;IBMCloud&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>ibmcloud</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudKMSSpec">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudKMSSpec">
 IBMCloudKMSSpec
 </a>
 </em>
@@ -4654,7 +4717,7 @@ IBMCloudKMSSpec
 <td>
 <code>aws</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSKMSSpec">
+<a href="#hypershift.openshift.io/v1beta1.AWSKMSSpec">
 AWSKMSSpec
 </a>
 </em>
@@ -4666,10 +4729,10 @@ AWSKMSSpec
 </tr>
 </tbody>
 </table>
-###KubevirtCompute { #hypershift.openshift.io/v1alpha1.KubevirtCompute }
+###KubevirtCompute { #hypershift.openshift.io/v1beta1.KubevirtCompute }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform">KubevirtNodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtNodePoolPlatform">KubevirtNodePoolPlatform</a>)
 </p>
 <p>
 <p>KubevirtCompute contains values associated with the virtual compute hardware requested for the VM.</p>
@@ -4710,10 +4773,10 @@ uint32
 </tr>
 </tbody>
 </table>
-###KubevirtDiskImage { #hypershift.openshift.io/v1alpha1.KubevirtDiskImage }
+###KubevirtDiskImage { #hypershift.openshift.io/v1beta1.KubevirtDiskImage }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtRootVolume">KubevirtRootVolume</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtRootVolume">KubevirtRootVolume</a>)
 </p>
 <p>
 <p>KubevirtDiskImage contains values representing where the rhcos image is located</p>
@@ -4740,10 +4803,10 @@ string
 </tr>
 </tbody>
 </table>
-###KubevirtNodePoolPlatform { #hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform }
+###KubevirtNodePoolPlatform { #hypershift.openshift.io/v1beta1.KubevirtNodePoolPlatform }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>)
 </p>
 <p>
 <p>KubevirtNodePoolPlatform specifies the configuration of a NodePool when operating
@@ -4761,7 +4824,7 @@ on KubeVirt platform.</p>
 <td>
 <code>rootVolume</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtRootVolume">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtRootVolume">
 KubevirtRootVolume
 </a>
 </em>
@@ -4774,7 +4837,7 @@ KubevirtRootVolume
 <td>
 <code>compute</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtCompute">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtCompute">
 KubevirtCompute
 </a>
 </em>
@@ -4786,10 +4849,10 @@ KubevirtCompute
 </tr>
 </tbody>
 </table>
-###KubevirtPersistentVolume { #hypershift.openshift.io/v1alpha1.KubevirtPersistentVolume }
+###KubevirtPersistentVolume { #hypershift.openshift.io/v1beta1.KubevirtPersistentVolume }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolume">KubevirtVolume</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtVolume">KubevirtVolume</a>)
 </p>
 <p>
 <p>KubevirtPersistentVolume contains the values involved with provisioning persistent storage for a KubeVirt VM.</p>
@@ -4832,7 +4895,7 @@ string
 <td>
 <code>accessModes</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PersistentVolumeAccessMode">
+<a href="#hypershift.openshift.io/v1beta1.PersistentVolumeAccessMode">
 []PersistentVolumeAccessMode
 </a>
 </em>
@@ -4845,10 +4908,132 @@ More info: <a href="https://kubernetes.io/docs/concepts/storage/persistent-volum
 </tr>
 </tbody>
 </table>
-###KubevirtRootVolume { #hypershift.openshift.io/v1alpha1.KubevirtRootVolume }
+###KubevirtPlatformCredentials { #hypershift.openshift.io/v1beta1.KubevirtPlatformCredentials }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform">KubevirtNodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtPlatformSpec">KubevirtPlatformSpec</a>)
+</p>
+<p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>infraKubeConfigSecret</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.KubeconfigSecretRef">
+KubeconfigSecretRef
+</a>
+</em>
+</td>
+<td>
+<p>InfraKubeConfigSecret is a reference to a secret that contains the kubeconfig for the external infra cluster
+that will be used to host the KubeVirt virtual machines for this cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>infraNamespace</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>InfraNamespace defines the namespace on the external infra cluster that is used to host the KubeVirt
+virtual machines. This namespace must already exist before creating the HostedCluster and the kubeconfig
+referenced in the InfraKubeConfigSecret must have access to manage the required resources within this
+namespace.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###KubevirtPlatformSpec { #hypershift.openshift.io/v1beta1.KubevirtPlatformSpec }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
+</p>
+<p>
+<p>KubevirtPlatformSpec specifies configuration for kubevirt guest cluster installations</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>baseDomainPassthrough</code></br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>BaseDomainPassthrough toggles whether or not an automatically
+generated base domain for the guest cluster should be used that
+is a subdomain of the management cluster&rsquo;s *.apps DNS.</p>
+<p>For the KubeVirt platform, the basedomain can be autogenerated using
+the *.apps domain of the management/infra hosting cluster
+This makes the guest cluster&rsquo;s base domain a subdomain of the
+hypershift infra/mgmt cluster&rsquo;s base domain.</p>
+<p>Example:
+Infra/Mgmt cluster&rsquo;s DNS
+Base: example.com
+Cluster: mgmt-cluster.example.com
+Apps:    *.apps.mgmt-cluster.example.com
+KubeVirt Guest cluster&rsquo;s DNS
+Base: apps.mgmt-cluster.example.com
+Cluster: guest.apps.mgmt-cluster.example.com
+Apps: *.apps.guest.apps.mgmt-cluster.example.com</p>
+<p>This is possible using OCP wildcard routes</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>generateID</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>GenerateID is used to uniquely apply a name suffix to resources associated with
+kubevirt infrastructure resources</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>credentials</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.KubevirtPlatformCredentials">
+KubevirtPlatformCredentials
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Credentials defines the client credentials used when creating KubeVirt virtual machines.
+Defining credentials is only necessary when the KubeVirt virtual machines are being placed
+on a cluster separate from the one hosting the Hosted Control Plane components.</p>
+<p>The default behavior when Credentials is not defined is for the KubeVirt VMs to be placed on
+the same cluster and namespace as the Hosted Control Plane.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###KubevirtRootVolume { #hypershift.openshift.io/v1beta1.KubevirtRootVolume }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.KubevirtNodePoolPlatform">KubevirtNodePoolPlatform</a>)
 </p>
 <p>
 <p>KubevirtRootVolume represents the volume that the rhcos disk will be stored and run from.</p>
@@ -4865,7 +5050,7 @@ More info: <a href="https://kubernetes.io/docs/concepts/storage/persistent-volum
 <td>
 <code>diskImage</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtDiskImage">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtDiskImage">
 KubevirtDiskImage
 </a>
 </em>
@@ -4879,7 +5064,7 @@ KubevirtDiskImage
 <td>
 <code>KubevirtVolume</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolume">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtVolume">
 KubevirtVolume
 </a>
 </em>
@@ -4893,10 +5078,10 @@ KubevirtVolume
 </tr>
 </tbody>
 </table>
-###KubevirtVolume { #hypershift.openshift.io/v1alpha1.KubevirtVolume }
+###KubevirtVolume { #hypershift.openshift.io/v1beta1.KubevirtVolume }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtRootVolume">KubevirtRootVolume</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtRootVolume">KubevirtRootVolume</a>)
 </p>
 <p>
 <p>KubevirtVolume represents what kind of storage to use for a KubeVirt VM volume</p>
@@ -4913,7 +5098,7 @@ KubevirtVolume
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolumeType">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtVolumeType">
 KubevirtVolumeType
 </a>
 </em>
@@ -4921,17 +5106,13 @@ KubevirtVolumeType
 <td>
 <em>(Optional)</em>
 <p>Type represents the type of storage to associate with the kubevirt VMs.</p>
-<p>
-Value must be one of:
-&#34;Persistent&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>persistent</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtPersistentVolume">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtPersistentVolume">
 KubevirtPersistentVolume
 </a>
 </em>
@@ -4945,10 +5126,10 @@ This is the default type used when no storage type is defined.</p>
 </tr>
 </tbody>
 </table>
-###KubevirtVolumeType { #hypershift.openshift.io/v1alpha1.KubevirtVolumeType }
+###KubevirtVolumeType { #hypershift.openshift.io/v1beta1.KubevirtVolumeType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtVolume">KubevirtVolume</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtVolume">KubevirtVolume</a>)
 </p>
 <p>
 <p>KubevirtVolumeType is a specific supported KubeVirt volumes</p>
@@ -4965,10 +5146,10 @@ This is the default type used when no storage type is defined.</p>
 </td>
 </tr></tbody>
 </table>
-###LoadBalancerPublishingStrategy { #hypershift.openshift.io/v1alpha1.LoadBalancerPublishingStrategy }
+###LoadBalancerPublishingStrategy { #hypershift.openshift.io/v1beta1.LoadBalancerPublishingStrategy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
 </p>
 <p>
 <p>LoadBalancerPublishingStrategy specifies setting used to expose a service as a LoadBalancer.</p>
@@ -4995,10 +5176,10 @@ string
 </tr>
 </tbody>
 </table>
-###MachineNetworkEntry { #hypershift.openshift.io/v1alpha1.MachineNetworkEntry }
+###MachineNetworkEntry { #hypershift.openshift.io/v1beta1.MachineNetworkEntry }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">ClusterNetworking</a>)
 </p>
 <p>
 <p>MachineNetworkEntry is a single IP address block for node IP blocks.</p>
@@ -5026,10 +5207,10 @@ github.com/openshift/hypershift/api/util/ipnet.IPNet
 </tr>
 </tbody>
 </table>
-###ManagedEtcdSpec { #hypershift.openshift.io/v1alpha1.ManagedEtcdSpec }
+###ManagedEtcdSpec { #hypershift.openshift.io/v1beta1.ManagedEtcdSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdSpec">EtcdSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.EtcdSpec">EtcdSpec</a>)
 </p>
 <p>
 <p>ManagedEtcdSpec specifies the behavior of an etcd cluster managed by
@@ -5047,7 +5228,7 @@ HyperShift.</p>
 <td>
 <code>storage</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ManagedEtcdStorageSpec">
+<a href="#hypershift.openshift.io/v1beta1.ManagedEtcdStorageSpec">
 ManagedEtcdStorageSpec
 </a>
 </em>
@@ -5058,10 +5239,10 @@ ManagedEtcdStorageSpec
 </tr>
 </tbody>
 </table>
-###ManagedEtcdStorageSpec { #hypershift.openshift.io/v1alpha1.ManagedEtcdStorageSpec }
+###ManagedEtcdStorageSpec { #hypershift.openshift.io/v1beta1.ManagedEtcdStorageSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ManagedEtcdSpec">ManagedEtcdSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.ManagedEtcdSpec">ManagedEtcdSpec</a>)
 </p>
 <p>
 <p>ManagedEtcdStorageSpec describes the storage configuration for etcd data.</p>
@@ -5078,24 +5259,20 @@ ManagedEtcdStorageSpec
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ManagedEtcdStorageType">
+<a href="#hypershift.openshift.io/v1beta1.ManagedEtcdStorageType">
 ManagedEtcdStorageType
 </a>
 </em>
 </td>
 <td>
 <p>Type is the kind of persistent storage implementation to use for etcd.</p>
-<p>
-Value must be one of:
-&#34;PersistentVolume&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>persistentVolume</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PersistentVolumeEtcdStorageSpec">
+<a href="#hypershift.openshift.io/v1beta1.PersistentVolumeEtcdStorageSpec">
 PersistentVolumeEtcdStorageSpec
 </a>
 </em>
@@ -5126,10 +5303,10 @@ is empty.</p>
 </tr>
 </tbody>
 </table>
-###ManagedEtcdStorageType { #hypershift.openshift.io/v1alpha1.ManagedEtcdStorageType }
+###ManagedEtcdStorageType { #hypershift.openshift.io/v1beta1.ManagedEtcdStorageType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ManagedEtcdStorageSpec">ManagedEtcdStorageSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.ManagedEtcdStorageSpec">ManagedEtcdStorageSpec</a>)
 </p>
 <p>
 <p>ManagedEtcdStorageType is a storage type for an etcd cluster.</p>
@@ -5146,11 +5323,10 @@ is empty.</p>
 </td>
 </tr></tbody>
 </table>
-###NetworkType { #hypershift.openshift.io/v1alpha1.NetworkType }
+###NetworkType { #hypershift.openshift.io/v1beta1.NetworkType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">ClusterNetworking</a>)
 </p>
 <p>
 <p>NetworkType specifies the SDN provider used for cluster networking.</p>
@@ -5176,10 +5352,10 @@ is empty.</p>
 </td>
 </tr></tbody>
 </table>
-###NodePoolAutoScaling { #hypershift.openshift.io/v1alpha1.NodePoolAutoScaling }
+###NodePoolAutoScaling { #hypershift.openshift.io/v1beta1.NodePoolAutoScaling }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolSpec">NodePoolSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolSpec">NodePoolSpec</a>)
 </p>
 <p>
 <p>NodePoolAutoScaling specifies auto-scaling behavior for a NodePool.</p>
@@ -5216,10 +5392,10 @@ int32
 </tr>
 </tbody>
 </table>
-###NodePoolCondition { #hypershift.openshift.io/v1alpha1.NodePoolCondition }
+###NodePoolCondition { #hypershift.openshift.io/v1beta1.NodePoolCondition }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolStatus">NodePoolStatus</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolStatus">NodePoolStatus</a>)
 </p>
 <p>
 <p>We define our own condition type since metav1.Condition has validation
@@ -5328,10 +5504,10 @@ int64
 </tr>
 </tbody>
 </table>
-###NodePoolManagement { #hypershift.openshift.io/v1alpha1.NodePoolManagement }
+###NodePoolManagement { #hypershift.openshift.io/v1beta1.NodePoolManagement }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolSpec">NodePoolSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolSpec">NodePoolSpec</a>)
 </p>
 <p>
 <p>NodePoolManagement specifies behavior for managing nodes in a NodePool, such
@@ -5349,25 +5525,20 @@ as upgrade strategies and auto-repair behaviors.</p>
 <td>
 <code>upgradeType</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.UpgradeType">
+<a href="#hypershift.openshift.io/v1beta1.UpgradeType">
 UpgradeType
 </a>
 </em>
 </td>
 <td>
 <p>UpgradeType specifies the type of strategy for handling upgrades.</p>
-<p>
-Value must be one of:
-&#34;InPlace&#34;, 
-&#34;Replace&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>replace</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ReplaceUpgrade">
+<a href="#hypershift.openshift.io/v1beta1.ReplaceUpgrade">
 ReplaceUpgrade
 </a>
 </em>
@@ -5380,7 +5551,7 @@ ReplaceUpgrade
 <td>
 <code>inPlace</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.InPlaceUpgrade">
+<a href="#hypershift.openshift.io/v1beta1.InPlaceUpgrade">
 InPlaceUpgrade
 </a>
 </em>
@@ -5404,10 +5575,10 @@ in the NodePool. The default is false.</p>
 </tr>
 </tbody>
 </table>
-###NodePoolPlatform { #hypershift.openshift.io/v1alpha1.NodePoolPlatform }
+###NodePoolPlatform { #hypershift.openshift.io/v1beta1.NodePoolPlatform }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolSpec">NodePoolSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolSpec">NodePoolSpec</a>)
 </p>
 <p>
 <p>NodePoolPlatform specifies the underlying infrastructure provider for the
@@ -5425,30 +5596,20 @@ NodePool and is used to configure platform specific behavior.</p>
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformType">
+<a href="#hypershift.openshift.io/v1beta1.PlatformType">
 PlatformType
 </a>
 </em>
 </td>
 <td>
 <p>Type specifies the platform name.</p>
-<p>
-Value must be one of:
-&#34;AWS&#34;, 
-&#34;Agent&#34;, 
-&#34;Azure&#34;, 
-&#34;IBMCloud&#34;, 
-&#34;KubeVirt&#34;, 
-&#34;None&#34;, 
-&#34;PowerVS&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>aws</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSNodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.AWSNodePoolPlatform">
 AWSNodePoolPlatform
 </a>
 </em>
@@ -5462,7 +5623,7 @@ AWSNodePoolPlatform
 <td>
 <code>ibmcloud</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudPlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudPlatformSpec">
 IBMCloudPlatformSpec
 </a>
 </em>
@@ -5475,7 +5636,7 @@ IBMCloudPlatformSpec
 <td>
 <code>kubevirt</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtNodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.KubevirtNodePoolPlatform">
 KubevirtNodePoolPlatform
 </a>
 </em>
@@ -5489,7 +5650,7 @@ KubevirtNodePoolPlatform
 <td>
 <code>agent</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AgentNodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.AgentNodePoolPlatform">
 AgentNodePoolPlatform
 </a>
 </em>
@@ -5503,7 +5664,7 @@ AgentNodePoolPlatform
 <td>
 <code>azure</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AzureNodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.AzureNodePoolPlatform">
 AzureNodePoolPlatform
 </a>
 </em>
@@ -5515,7 +5676,7 @@ AzureNodePoolPlatform
 <td>
 <code>powervs</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSNodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolPlatform">
 PowerVSNodePoolPlatform
 </a>
 </em>
@@ -5527,10 +5688,10 @@ PowerVSNodePoolPlatform
 </tr>
 </tbody>
 </table>
-###NodePoolSpec { #hypershift.openshift.io/v1alpha1.NodePoolSpec }
+###NodePoolSpec { #hypershift.openshift.io/v1beta1.NodePoolSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePool">NodePool</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePool">NodePool</a>)
 </p>
 <p>
 <p>NodePoolSpec is the desired behavior of a NodePool.</p>
@@ -5559,7 +5720,7 @@ string
 <td>
 <code>release</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.Release">
+<a href="#hypershift.openshift.io/v1beta1.Release">
 Release
 </a>
 </em>
@@ -5574,7 +5735,7 @@ machine properties (e.g. an AMI on the AWS platform).</p>
 <td>
 <code>platform</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">
 NodePoolPlatform
 </a>
 </em>
@@ -5582,19 +5743,6 @@ NodePoolPlatform
 <td>
 <p>Platform specifies the underlying infrastructure provider for the NodePool
 and is used to configure platform specific behavior.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>nodeCount</code></br>
-<em>
-int32
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Deprecated: Use Replicas instead. NodeCount will be dropped in the next
-api release.</p>
 </td>
 </tr>
 <tr>
@@ -5614,7 +5762,7 @@ unset, the default value is 0.</p>
 <td>
 <code>management</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolManagement">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolManagement">
 NodePoolManagement
 </a>
 </em>
@@ -5628,7 +5776,7 @@ upgrade strategies and auto-repair behaviors.</p>
 <td>
 <code>autoScaling</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolAutoScaling">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolAutoScaling">
 NodePoolAutoScaling
 </a>
 </em>
@@ -5653,7 +5801,12 @@ MachineConfig resources to be injected into the ignition configurations of
 nodes in the NodePool. The MachineConfig API schema is defined here:</p>
 <p><a href="https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185">https://github.com/openshift/machine-config-operator/blob/18963e4f8fe66e8c513ca4b131620760a414997f/pkg/apis/machineconfiguration.openshift.io/v1/types.go#L185</a></p>
 <p>Each ConfigMap must have a single key named &ldquo;config&rdquo; whose value is the
-JSON or YAML of a serialized MachineConfig.</p>
+JSON or YAML of a serialized Resource for machineconfiguration.openshift.io:
+KubeletConfig
+ContainerRuntimeConfig
+MachineConfig
+or
+ImageContentSourcePolicy</p>
 </td>
 </tr>
 <tr>
@@ -5677,6 +5830,33 @@ the purpose of the change. In future we plan to propagate this field in-place.
 </tr>
 <tr>
 <td>
+<code>nodeLabels</code></br>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeLabels propagates a list of labels to Nodes, only once on creation.
+Valid values are those in <a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set">https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set</a></p>
+</td>
+</tr>
+<tr>
+<td>
+<code>taints</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.Taint">
+[]Taint
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Taints if specified, propagates a list of taints to Nodes, only once on creation.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>pausedUntil</code></br>
 <em>
 string
@@ -5690,12 +5870,30 @@ provided: reconciliation is paused on the resource until that date. If the boole
 provided: reconciliation is paused on the resource until the field is removed.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>tuningConfig</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+[]Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>TuningConfig is a list of references to ConfigMaps containing serialized
+Tuned resources to define the tuning configuration to be applied to
+nodes in the NodePool. The Tuned API is defined here:</p>
+<p><a href="https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go">https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go</a></p>
+<p>Each ConfigMap must have a single key named &ldquo;tuned&rdquo; whose value is the
+JSON or YAML of a serialized Tuned.</p>
+</td>
+</tr>
 </tbody>
 </table>
-###NodePoolStatus { #hypershift.openshift.io/v1alpha1.NodePoolStatus }
+###NodePoolStatus { #hypershift.openshift.io/v1beta1.NodePoolStatus }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePool">NodePool</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePool">NodePool</a>)
 </p>
 <p>
 <p>NodePoolStatus is the latest observed status of a NodePool.</p>
@@ -5736,22 +5934,23 @@ the NodePool.</p>
 <td>
 <code>conditions</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolCondition">
+<a href="#hypershift.openshift.io/v1beta1.NodePoolCondition">
 []NodePoolCondition
 </a>
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Conditions represents the latest available observations of the node pool&rsquo;s
 current state.</p>
 </td>
 </tr>
 </tbody>
 </table>
-###NodePortPublishingStrategy { #hypershift.openshift.io/v1alpha1.NodePortPublishingStrategy }
+###NodePortPublishingStrategy { #hypershift.openshift.io/v1beta1.NodePortPublishingStrategy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
 </p>
 <p>
 <p>NodePortPublishingStrategy specifies a NodePort used to expose a service.</p>
@@ -5789,11 +5988,11 @@ assigned when the service is created.</p>
 </tr>
 </tbody>
 </table>
-###OLMCatalogPlacement { #hypershift.openshift.io/v1alpha1.OLMCatalogPlacement }
+###OLMCatalogPlacement { #hypershift.openshift.io/v1beta1.OLMCatalogPlacement }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>OLMCatalogPlacement is an enum specifying the placement of OLM catalog components.</p>
@@ -5815,17 +6014,17 @@ the management cluster.</p>
 </td>
 </tr></tbody>
 </table>
-###PersistentVolumeAccessMode { #hypershift.openshift.io/v1alpha1.PersistentVolumeAccessMode }
+###PersistentVolumeAccessMode { #hypershift.openshift.io/v1beta1.PersistentVolumeAccessMode }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.KubevirtPersistentVolume">KubevirtPersistentVolume</a>)
+<a href="#hypershift.openshift.io/v1beta1.KubevirtPersistentVolume">KubevirtPersistentVolume</a>)
 </p>
 <p>
 </p>
-###PersistentVolumeEtcdStorageSpec { #hypershift.openshift.io/v1alpha1.PersistentVolumeEtcdStorageSpec }
+###PersistentVolumeEtcdStorageSpec { #hypershift.openshift.io/v1beta1.PersistentVolumeEtcdStorageSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ManagedEtcdStorageSpec">ManagedEtcdStorageSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.ManagedEtcdStorageSpec">ManagedEtcdStorageSpec</a>)
 </p>
 <p>
 <p>PersistentVolumeEtcdStorageSpec is the configuration for PersistentVolume
@@ -5868,11 +6067,11 @@ k8s.io/apimachinery/pkg/api/resource.Quantity
 </tr>
 </tbody>
 </table>
-###PlatformSpec { #hypershift.openshift.io/v1alpha1.PlatformSpec }
+###PlatformSpec { #hypershift.openshift.io/v1beta1.PlatformSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>PlatformSpec specifies the underlying infrastructure provider for the cluster
@@ -5890,30 +6089,20 @@ and is used to configure platform specific behavior.</p>
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformType">
+<a href="#hypershift.openshift.io/v1beta1.PlatformType">
 PlatformType
 </a>
 </em>
 </td>
 <td>
 <p>Type is the type of infrastructure provider for the cluster.</p>
-<p>
-Value must be one of:
-&#34;AWS&#34;, 
-&#34;Agent&#34;, 
-&#34;Azure&#34;, 
-&#34;IBMCloud&#34;, 
-&#34;KubeVirt&#34;, 
-&#34;None&#34;, 
-&#34;PowerVS&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>aws</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSPlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformSpec">
 AWSPlatformSpec
 </a>
 </em>
@@ -5927,7 +6116,7 @@ AWSPlatformSpec
 <td>
 <code>agent</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AgentPlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.AgentPlatformSpec">
 AgentPlatformSpec
 </a>
 </em>
@@ -5941,7 +6130,7 @@ AgentPlatformSpec
 <td>
 <code>ibmcloud</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.IBMCloudPlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.IBMCloudPlatformSpec">
 IBMCloudPlatformSpec
 </a>
 </em>
@@ -5954,7 +6143,7 @@ IBMCloudPlatformSpec
 <td>
 <code>azure</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AzurePlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.AzurePlatformSpec">
 AzurePlatformSpec
 </a>
 </em>
@@ -5967,7 +6156,7 @@ AzurePlatformSpec
 <td>
 <code>powervs</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec">
+<a href="#hypershift.openshift.io/v1beta1.PowerVSPlatformSpec">
 PowerVSPlatformSpec
 </a>
 </em>
@@ -5978,13 +6167,59 @@ PowerVSPlatformSpec
 This field is immutable. Once set, It can&rsquo;t be changed.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>kubevirt</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.KubevirtPlatformSpec">
+KubevirtPlatformSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>KubeVirt defines KubeVirt specific settings for cluster components.</p>
+</td>
+</tr>
 </tbody>
 </table>
-###PlatformType { #hypershift.openshift.io/v1alpha1.PlatformType }
+###PlatformStatus { #hypershift.openshift.io/v1beta1.PlatformStatus }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterStatus">HostedClusterStatus</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneStatus">HostedControlPlaneStatus</a>)
+</p>
+<p>
+<p>PlatformStatus contains platform-specific status</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>aws</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.AWSPlatformStatus">
+AWSPlatformStatus
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
+###PlatformType { #hypershift.openshift.io/v1beta1.PlatformType }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>, 
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
 </p>
 <p>
 <p>PlatformType is a specific supported infrastructure provider.</p>
@@ -6019,10 +6254,18 @@ This field is immutable. Once set, It can&rsquo;t be changed.</p>
 </td>
 </tr></tbody>
 </table>
-###PowerVSNodePoolPlatform { #hypershift.openshift.io/v1alpha1.PowerVSNodePoolPlatform }
+###PowerVSNodePoolImageDeletePolicy { #hypershift.openshift.io/v1beta1.PowerVSNodePoolImageDeletePolicy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolPlatform">NodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolPlatform">PowerVSNodePoolPlatform</a>)
+</p>
+<p>
+<p>PowerVSNodePoolImageDeletePolicy defines image delete policy to be used for PowerVSNodePoolPlatform</p>
+</p>
+###PowerVSNodePoolPlatform { #hypershift.openshift.io/v1beta1.PowerVSNodePoolPlatform }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.NodePoolPlatform">NodePoolPlatform</a>)
 </p>
 <p>
 <p>PowerVSNodePoolPlatform specifies the configuration of a NodePool when operating
@@ -6058,7 +6301,9 @@ reasonable default. The current default is s922 which is generally available.</p
 <td>
 <code>processorType</code></br>
 <em>
-string
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolProcType">
+PowerVSNodePoolProcType
+</a>
 </em>
 </td>
 <td>
@@ -6121,7 +6366,7 @@ default. The current default is 32.</p>
 <td>
 <code>image</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSResourceReference">
+<a href="#hypershift.openshift.io/v1beta1.PowerVSResourceReference">
 PowerVSResourceReference
 </a>
 </em>
@@ -6136,7 +6381,9 @@ is chosen based on the NodePool release payload image.</p>
 <td>
 <code>storageType</code></br>
 <em>
-string
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolStorageType">
+PowerVSNodePoolStorageType
+</a>
 </em>
 </td>
 <td>
@@ -6152,7 +6399,9 @@ Although, the exact numbers might change over time, the Tier 3 storage is curren
 <td>
 <code>imageDeletePolicy</code></br>
 <em>
-string
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolImageDeletePolicy">
+PowerVSNodePoolImageDeletePolicy
+</a>
 </em>
 </td>
 <td>
@@ -6165,10 +6414,44 @@ retain: delete the image from the openshift but retain in the infrastructure.</p
 </tr>
 </tbody>
 </table>
-###PowerVSPlatformSpec { #hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec }
+###PowerVSNodePoolProcType { #hypershift.openshift.io/v1beta1.PowerVSNodePoolProcType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.PlatformSpec">PlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolPlatform">PowerVSNodePoolPlatform</a>)
+</p>
+<p>
+<p>PowerVSNodePoolProcType defines processor type to be used for PowerVSNodePoolPlatform</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr><td><p>&#34;capped&#34;</p></td>
+<td><p>PowerVSNodePoolCappedProcType defines capped processor type</p>
+</td>
+</tr><tr><td><p>&#34;dedicated&#34;</p></td>
+<td><p>PowerVSNodePoolDedicatedProcType defines dedicated processor type</p>
+</td>
+</tr><tr><td><p>&#34;shared&#34;</p></td>
+<td><p>PowerVSNodePoolSharedProcType defines shared processor type</p>
+</td>
+</tr></tbody>
+</table>
+###PowerVSNodePoolStorageType { #hypershift.openshift.io/v1beta1.PowerVSNodePoolStorageType }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolPlatform">PowerVSNodePoolPlatform</a>)
+</p>
+<p>
+<p>PowerVSNodePoolStorageType defines storage type to be used for PowerVSNodePoolPlatform</p>
+</p>
+###PowerVSPlatformSpec { #hypershift.openshift.io/v1beta1.PowerVSPlatformSpec }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.PlatformSpec">PlatformSpec</a>)
 </p>
 <p>
 <p>PowerVSPlatformSpec defines IBMCloud PowerVS specific settings for components</p>
@@ -6248,7 +6531,7 @@ This field is immutable. Once set, It can&rsquo;t be changed.</p>
 <td>
 <code>subnet</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSResourceReference">
+<a href="#hypershift.openshift.io/v1beta1.PowerVSResourceReference">
 PowerVSResourceReference
 </a>
 </em>
@@ -6279,7 +6562,7 @@ ServiceInstanceID is the unique identifier that can be obtained from IBM Cloud U
 <td>
 <code>vpc</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSVPC">
+<a href="#hypershift.openshift.io/v1beta1.PowerVSVPC">
 PowerVSVPC
 </a>
 </em>
@@ -6324,22 +6607,6 @@ This field is immutable. Once set, It can&rsquo;t be changed.</p>
 </tr>
 <tr>
 <td>
-<code>controlPlaneOperatorCreds</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
-Kubernetes core/v1.LocalObjectReference
-</a>
-</em>
-</td>
-<td>
-<p>ControlPlaneOperatorCreds is a reference to a secret containing cloud
-credentials with permissions matching the control-plane-operator policy.
-This field is immutable. Once set, It can&rsquo;t be changed.</p>
-<p>TODO(dan): document the &ldquo;control plane operator policy&rdquo;</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>ingressOperatorCloudCreds</code></br>
 <em>
 <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
@@ -6352,13 +6619,27 @@ Kubernetes core/v1.LocalObjectReference
 credentials for ingress operator to get authenticated with ibm cloud.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>storageOperatorCloudCreds</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<p>StorageOperatorCloudCreds is a reference to a secret containing ibm cloud
+credentials for storage operator to get authenticated with ibm cloud.</p>
+</td>
+</tr>
 </tbody>
 </table>
-###PowerVSResourceReference { #hypershift.openshift.io/v1alpha1.PowerVSResourceReference }
+###PowerVSResourceReference { #hypershift.openshift.io/v1beta1.PowerVSResourceReference }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSNodePoolPlatform">PowerVSNodePoolPlatform</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec">PowerVSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.PowerVSNodePoolPlatform">PowerVSNodePoolPlatform</a>, 
+<a href="#hypershift.openshift.io/v1beta1.PowerVSPlatformSpec">PowerVSPlatformSpec</a>)
 </p>
 <p>
 <p>PowerVSResourceReference is a reference to a specific IBMCloud PowerVS resource by ID, or Name.
@@ -6399,10 +6680,10 @@ string
 </tr>
 </tbody>
 </table>
-###PowerVSVPC { #hypershift.openshift.io/v1alpha1.PowerVSVPC }
+###PowerVSVPC { #hypershift.openshift.io/v1beta1.PowerVSVPC }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.PowerVSPlatformSpec">PowerVSPlatformSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.PowerVSPlatformSpec">PowerVSPlatformSpec</a>)
 </p>
 <p>
 <p>PowerVSVPC specifies IBM Cloud PowerVS LoadBalancer configuration for the control
@@ -6470,20 +6751,19 @@ This field is immutable. Once set, It can&rsquo;t be changed.</p>
 </tr>
 </tbody>
 </table>
-###PublishingStrategyType { #hypershift.openshift.io/v1alpha1.PublishingStrategyType }
+###PublishingStrategyType { #hypershift.openshift.io/v1beta1.PublishingStrategyType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
 </p>
 <p>
 <p>PublishingStrategyType defines publishing strategies for services.</p>
 </p>
-###Release { #hypershift.openshift.io/v1alpha1.Release }
+###Release { #hypershift.openshift.io/v1beta1.Release }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterVersionStatus">ClusterVersionStatus</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolSpec">NodePoolSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.NodePoolSpec">NodePoolSpec</a>)
 </p>
 <p>
 <p>Release represents the metadata for an OCP release payload image.</p>
@@ -6509,10 +6789,10 @@ string
 </tr>
 </tbody>
 </table>
-###ReplaceUpgrade { #hypershift.openshift.io/v1alpha1.ReplaceUpgrade }
+###ReplaceUpgrade { #hypershift.openshift.io/v1beta1.ReplaceUpgrade }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolManagement">NodePoolManagement</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolManagement">NodePoolManagement</a>)
 </p>
 <p>
 <p>ReplaceUpgrade specifies upgrade behavior that replaces existing nodes
@@ -6530,25 +6810,20 @@ according to a given strategy.</p>
 <td>
 <code>strategy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.UpgradeStrategy">
+<a href="#hypershift.openshift.io/v1beta1.UpgradeStrategy">
 UpgradeStrategy
 </a>
 </em>
 </td>
 <td>
 <p>Strategy is the node replacement strategy for nodes in the pool.</p>
-<p>
-Value must be one of:
-&#34;OnDelete&#34;, 
-&#34;RollingUpdate&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>rollingUpdate</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.RollingUpdate">
+<a href="#hypershift.openshift.io/v1beta1.RollingUpdate">
 RollingUpdate
 </a>
 </em>
@@ -6560,10 +6835,10 @@ creating new nodes and deleting the old ones.</p>
 </tr>
 </tbody>
 </table>
-###RollingUpdate { #hypershift.openshift.io/v1alpha1.RollingUpdate }
+###RollingUpdate { #hypershift.openshift.io/v1beta1.RollingUpdate }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ReplaceUpgrade">ReplaceUpgrade</a>)
+<a href="#hypershift.openshift.io/v1beta1.ReplaceUpgrade">ReplaceUpgrade</a>)
 </p>
 <p>
 <p>RollingUpdate specifies a rolling update strategy which upgrades nodes by
@@ -6629,10 +6904,10 @@ running at any time during the update is at most 130% of desired nodes.</p>
 </tr>
 </tbody>
 </table>
-###RoutePublishingStrategy { #hypershift.openshift.io/v1alpha1.RoutePublishingStrategy }
+###RoutePublishingStrategy { #hypershift.openshift.io/v1beta1.RoutePublishingStrategy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategy">ServicePublishingStrategy</a>)
 </p>
 <p>
 <p>RoutePublishingStrategy specifies options for exposing a service as a Route.</p>
@@ -6659,11 +6934,11 @@ string
 </tr>
 </tbody>
 </table>
-###SecretEncryptionSpec { #hypershift.openshift.io/v1alpha1.SecretEncryptionSpec }
+###SecretEncryptionSpec { #hypershift.openshift.io/v1beta1.SecretEncryptionSpec }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>SecretEncryptionSpec contains metadata about the kubernetes secret encryption strategy being used for the
@@ -6681,25 +6956,20 @@ cluster when applicable.</p>
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionType">
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionType">
 SecretEncryptionType
 </a>
 </em>
 </td>
 <td>
 <p>Type defines the type of kube secret encryption being used</p>
-<p>
-Value must be one of:
-&#34;aescbc&#34;, 
-&#34;kms&#34;
-</p>
 </td>
 </tr>
 <tr>
 <td>
 <code>kms</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.KMSSpec">
+<a href="#hypershift.openshift.io/v1beta1.KMSSpec">
 KMSSpec
 </a>
 </em>
@@ -6713,7 +6983,7 @@ KMSSpec
 <td>
 <code>aescbc</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.AESCBCSpec">
+<a href="#hypershift.openshift.io/v1beta1.AESCBCSpec">
 AESCBCSpec
 </a>
 </em>
@@ -6725,10 +6995,10 @@ AESCBCSpec
 </tr>
 </tbody>
 </table>
-###SecretEncryptionType { #hypershift.openshift.io/v1alpha1.SecretEncryptionType }
+###SecretEncryptionType { #hypershift.openshift.io/v1beta1.SecretEncryptionType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.SecretEncryptionSpec">SecretEncryptionSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.SecretEncryptionSpec">SecretEncryptionSpec</a>)
 </p>
 <p>
 <p>SecretEncryptionType defines the type of kube secret encryption being used.</p>
@@ -6748,10 +7018,10 @@ AESCBCSpec
 </td>
 </tr></tbody>
 </table>
-###ServiceNetworkEntry { #hypershift.openshift.io/v1alpha1.ServiceNetworkEntry }
+###ServiceNetworkEntry { #hypershift.openshift.io/v1beta1.ServiceNetworkEntry }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ClusterNetworking">ClusterNetworking</a>)
+<a href="#hypershift.openshift.io/v1beta1.ClusterNetworking">ClusterNetworking</a>)
 </p>
 <p>
 <p>ServiceNetworkEntry is a single IP address block for the service network.</p>
@@ -6779,10 +7049,10 @@ github.com/openshift/hypershift/api/util/ipnet.IPNet
 </tr>
 </tbody>
 </table>
-###ServicePublishingStrategy { #hypershift.openshift.io/v1alpha1.ServicePublishingStrategy }
+###ServicePublishingStrategy { #hypershift.openshift.io/v1beta1.ServicePublishingStrategy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategyMapping">ServicePublishingStrategyMapping</a>)
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategyMapping">ServicePublishingStrategyMapping</a>)
 </p>
 <p>
 <p>ServicePublishingStrategy specfies how to publish a ServiceType.</p>
@@ -6799,7 +7069,7 @@ github.com/openshift/hypershift/api/util/ipnet.IPNet
 <td>
 <code>type</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.PublishingStrategyType">
+<a href="#hypershift.openshift.io/v1beta1.PublishingStrategyType">
 PublishingStrategyType
 </a>
 </em>
@@ -6812,7 +7082,7 @@ PublishingStrategyType
 <td>
 <code>nodePort</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePortPublishingStrategy">
+<a href="#hypershift.openshift.io/v1beta1.NodePortPublishingStrategy">
 NodePortPublishingStrategy
 </a>
 </em>
@@ -6825,7 +7095,7 @@ NodePortPublishingStrategy
 <td>
 <code>loadBalancer</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.LoadBalancerPublishingStrategy">
+<a href="#hypershift.openshift.io/v1beta1.LoadBalancerPublishingStrategy">
 LoadBalancerPublishingStrategy
 </a>
 </em>
@@ -6838,7 +7108,7 @@ LoadBalancerPublishingStrategy
 <td>
 <code>route</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.RoutePublishingStrategy">
+<a href="#hypershift.openshift.io/v1beta1.RoutePublishingStrategy">
 RoutePublishingStrategy
 </a>
 </em>
@@ -6849,11 +7119,11 @@ RoutePublishingStrategy
 </tr>
 </tbody>
 </table>
-###ServicePublishingStrategyMapping { #hypershift.openshift.io/v1alpha1.ServicePublishingStrategyMapping }
+###ServicePublishingStrategyMapping { #hypershift.openshift.io/v1beta1.ServicePublishingStrategyMapping }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.HostedClusterSpec">HostedClusterSpec</a>, 
-<a href="#hypershift.openshift.io/v1alpha1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.HostedClusterSpec">HostedClusterSpec</a>, 
+<a href="#hypershift.openshift.io/v1beta1.HostedControlPlaneSpec">HostedControlPlaneSpec</a>)
 </p>
 <p>
 <p>ServicePublishingStrategyMapping specifies how individual control plane
@@ -6871,7 +7141,7 @@ services are published from the hosting cluster of a control plane.</p>
 <td>
 <code>service</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ServiceType">
+<a href="#hypershift.openshift.io/v1beta1.ServiceType">
 ServiceType
 </a>
 </em>
@@ -6884,7 +7154,7 @@ ServiceType
 <td>
 <code>servicePublishingStrategy</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategy">
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategy">
 ServicePublishingStrategy
 </a>
 </em>
@@ -6895,19 +7165,76 @@ ServicePublishingStrategy
 </tr>
 </tbody>
 </table>
-###ServiceType { #hypershift.openshift.io/v1alpha1.ServiceType }
+###ServiceType { #hypershift.openshift.io/v1beta1.ServiceType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ServicePublishingStrategyMapping">ServicePublishingStrategyMapping</a>)
+<a href="#hypershift.openshift.io/v1beta1.ServicePublishingStrategyMapping">ServicePublishingStrategyMapping</a>)
 </p>
 <p>
 <p>ServiceType defines what control plane services can be exposed from the
 management control plane.</p>
 </p>
-###UnmanagedEtcdSpec { #hypershift.openshift.io/v1alpha1.UnmanagedEtcdSpec }
+###Taint { #hypershift.openshift.io/v1beta1.Taint }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdSpec">EtcdSpec</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolSpec">NodePoolSpec</a>)
+</p>
+<p>
+<p>Taint is as v1 Core but without TimeAdded.
+<a href="https://github.com/kubernetes/kubernetes/blob/ed8cad1e80d096257921908a52ac69cf1f41a098/staging/src/k8s.io/api/core/v1/types.go#L3037-L3053">https://github.com/kubernetes/kubernetes/blob/ed8cad1e80d096257921908a52ac69cf1f41a098/staging/src/k8s.io/api/core/v1/types.go#L3037-L3053</a></p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>key</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Required. The taint key to be applied to a node.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>value</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>The taint value corresponding to the taint key.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>effect</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#tainteffect-v1-core">
+Kubernetes core/v1.TaintEffect
+</a>
+</em>
+</td>
+<td>
+<p>Required. The effect of the taint on pods
+that do not tolerate the taint.
+Valid effects are NoSchedule, PreferNoSchedule and NoExecute.</p>
+</td>
+</tr>
+</tbody>
+</table>
+###UnmanagedEtcdSpec { #hypershift.openshift.io/v1beta1.UnmanagedEtcdSpec }
+<p>
+(<em>Appears on:</em>
+<a href="#hypershift.openshift.io/v1beta1.EtcdSpec">EtcdSpec</a>)
 </p>
 <p>
 <p>UnmanagedEtcdSpec specifies configuration which enables the control plane to
@@ -6939,7 +7266,7 @@ string
 <td>
 <code>tls</code></br>
 <em>
-<a href="#hypershift.openshift.io/v1alpha1.EtcdTLSConfig">
+<a href="#hypershift.openshift.io/v1beta1.EtcdTLSConfig">
 EtcdTLSConfig
 </a>
 </em>
@@ -6950,10 +7277,10 @@ EtcdTLSConfig
 </tr>
 </tbody>
 </table>
-###UpgradeStrategy { #hypershift.openshift.io/v1alpha1.UpgradeStrategy }
+###UpgradeStrategy { #hypershift.openshift.io/v1beta1.UpgradeStrategy }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.ReplaceUpgrade">ReplaceUpgrade</a>)
+<a href="#hypershift.openshift.io/v1beta1.ReplaceUpgrade">ReplaceUpgrade</a>)
 </p>
 <p>
 <p>UpgradeStrategy is a specific strategy for upgrading nodes in a NodePool.</p>
@@ -6974,10 +7301,10 @@ associated node instances are completed.</p>
 </td>
 </tr></tbody>
 </table>
-###UpgradeType { #hypershift.openshift.io/v1alpha1.UpgradeType }
+###UpgradeType { #hypershift.openshift.io/v1beta1.UpgradeType }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.NodePoolManagement">NodePoolManagement</a>)
+<a href="#hypershift.openshift.io/v1beta1.NodePoolManagement">NodePoolManagement</a>)
 </p>
 <p>
 <p>UpgradeType is a type of high-level upgrade behavior nodes in a NodePool.</p>
@@ -6999,10 +7326,10 @@ capacity.</p>
 </td>
 </tr></tbody>
 </table>
-###Volume { #hypershift.openshift.io/v1alpha1.Volume }
+###Volume { #hypershift.openshift.io/v1beta1.Volume }
 <p>
 (<em>Appears on:</em>
-<a href="#hypershift.openshift.io/v1alpha1.AWSNodePoolPlatform">AWSNodePoolPlatform</a>)
+<a href="#hypershift.openshift.io/v1beta1.AWSNodePoolPlatform">AWSNodePoolPlatform</a>)
 </p>
 <p>
 <p>Volume specifies the configuration options for node instance storage devices.</p>
@@ -7049,6 +7376,32 @@ int64
 <em>(Optional)</em>
 <p>IOPS is the number of IOPS requested for the disk. This is only valid
 for type io1.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>encrypted</code></br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Encrypted is whether the volume should be encrypted or not.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>encryptionKey</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>EncryptionKey is the KMS key to use to encrypt the volume. Can be either a KMS key ID or ARN.
+If Encrypted is set and this is omitted, the default AWS key will be used.
+The key must already exist and be accessible by the controller.</p>
 </td>
 </tr>
 </tbody>

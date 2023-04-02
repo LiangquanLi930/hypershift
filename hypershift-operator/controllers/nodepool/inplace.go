@@ -2,11 +2,13 @@ package nodepool
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	"github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	k8sutilspointer "k8s.io/utils/pointer"
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -44,6 +46,13 @@ func (r *NodePoolReconciler) reconcileMachineSet(ctx context.Context,
 		return err
 	}
 
+	// Set MaxUnavailable for the inplace upgrader to use
+	maxUnavailable, err := getInPlaceMaxUnavailable(nodePool)
+	if err != nil {
+		return err
+	}
+	machineSet.Annotations[nodePoolAnnotationMaxUnavailable] = strconv.Itoa(maxUnavailable)
+
 	// Set selector and template
 	machineSet.Spec.ClusterName = CAPIClusterName
 	if machineSet.Spec.Selector.MatchLabels == nil {
@@ -56,8 +65,13 @@ func (r *NodePoolReconciler) reconcileMachineSet(ctx context.Context,
 				resourcesName:           resourcesName,
 				capiv1.ClusterLabelName: CAPIClusterName,
 			},
+			// Annotations here propagate down to Machines
+			// https://cluster-api.sigs.k8s.io/developer/architecture/controllers/metadata-propagation.html#machinedeployment.
 			Annotations: map[string]string{
-				nodePoolAnnotationPlatformMachineTemplate: machineTemplateSpecJSON,
+				// TODO (alberto): Use conditions to signal an in progress rolling upgrade
+				// similar to what we do with nodePoolAnnotationCurrentConfig
+				nodePoolAnnotationPlatformMachineTemplate: machineTemplateSpecJSON, // This will trigger a deployment rolling upgrade when its value changes.
+				nodePoolAnnotation:                        client.ObjectKeyFromObject(nodePool).String(),
 			},
 		},
 
@@ -78,6 +92,21 @@ func (r *NodePoolReconciler) reconcileMachineSet(ctx context.Context,
 			NodeDrainTimeout: nodePool.Spec.NodeDrainTimeout,
 		},
 	}
+
+	// Propagate labels.
+	for k, v := range nodePool.Spec.NodeLabels {
+		// Propagated managed labels down to Machines with a known hardcoded prefix
+		// so the CPO HCCO Node controller can recongnise them and apply them to Nodes.
+		labelKey := fmt.Sprintf("%s.%s", labelManagedPrefix, k)
+		machineSet.Spec.Template.Labels[labelKey] = v
+	}
+
+	// Propagate taints.
+	taintsInJSON, err := taintsToJSON(nodePool.Spec.Taints)
+	if err != nil {
+		return err
+	}
+	machineSet.Spec.Template.Annotations[nodePoolAnnotationTaints] = taintsInJSON
 
 	// Propagate version and userData Secret to the MachineSet.
 	if userDataSecret.Name != k8sutilspointer.StringPtrDerefOr(machineSet.Spec.Template.Spec.Bootstrap.DataSecretName, "") {
@@ -139,26 +168,43 @@ func (r *NodePoolReconciler) reconcileMachineSet(ctx context.Context,
 	setMachineSetReplicas(nodePool, machineSet)
 
 	// Bubble up upgrading NodePoolUpdatingVersionConditionType.
-	// TODO (alberto): differentiate with NodePoolUpdatingConfigConditionType.
 	var status corev1.ConditionStatus
 	reason := ""
 	message := ""
+	status = "unknown"
 	removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolUpdatingVersionConditionType)
 
 	if _, ok := machineSet.Annotations[nodePoolAnnotationUpgradeInProgressTrue]; ok {
 		status = corev1.ConditionTrue
-		reason = hyperv1.NodePoolAsExpectedConditionReason
-		message = machineSet.Annotations[nodePoolAnnotationUpgradeInProgressTrue]
+		reason = hyperv1.AsExpectedReason
 	}
 
 	if _, ok := machineSet.Annotations[nodePoolAnnotationUpgradeInProgressFalse]; ok {
 		status = corev1.ConditionFalse
-		reason = hyperv1.NodePoolInplaceUpgradeFailedConditionReason
-		message = machineSet.Annotations[nodePoolAnnotationUpgradeInProgressFalse]
+		reason = hyperv1.NodePoolInplaceUpgradeFailedReason
 	}
-	if message != "" {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+
+	// Check if config needs to be updated.
+	isUpdatingConfig := isUpdatingConfig(nodePool, targetConfigHash)
+
+	// Check if version needs to be updated.
+	isUpdatingVersion := isUpdatingVersion(nodePool, targetVersion)
+
+	if isUpdatingVersion {
+		message = fmt.Sprintf("Updating Version, Target: %v", machineSet.Annotations[nodePoolAnnotationTargetConfigVersion])
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolUpdatingVersionConditionType,
+			Status:             status,
+			ObservedGeneration: nodePool.Generation,
+			Message:            message,
+			Reason:             reason,
+		})
+	}
+
+	if isUpdatingConfig {
+		message = fmt.Sprintf("Updating Config, Target: %v", machineSet.Annotations[nodePoolAnnotationTargetConfigVersion])
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolUpdatingConfigConditionType,
 			Status:             status,
 			ObservedGeneration: nodePool.Generation,
 			Message:            message,
@@ -174,12 +220,12 @@ func (r *NodePoolReconciler) reconcileMachineSet(ctx context.Context,
 		if c.Type == capiv1.ReadyCondition {
 			// this is so api server does not complain
 			// invalid value: \"\": status.conditions.reason in body should be at least 1 chars long"
-			reason := hyperv1.NodePoolAsExpectedConditionReason
+			reason := hyperv1.AsExpectedReason
 			if c.Reason != "" {
 				reason = c.Reason
 			}
 
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 				Type:               hyperv1.NodePoolReadyConditionType,
 				Status:             c.Status,
 				ObservedGeneration: nodePool.Generation,
@@ -205,11 +251,18 @@ func setMachineSetReplicas(nodePool *hyperv1.NodePool, machineSet *capiv1.Machin
 	}
 
 	if isAutoscalingEnabled(nodePool) {
-		if k8sutilspointer.Int32PtrDerefOr(machineSet.Spec.Replicas, 0) == 0 {
-			// if autoscaling is enabled and the MachineSet does not exist yet or it has 0 replicas
-			// we set it to 1 replica as the autoscaler does not support scaling from zero yet.
-			machineSet.Spec.Replicas = k8sutilspointer.Int32Ptr(int32(1))
+		// The MachineSet replicas field should default to a value inside the (min size, max size) range based on the autoscaler annotations
+		// so the autoscaler can take control of the replicas field.
+		//
+		// 1. if it’s a new MachineSet, or the replicas field of the old MachineSet is < min size, use min size
+		// 2. if the replicas field of the old MachineSet is > max size, use max size
+		msReplicas := k8sutilspointer.Int32Deref(machineSet.Spec.Replicas, 0)
+		if msReplicas < nodePool.Spec.AutoScaling.Min {
+			machineSet.Spec.Replicas = &nodePool.Spec.AutoScaling.Min
+		} else if msReplicas > nodePool.Spec.AutoScaling.Max {
+			machineSet.Spec.Replicas = &nodePool.Spec.AutoScaling.Max
 		}
+
 		machineSet.Annotations[autoscalerMaxAnnotation] = strconv.Itoa(int(nodePool.Spec.AutoScaling.Max))
 		machineSet.Annotations[autoscalerMinAnnotation] = strconv.Itoa(int(nodePool.Spec.AutoScaling.Min))
 	}
@@ -218,6 +271,24 @@ func setMachineSetReplicas(nodePool *hyperv1.NodePool, machineSet *capiv1.Machin
 	if !isAutoscalingEnabled(nodePool) {
 		machineSet.Annotations[autoscalerMaxAnnotation] = "0"
 		machineSet.Annotations[autoscalerMinAnnotation] = "0"
-		machineSet.Spec.Replicas = k8sutilspointer.Int32Ptr(k8sutilspointer.Int32PtrDerefOr(nodePool.Spec.Replicas, 0))
+		machineSet.Spec.Replicas = k8sutilspointer.Int32(k8sutilspointer.Int32Deref(nodePool.Spec.Replicas, 0))
 	}
+}
+
+func getInPlaceMaxUnavailable(nodePool *hyperv1.NodePool) (int, error) {
+	intOrPercent := intstr.FromInt(1)
+	if nodePool.Spec.Management.InPlace != nil {
+		if nodePool.Spec.Management.InPlace.MaxUnavailable != nil {
+			intOrPercent = *nodePool.Spec.Management.InPlace.MaxUnavailable
+		}
+	}
+	replicas := int(k8sutilspointer.Int32PtrDerefOr(nodePool.Spec.Replicas, 0))
+	maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&intOrPercent, replicas, false)
+	if err != nil {
+		return 0, err
+	}
+	if maxUnavailable == 0 {
+		maxUnavailable = 1
+	}
+	return maxUnavailable, nil
 }

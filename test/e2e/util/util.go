@@ -1,8 +1,10 @@
 package util
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,27 +15,27 @@ import (
 	. "github.com/onsi/gomega"
 	configv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
+	"github.com/openshift/hypershift/support/util"
 	promapi "github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	promconfig "github.com/prometheus/common/config"
 	prommodel "github.com/prometheus/common/model"
 	"go.uber.org/zap/zaptest"
+	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
-
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
-	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/ingress"
-	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
 )
 
 // DeleteNamespace deletes and finalizes the given namespace, logging any failures
@@ -152,7 +154,6 @@ func WaitForNReadyNodes(t *testing.T, ctx context.Context, client crclient.Clien
 	nodes := &corev1.NodeList{}
 	readyNodeCount := 0
 	err := wait.PollImmediateWithContext(ctx, 5*time.Second, waitTimeout, func(ctx context.Context) (done bool, err error) {
-		// TODO (alberto): have ability to filter nodes by NodePool. NodePool.Status.Nodes?
 		err = client.List(ctx, nodes)
 		if err != nil {
 			return false, nil
@@ -173,22 +174,31 @@ func WaitForNReadyNodes(t *testing.T, ctx context.Context, client crclient.Clien
 			return false, nil
 		}
 		t.Logf("All nodes are ready. Count: %v", len(nodes.Items))
+
 		return true, nil
 	})
 	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to ensure guest nodes became ready, ready: (%d/%d): ", readyNodeCount, n))
 
 	t.Logf("All nodes for nodepool appear to be ready in %s. Count: %v", time.Since(start).Round(time.Second), n)
+
 	return nodes.Items
 }
 
-func WaitForNUnReadyNodes(t *testing.T, ctx context.Context, client crclient.Client, n int32) []corev1.Node {
+func WaitForNReadyNodesByNodePool(t *testing.T, ctx context.Context, client crclient.Client, n int32, platform hyperv1.PlatformType, nodePoolName string) []corev1.Node {
 	g := NewWithT(t)
+	start := time.Now()
 
-	t.Logf("Waiting for Nodes to become unready. Want: %v", n)
-	nodes := &corev1.NodeList{}
-	readyNodeCount := 0
-	err := wait.PollImmediateWithContext(ctx, 5*time.Second, 30*time.Minute, func(ctx context.Context) (done bool, err error) {
-		// TODO (alberto): have ability to filter nodes by NodePool. NodePool.Status.Nodes?
+	// waitTimeout for nodes to become Ready
+	waitTimeout := 30 * time.Minute
+	switch platform {
+	case hyperv1.PowerVSPlatform:
+		waitTimeout = 60 * time.Minute
+	}
+
+	t.Logf("Waiting for nodes to become ready by NodePool. NodePool: %s Want: %v", nodePoolName, n)
+	nodesFromNodePool := []corev1.Node{}
+	err := wait.PollImmediateWithContext(ctx, 5*time.Second, waitTimeout, func(ctx context.Context) (done bool, err error) {
+		nodes := &corev1.NodeList{}
 		err = client.List(ctx, nodes)
 		if err != nil {
 			return false, nil
@@ -196,45 +206,34 @@ func WaitForNUnReadyNodes(t *testing.T, ctx context.Context, client crclient.Cli
 		if len(nodes.Items) == 0 {
 			return false, nil
 		}
-		var readyNodes []string
 		for _, node := range nodes.Items {
-			for _, cond := range node.Status.Conditions {
-				if cond.Type == corev1.NodeReady && cond.Status != corev1.ConditionTrue {
-					readyNodes = append(readyNodes, node.Name)
+			if node.Labels["hypershift.openshift.io/nodePool"] == nodePoolName {
+				for _, cond := range node.Status.Conditions {
+					if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+						nodesFromNodePool = append(nodesFromNodePool, node)
+					}
 				}
 			}
 		}
-		if len(readyNodes) != int(n) {
-			readyNodeCount = len(readyNodes)
+		if len(nodesFromNodePool) != int(n) {
+			nodesFromNodePool = nil
 			return false, nil
 		}
+		t.Logf("All nodes are ready. Count: %v", len(nodesFromNodePool))
+
 		return true, nil
 	})
-	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to ensure guest nodes became ready, ready: (%d/%d): ", readyNodeCount, n))
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to ensure guest nodes became ready, ready: (%d/%d): ", len(nodesFromNodePool), n))
+	t.Logf("All nodes for NodePool %s appear to be ready in %s. Count: %v", nodePoolName, time.Since(start).Round(time.Second), n)
 
-	t.Logf("Wanted Nodes are unready. Count: %v", n)
-	return nodes.Items
+	return nodesFromNodePool
 }
 
-func preRolloutPlatformCheck(t *testing.T, ctx context.Context, client crclient.Client, guestClient crclient.Client, hc *hyperv1.HostedCluster) {
-	switch hc.Spec.Platform.Type {
-	case hyperv1.KubevirtPlatform:
-		// Setup wildcard *.apps route for nested kubevirt cluster
-		// This is required for kubevirt ingress to function properly and for the console operator to pass health checks.
-		// This logic will be replaced with the 'cloud-provider-kubevirt' component once it is implemented
-		//
-		// TODO: dvossel - remove this once cloud-provider-kubevirt is in use
-		t.Logf("Setting up wildcard *.apps route for nested kubevirt tenant cluster")
-		createKubeVirtClusterWildcardRoute(t, ctx, client, guestClient, hc, hc.Spec.DNS.BaseDomain)
-	}
-}
-
-func WaitForImageRollout(t *testing.T, ctx context.Context, client crclient.Client, guestClient crclient.Client, hostedCluster *hyperv1.HostedCluster, image string) {
-	g := NewWithT(t)
+func WaitForImageRollout(t *testing.T, ctx context.Context, client crclient.Client, hostedCluster *hyperv1.HostedCluster, image string) {
 	start := time.Now()
+	g := NewWithT(t)
 
-	preRolloutPlatformCheck(t, ctx, client, guestClient, hostedCluster)
-
+	var rolloutIncompleteReason string
 	t.Logf("Waiting for hostedcluster to rollout image. Namespace: %s, name: %s, image: %s", hostedCluster.Namespace, hostedCluster.Name, image)
 	err := wait.PollImmediateWithContext(ctx, 10*time.Second, 30*time.Minute, func(ctx context.Context) (done bool, err error) {
 		latest := hostedCluster.DeepCopy()
@@ -244,22 +243,38 @@ func WaitForImageRollout(t *testing.T, ctx context.Context, client crclient.Clie
 			return false, nil
 		}
 
-		isAvailable := meta.IsStatusConditionTrue(latest.Status.Conditions, string(hyperv1.HostedClusterAvailable))
-		isProgressing := meta.IsStatusConditionTrue(latest.Status.Conditions, string(hyperv1.HostedClusterProgressing))
-
-		rolloutComplete := latest.Status.Version != nil &&
-			latest.Status.Version.Desired.Image == image &&
-			len(latest.Status.Version.History) > 0 &&
-			latest.Status.Version.History[0].Image == latest.Status.Version.Desired.Image &&
-			latest.Status.Version.History[0].State == configv1.CompletedUpdate
-
-		if isAvailable && !isProgressing && rolloutComplete {
-			t.Logf("Waiting for hostedcluster rollout. Image: %s, isAvailable: %v, isProgressing: %v, rolloutComplete: %v", image, isAvailable, isProgressing, rolloutComplete)
-			return true, nil
+		available := meta.FindStatusCondition(latest.Status.Conditions, string(hyperv1.HostedClusterAvailable))
+		progressing := meta.FindStatusCondition(latest.Status.Conditions, string(hyperv1.HostedClusterProgressing))
+		switch {
+		case available == nil:
+			rolloutIncompleteReason = fmt.Sprintf("status.conditions[type==%s] does not exist", hyperv1.HostedClusterAvailable)
+		case available.Status != metav1.ConditionTrue:
+			rolloutIncompleteReason = fmt.Sprintf("status.conditions[type==%s] %q (expected %q): %s %s: %s", available.Type, available.Status, metav1.ConditionTrue, available.LastTransitionTime, available.Reason, available.Message)
+		case progressing == nil:
+			rolloutIncompleteReason = fmt.Sprintf("status.conditions[type==%s] does not exist", hyperv1.HostedClusterProgressing)
+		case progressing.Status != metav1.ConditionFalse:
+			rolloutIncompleteReason = fmt.Sprintf("status.conditions[type==%s] %q (expected %q): %s %s: %s", progressing.Type, progressing.Status, metav1.ConditionFalse, progressing.LastTransitionTime, progressing.Reason, progressing.Message)
+		case latest.Status.Version == nil:
+			rolloutIncompleteReason = "nil status.version"
+		case latest.Status.Version.Desired.Image != image:
+			rolloutIncompleteReason = fmt.Sprintf("status.version.desired.image is %q, but we want %q", latest.Status.Version.Desired.Image, image)
+		case len(latest.Status.Version.History) == 0:
+			rolloutIncompleteReason = "status.version.history has no entries"
+		case latest.Status.Version.History[0].Image != latest.Status.Version.Desired.Image:
+			rolloutIncompleteReason = fmt.Sprintf("status.version.history[0].image is %q, but we want %q", latest.Status.Version.History[0].Image, latest.Status.Version.Desired.Image)
+		case latest.Status.Version.History[0].State != configv1.CompletedUpdate:
+			rolloutIncompleteReason = fmt.Sprintf("status.version.history[0].state is %q, but we want %q", latest.Status.Version.History[0].State, configv1.CompletedUpdate)
+		default:
+			rolloutIncompleteReason = ""
 		}
-		return false, nil
+
+		if rolloutIncompleteReason != "" {
+			t.Logf("Waiting for hostedcluster rollout. Image: %s: %s", image, rolloutIncompleteReason)
+			return false, nil
+		}
+		return true, nil
 	})
-	g.Expect(err).NotTo(HaveOccurred(), "failed waiting for image rollout")
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed waiting for hostedcluster image rollout: %s", rolloutIncompleteReason))
 
 	t.Logf("Observed hostedcluster to have successfully rolled out image in %s. Namespace: %s, name: %s, image: %s", time.Since(start).Round(time.Second), hostedCluster.Namespace, hostedCluster.Name, image)
 }
@@ -267,10 +282,18 @@ func WaitForImageRollout(t *testing.T, ctx context.Context, client crclient.Clie
 func WaitForConditionsOnHostedControlPlane(t *testing.T, ctx context.Context, client crclient.Client, hostedCluster *hyperv1.HostedCluster, image string) {
 	g := NewWithT(t)
 	start := time.Now()
+	conditions := []hyperv1.ConditionType{
+		hyperv1.HostedControlPlaneAvailable,
+		hyperv1.EtcdAvailable,
+		hyperv1.KubeAPIServerAvailable,
+		hyperv1.InfrastructureReady,
+		hyperv1.ValidHostedControlPlaneConfiguration,
+	}
+	var rolloutIncompleteReasons []string
+	namespace := manifests.HostedControlPlaneNamespace(hostedCluster.Namespace, hostedCluster.Name).Name
 
-	t.Logf("Waiting for hostedcluster to rollout image. Namespace: %s, name: %s, image: %s", hostedCluster.Namespace, hostedCluster.Name, image)
+	t.Logf("Waiting for hostedcontrolplane to rollout image. Namespace: %s, name: %s, image: %s", namespace, hostedCluster.Name, image)
 	err := wait.PollImmediateWithContext(ctx, 10*time.Second, 30*time.Minute, func(ctx context.Context) (done bool, err error) {
-		namespace := manifests.HostedControlPlaneNamespace(hostedCluster.Namespace, hostedCluster.Name).Name
 		cp := &hyperv1.HostedControlPlane{}
 		err = client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: hostedCluster.Name}, cp)
 		if err != nil {
@@ -278,32 +301,26 @@ func WaitForConditionsOnHostedControlPlane(t *testing.T, ctx context.Context, cl
 			return false, nil
 		}
 
-		conditions := map[hyperv1.ConditionType]bool{
-			hyperv1.HostedControlPlaneAvailable:          false,
-			hyperv1.EtcdAvailable:                        false,
-			hyperv1.KubeAPIServerAvailable:               false,
-			hyperv1.InfrastructureReady:                  false,
-			hyperv1.ValidHostedControlPlaneConfiguration: false,
-		}
-
-		isAvailable := true
-		for condition := range conditions {
-			conditionReady := meta.IsStatusConditionTrue(cp.Status.Conditions, string(condition))
-			conditions[condition] = conditionReady
-			if !conditionReady {
-				isAvailable = false
+		rolloutIncompleteReasons = make([]string, 0, len(conditions))
+		for _, conditionType := range conditions {
+			condition := meta.FindStatusCondition(cp.Status.Conditions, string(conditionType))
+			switch {
+			case condition == nil:
+				rolloutIncompleteReasons = append(rolloutIncompleteReasons, fmt.Sprintf("status.conditions[type==%s] does not exist", conditionType))
+			case condition.Status != metav1.ConditionTrue:
+				rolloutIncompleteReasons = append(rolloutIncompleteReasons, fmt.Sprintf("status.conditions[type==%s] %q (expected %q): %s %s: %s", condition.Type, condition.Status, metav1.ConditionTrue, condition.LastTransitionTime, condition.Reason, condition.Message))
 			}
 		}
 
-		if isAvailable {
-			return true, nil
+		if len(rolloutIncompleteReasons) > 0 {
+			t.Logf("Waiting for hostedcontrolplane rollout. Image: %s\n%s", image, strings.Join(rolloutIncompleteReasons, "\n"))
+			return false, nil
 		}
-		t.Logf("Waiting for all conditions to be ready: Image: %s, conditions: %v", image, conditions)
-		return false, nil
+		return true, nil
 	})
-	g.Expect(err).NotTo(HaveOccurred(), "failed waiting for image rollout")
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed waiting for hostedcontrolplane image rollout\n%s", strings.Join(rolloutIncompleteReasons, "\n")))
 
-	t.Logf("Observed hostedcluster to have successfully rolled out image in %s. Namespace: %s, name: %s, image: %s", time.Since(start).Round(time.Second), hostedCluster.Namespace, hostedCluster.Name, image)
+	t.Logf("Observed hostedcontrolplane to have successfully rolled out image in %s. Namespace: %s, name: %s, image: %s", time.Since(start).Round(time.Second), namespace, hostedCluster.Name, image)
 }
 
 // WaitForNodePoolVersion blocks until the NodePool status indicates the given
@@ -314,7 +331,9 @@ func WaitForNodePoolVersion(t *testing.T, ctx context.Context, client crclient.C
 	start := time.Now()
 
 	t.Logf("Waiting for nodepool %s/%s to report version %s (currently %s)", nodePool.Namespace, nodePool.Name, version, nodePool.Status.Version)
-	err := wait.PollImmediateWithContext(ctx, 10*time.Second, 10*time.Minute, func(ctx context.Context) (done bool, err error) {
+	// TestInPlaceUpgradeNodePool must update nodes in the pool squentially and it takes about 5m per node
+	// TestInPlaceUpgradeNodePool currently uses a single nodepool with 2 replicas so 20m should be enough time (2x expected)
+	err := wait.PollImmediateWithContext(ctx, 10*time.Second, 20*time.Minute, func(ctx context.Context) (done bool, err error) {
 		latest := nodePool.DeepCopy()
 		err = client.Get(ctx, crclient.ObjectKeyFromObject(nodePool), latest)
 		if err != nil {
@@ -337,15 +356,44 @@ func EnsureNoCrashingPods(t *testing.T, ctx context.Context, client crclient.Cli
 			t.Fatalf("failed to list pods in namespace %s: %v", namespace, err)
 		}
 		for _, pod := range podList.Items {
-			// TODO: This is needed because of an upstream NPD, see e.G. here: https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/origin-ci-test/pr-logs/pull/openshift_hypershift/486/pull-ci-openshift-hypershift-main-e2e-aws-pooled/1445408206435127296/artifacts/e2e-aws-pooled/test-e2e/artifacts/namespaces/e2e-clusters-slgzn-example-f748r/core/pods/logs/capa-controller-manager-f66fd8977-knt6h-manager-previous.log
-			// remove this exception once upstream is fixed and we have the fix
-			if strings.HasPrefix(pod.Name, "capa-controller-manager") {
+			// TODO: Remove this when https://issues.redhat.com/browse/OCPBUGS-6953 is resolved
+			if strings.HasPrefix(pod.Name, "ovnkube-master-") {
+				continue
+			}
+
+			// TODO: Figure out why Route kind does not exist when ingress-operator first starts
+			if strings.HasPrefix(pod.Name, "ingress-operator-") {
+				continue
+			}
+
+			// TODO: Figure out why default-http backend health check is failing and triggering liveness probe to restart
+			if strings.HasPrefix(pod.Name, "router-") {
 				continue
 			}
 
 			// TODO: Autoscaler is restarting because it times out accessing the kube apiserver for leader election.
 			// Investigate a fix.
 			if strings.HasPrefix(pod.Name, "cluster-autoscaler") {
+				continue
+			}
+
+			// TODO: Machine approver started restarting in the UpgradeControlPlane test with the following error:
+			// F1122 15:17:01.880727       1 main.go:144] Can't create clients: failed to create client: Unauthorized
+			// Investigate a fix.
+			if strings.HasPrefix(pod.Name, "machine-approver") {
+				continue
+			}
+
+			// TODO: Drop this when this discussion https://redhat-internal.slack.com/archives/C01C8502FMM/p1677761198989759 is resolved.
+			if strings.HasPrefix(pod.Name, "cluster-node-tuning-operator") {
+				continue
+			}
+
+			// TODO: 4.11 and later, FBC based catalogs can in excess of 150s to start
+			// https://github.com/openshift/hypershift/pull/1746
+			// https://github.com/operator-framework/operator-lifecycle-manager/pull/2791
+			// Investigate a fix.
+			if strings.Contains(pod.Name, "-catalog") {
 				continue
 			}
 
@@ -544,11 +592,11 @@ func EnsureAPIBudget(t *testing.T, ctx context.Context, client crclient.Client, 
 				query:  fmt.Sprintf(`sum by (pod) (max_over_time(hypershift:controlplane:component_api_requests_total{app="control-plane-operator", method="DELETE", code="404", namespace=~"%s"}[%dm]))`, namespace, clusterAgeMinutes),
 				budget: 50,
 			},
-			//{
+			// {
 			//	name:   "ignition-server p90 payload generation time",
 			//	query:  fmt.Sprintf(`sum by (namespace) (max_over_time(hypershift:controlplane:ign_payload_generation_seconds_p90{namespace="%s"}[%dm]))`, namespace, clusterAgeMinutes),
 			//	budget: 45,
-			//},
+			// },
 			// hypershift-operator budget can not be per HC so metric will be
 			// significantly under budget for all but the last test(s) to complete on
 			// a particular test cluster These budgets will also need to scale up with
@@ -610,18 +658,13 @@ func EnsureAllRoutesUseHCPRouter(t *testing.T, ctx context.Context, hostClient c
 				t.Skip("skipping test because APIServer is not exposed through a route")
 			}
 		}
-		// TODO alvaroaleman: This needs to be fixed up in the CNO
-		exceptions := sets.NewString("ovnkube-sbdb")
 		var routes routev1.RouteList
 		if err := hostClient.List(ctx, &routes, crclient.InNamespace(manifests.HostedControlPlaneNamespace(hostedCluster.Namespace, hostedCluster.Name).Name)); err != nil {
 			t.Fatalf("failed to list routes: %v", err)
 		}
 		for _, route := range routes.Items {
-			if exceptions.Has(route.Name) {
-				continue
-			}
 			original := route.DeepCopy()
-			ingress.AddRouteLabel(&route)
+			util.AddHCPRouteLabel(&route)
 			if diff := cmp.Diff(route.GetLabels(), original.GetLabels()); diff != "" {
 				t.Errorf("route %s is missing the label to use the per-HCP router: %s", route.Name, diff)
 			}
@@ -706,6 +749,66 @@ func EnsureHCPContainersHaveResourceRequests(t *testing.T, ctx context.Context, 
 	})
 }
 
+func EnsureSecretEncryptedUsingKMS(t *testing.T, ctx context.Context, hostedCluster *hyperv1.HostedCluster, guestClient crclient.Client) {
+	t.Run("EnsureSecretEncryptedUsingKMS", func(t *testing.T) {
+		// create secret in guest cluster
+		testSecret := corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "default",
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{
+				"myKey": []byte("myData"),
+			},
+		}
+		if err := guestClient.Create(ctx, &testSecret); err != nil {
+			t.Errorf("failed to create a secret in guest cluster; %v", err)
+		}
+
+		restConfig, err := GetConfig()
+		if err != nil {
+			t.Errorf("failed to get restConfig; %v", err)
+		}
+
+		secretEtcdKey := fmt.Sprintf("/kubernetes.io/secrets/%s/%s", testSecret.Namespace, testSecret.Name)
+		command := []string{
+			"/usr/bin/etcdctl",
+			"--endpoints=localhost:2379",
+			"--cacert=/etc/etcd/tls/etcd-ca/ca.crt",
+			"--cert=/etc/etcd/tls/client/etcd-client.crt",
+			"--key=/etc/etcd/tls/client/etcd-client.key",
+			"get",
+			secretEtcdKey,
+		}
+
+		hcpNamespace := manifests.HostedControlPlaneNamespace(hostedCluster.Namespace, hostedCluster.Name).Name
+		out := new(bytes.Buffer)
+
+		podExecuter := PodExecOptions{
+			StreamOptions: StreamOptions{
+				IOStreams: genericclioptions.IOStreams{
+					Out:    out,
+					ErrOut: os.Stderr,
+				},
+			},
+			Command:       command,
+			Namespace:     hcpNamespace,
+			PodName:       "etcd-0",
+			ContainerName: "etcd",
+			Config:        restConfig,
+		}
+
+		if err := podExecuter.Run(); err != nil {
+			t.Errorf("failed to execute etcdctl command; %v", err)
+		}
+
+		if !strings.Contains(out.String(), "k8s:enc:kms:") {
+			t.Errorf("secret is not encrypted using kms")
+		}
+	})
+}
+
 // WaitForNodePoolConditionsNotToBePresent blocks until the given conditions are
 // not present in the NodePool.
 func WaitForNodePoolConditionsNotToBePresent(t *testing.T, ctx context.Context, client crclient.Client, nodePool *hyperv1.NodePool, conditions ...string) {
@@ -755,4 +858,28 @@ func createK8sClient() (*k8s.Clientset, error) {
 
 func NewLogr(t *testing.T) logr.Logger {
 	return zapr.NewLogger(zaptest.NewLogger(t))
+}
+
+func CorrelateDaemonSet(ds *appsv1.DaemonSet, nodePool *hyperv1.NodePool, dsName string) {
+
+	for _, c := range ds.Spec.Template.Spec.Containers {
+		if c.Name == ds.Name {
+			c.Name = dsName
+		}
+	}
+
+	ds.Name = dsName
+	ds.ObjectMeta.Labels = make(map[string]string)
+	ds.ObjectMeta.Labels["hypershift.openshift.io/nodePool"] = nodePool.Name
+
+	ds.Spec.Selector.MatchLabels["name"] = dsName
+	ds.Spec.Selector.MatchLabels["hypershift.openshift.io/nodePool"] = nodePool.Name
+
+	ds.Spec.Template.ObjectMeta.Labels["name"] = dsName
+	ds.Spec.Template.ObjectMeta.Labels["hypershift.openshift.io/nodePool"] = nodePool.Name
+
+	// Set NodeSelector for the DS
+	ds.Spec.Template.Spec.NodeSelector = make(map[string]string)
+	ds.Spec.Template.Spec.NodeSelector["hypershift.openshift.io/nodePool"] = nodePool.Name
+
 }

@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/blang/semver"
 	"github.com/docker/distribution/registry/client/transport"
 	"github.com/golang/groupcache/lru"
 	"k8s.io/client-go/rest"
 
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/support/releaseinfo"
 	"github.com/openshift/hypershift/support/thirdparty/library-go/pkg/image/dockerv1client"
 	"github.com/openshift/hypershift/support/thirdparty/library-go/pkg/image/reference"
 	"github.com/openshift/hypershift/support/thirdparty/library-go/pkg/image/registryclient"
@@ -91,4 +94,30 @@ func ImageLabels(metadata *dockerv1client.DockerImageConfig) map[string]string {
 	} else {
 		return metadata.ContainerConfig.Labels
 	}
+}
+
+func GetPayloadImage(ctx context.Context, releaseImageProvider releaseinfo.Provider, hc *hyperv1.HostedCluster, component string, pullSecret []byte) (string, error) {
+	releaseImage, err := releaseImageProvider.Lookup(ctx, hc.Spec.Release.Image, pullSecret)
+	if err != nil {
+		return "", fmt.Errorf("failed to lookup release image: %w", err)
+	}
+
+	image, exists := releaseImage.ComponentImages()[component]
+	if !exists {
+		return "", fmt.Errorf("image does not exist for release: %q", image)
+	}
+	return image, nil
+}
+
+func GetPayloadVersion(ctx context.Context, releaseImageProvider releaseinfo.Provider, hc *hyperv1.HostedCluster, pullSecret []byte) (*semver.Version, error) {
+	releaseImage, err := releaseImageProvider.Lookup(ctx, hc.Spec.Release.Image, pullSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup release image: %w", err)
+	}
+	versionStr := releaseImage.Version()
+	version, err := semver.Parse(versionStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse version (%s): %w", versionStr, err)
+	}
+	return &version, nil
 }

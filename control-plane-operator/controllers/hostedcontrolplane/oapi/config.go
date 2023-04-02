@@ -9,7 +9,9 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	openshiftcpv1 "github.com/openshift/api/openshiftcontrolplane/v1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
 	"github.com/openshift/hypershift/support/api"
@@ -24,7 +26,7 @@ const (
 	defaultInternalRegistryHostname = "image-registry.openshift-image-registry.svc:5000"
 )
 
-func ReconcileConfig(cm *corev1.ConfigMap, ownerRef config.OwnerRef, etcdURL, ingressDomain, minTLSVersion string, cipherSuites []string, imageConfig *configv1.Image, projectConfig *configv1.Project) error {
+func ReconcileConfig(cm *corev1.ConfigMap, auditWebhookRef *corev1.LocalObjectReference, ownerRef config.OwnerRef, etcdURL, ingressDomain, minTLSVersion string, cipherSuites []string, imageConfig *configv1.Image, projectConfig *configv1.Project) error {
 	ownerRef.ApplyTo(cm)
 	if cm.Data == nil {
 		cm.Data = map[string]string{}
@@ -35,7 +37,7 @@ func ReconcileConfig(cm *corev1.ConfigMap, ownerRef config.OwnerRef, etcdURL, in
 			return fmt.Errorf("failed to read existing config: %w", err)
 		}
 	}
-	reconcileConfigObject(openshiftAPIServerConfig, etcdURL, ingressDomain, minTLSVersion, cipherSuites, imageConfig, projectConfig)
+	reconcileConfigObject(openshiftAPIServerConfig, auditWebhookRef, etcdURL, ingressDomain, minTLSVersion, cipherSuites, imageConfig, projectConfig)
 	serializedConfig, err := util.SerializeResource(openshiftAPIServerConfig, api.Scheme)
 	if err != nil {
 		return fmt.Errorf("failed to serialize openshift apiserver config: %w", err)
@@ -44,7 +46,7 @@ func ReconcileConfig(cm *corev1.ConfigMap, ownerRef config.OwnerRef, etcdURL, in
 	return nil
 }
 
-func reconcileConfigObject(cfg *openshiftcpv1.OpenShiftAPIServerConfig, etcdURL, ingressDomain, minTLSVersion string, cipherSuites []string, imageConfig *configv1.Image, projectConfig *configv1.Project) {
+func reconcileConfigObject(cfg *openshiftcpv1.OpenShiftAPIServerConfig, auditWebhookRef *corev1.LocalObjectReference, etcdURL, ingressDomain, minTLSVersion string, cipherSuites []string, imageConfig *configv1.Image, projectConfig *configv1.Project) {
 	cfg.TypeMeta = metav1.TypeMeta{
 		Kind:       "OpenShiftAPIServerConfig",
 		APIVersion: openshiftcpv1.GroupVersion.String(),
@@ -57,9 +59,15 @@ func reconcileConfigObject(cfg *openshiftcpv1.OpenShiftAPIServerConfig, etcdURL,
 		"shutdown-delay-duration": {"3s"},
 		"audit-log-format":        {"json"},
 		"audit-log-maxsize":       {"100"},
-		"audit-log-path":          {cpath(oasVolumeWorkLogs().Name, "audit.log")},
 		"audit-policy-file":       {cpath(oasVolumeAuditConfig().Name, auditPolicyConfigMapKey)},
+		"audit-log-path":          {cpath(oasVolumeWorkLogs().Name, "audit.log")},
 	}
+
+	if auditWebhookRef != nil {
+		cfg.APIServerArguments["audit-webhook-config-file"] = []string{auditWebhookConfigFile()}
+		cfg.APIServerArguments["audit-webhook-mode"] = []string{"batch"}
+	}
+
 	cfg.KubeClientConfig.KubeConfig = cpath(oasVolumeKubeconfig().Name, kas.KubeconfigKey)
 	cfg.ServingInfo = configv1.HTTPServingInfo{
 		ServingInfo: configv1.ServingInfo{
@@ -67,7 +75,7 @@ func reconcileConfigObject(cfg *openshiftcpv1.OpenShiftAPIServerConfig, etcdURL,
 				CertFile: cpath(oasVolumeServingCert().Name, corev1.TLSCertKey),
 				KeyFile:  cpath(oasVolumeServingCert().Name, corev1.TLSPrivateKeyKey),
 			},
-			ClientCA:      cpath(oasVolumeServingCA().Name, certs.CASignerCertMapKey),
+			ClientCA:      cpath(common.VolumeTotalClientCA().Name, certs.CASignerCertMapKey),
 			CipherSuites:  cipherSuites,
 			MinTLSVersion: minTLSVersion,
 		},
@@ -109,4 +117,9 @@ func reconcileConfigObject(cfg *openshiftcpv1.OpenShiftAPIServerConfig, etcdURL,
 			CA: cpath(oasVolumeEtcdClientCA().Name, certs.CASignerCertMapKey),
 		},
 	}
+}
+
+func auditWebhookConfigFile() string {
+	cfgDir := oasAuditWebhookConfigFileVolumeMount.Path(oasContainerMain().Name, oasAuditWebhookConfigFileVolume().Name)
+	return path.Join(cfgDir, hyperv1.AuditWebhookKubeconfigKey)
 }

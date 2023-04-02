@@ -11,6 +11,7 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/controllers/awsprivatelink"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator"
+	"github.com/openshift/hypershift/dnsresolver"
 	ignitionserver "github.com/openshift/hypershift/ignition-server/cmd"
 	konnectivitysocks5proxy "github.com/openshift/hypershift/konnectivity-socks5-proxy"
 	kubernetesdefaultproxy "github.com/openshift/hypershift/kubernetes-default-proxy"
@@ -126,6 +127,7 @@ func defaultCommand() *cobra.Command {
 	cmd.AddCommand(tokenminter.NewStartCommand())
 	cmd.AddCommand(ignitionserver.NewStartCommand())
 	cmd.AddCommand(kubernetesdefaultproxy.NewStartCommand())
+	cmd.AddCommand(dnsresolver.NewCommand())
 
 	return cmd
 
@@ -157,6 +159,7 @@ func NewStartCommand() *cobra.Command {
 		inCluster                        bool
 		enableCIDebugOutput              bool
 		registryOverrides                map[string]string
+		imageOverrides                   map[string]string
 	)
 
 	cmd.Flags().StringVar(&namespace, "namespace", os.Getenv("MY_NAMESPACE"), "The namespace this operator lives in (required)")
@@ -172,6 +175,11 @@ func NewStartCommand() *cobra.Command {
 		"to avoid assuming access to the service network)")
 	cmd.Flags().BoolVar(&enableCIDebugOutput, "enable-ci-debug-output", false, "If extra CI debug output should be enabled")
 	cmd.Flags().StringToStringVar(&registryOverrides, "registry-overrides", map[string]string{}, "registry-overrides contains the source registry string as a key and the destination registry string as value. Images before being applied are scanned for the source registry string and if found the string is replaced with the destination registry string. Format is: sr1=dr1,sr2=dr2")
+	cmd.Flags().StringToStringVar(&imageOverrides, "image-overrides", map[string]string{},
+		"List of images that should be used for a hosted cluster control plane instead of images from OpenShift release specified in HostedCluster. "+
+			"Format is: name1=image1,name2=image2. \"nameX\" is name of an image in OpenShift release (e.g. \"cluster-network-operator\"). "+
+			"\"imageX\" is container image name (e.g. \"quay.io/foo/my-network-operator:latest\"). The container image name is still subject of registry name "+
+			"replacement when --registry-overrides is used.")
 
 	cmd.Run = func(cmd *cobra.Command, args []string) {
 		setupLog.Info("Starting hypershift-controlplane-manager", "version", version.String())
@@ -199,11 +207,6 @@ func NewStartCommand() *cobra.Command {
 				DefaultSelector: cache.ObjectSelector{Field: fields.OneTermEqualSelector("metadata.namespace", namespace)},
 				SelectorsByObject: cache.SelectorsByObject{
 					&operatorv1.IngressController{}: {Field: fields.OneTermEqualSelector("metadata.namespace", manifests.IngressPrivateIngressController("").Namespace)},
-					// We watch warning events to be able to surface cloud provider errors as conditions
-					// Surfacing cloud-provider specific status is discussed in:
-					// https://github.com/kubernetes/kubernetes/issues/70159
-					// https://github.com/kubernetes/kubernetes/issues/52670
-					&corev1.Event{}: {Field: fields.AndSelectors(fields.OneTermEqualSelector("metadata.namespace", namespace), fields.OneTermEqualSelector("type", "warning"))},
 				},
 			}),
 		})
@@ -325,22 +328,27 @@ func NewStartCommand() *cobra.Command {
 			awsKMSProviderImage = envImage
 		}
 
+		componentImages := map[string]string{
+			util.AvailabilityProberImageName: availabilityProberImage,
+			"hosted-cluster-config-operator": hostedClusterConfigOperatorImage,
+			"konnectivity-server":            konnectivityServerImage,
+			"konnectivity-agent":             konnectivityAgentImage,
+			"socks5-proxy":                   socks5ProxyImage,
+			"token-minter":                   tokenMinterImage,
+			"aws-kms-provider":               awsKMSProviderImage,
+			util.CPOImageName:                cpoImage,
+		}
+		for name, image := range imageOverrides {
+			componentImages[name] = image
+		}
+
 		releaseProvider := &releaseinfo.RegistryMirrorProviderDecorator{
 			Delegate: &releaseinfo.StaticProviderDecorator{
 				Delegate: &releaseinfo.CachedProvider{
 					Inner: &releaseinfo.RegistryClientProvider{},
 					Cache: map[string]*releaseinfo.ReleaseImage{},
 				},
-				ComponentImages: map[string]string{
-					util.AvailabilityProberImageName: availabilityProberImage,
-					"hosted-cluster-config-operator": hostedClusterConfigOperatorImage,
-					"konnectivity-server":            konnectivityServerImage,
-					"konnectivity-agent":             konnectivityAgentImage,
-					"socks5-proxy":                   socks5ProxyImage,
-					"token-minter":                   tokenMinterImage,
-					"aws-kms-provider":               awsKMSProviderImage,
-					util.CPOImageName:                cpoImage,
-				},
+				ComponentImages: componentImages,
 			},
 			RegistryOverrides: registryOverrides,
 		}
@@ -395,7 +403,9 @@ func NewStartCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
-			if err := (&awsprivatelink.AWSEndpointServiceReconciler{}).SetupWithManager(mgr); err != nil {
+			if err := (&awsprivatelink.AWSEndpointServiceReconciler{
+				CreateOrUpdateProvider: upsert.New(enableCIDebugOutput),
+			}).SetupWithManager(mgr); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "aws-endpoint-service")
 				os.Exit(1)
 			}

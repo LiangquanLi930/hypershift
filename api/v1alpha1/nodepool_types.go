@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -8,13 +10,12 @@ import (
 )
 
 const (
+	NodePoolValidGeneratedPayloadConditionType   = "ValidGeneratedPayload"
+	NodePoolValidPlatformImageType               = "ValidPlatformImage"
 	NodePoolValidHostedClusterConditionType      = "ValidHostedCluster"
 	NodePoolValidReleaseImageConditionType       = "ValidReleaseImage"
-	NodePoolValidAMIConditionType                = "ValidAMI"
-	NodePoolValidPowerVSImageConditionType       = "ValidPowerVSImage"
-	NodePoolValidKubeVirtImageConditionType      = "ValidKubeVirtImage"
 	NodePoolValidMachineConfigConditionType      = "ValidMachineConfig"
-	NodePoolValidKubevirtConfigConditionType     = "ValidKubevirtConfig"
+	NodePoolValidTuningConfigConditionType       = "ValidTuningConfig"
 	NodePoolUpdateManagementEnabledConditionType = "UpdateManagementEnabled"
 	NodePoolAutoscalingEnabledConditionType      = "AutoscalingEnabled"
 	NodePoolReadyConditionType                   = "Ready"
@@ -25,6 +26,10 @@ const (
 	NodePoolAsExpectedConditionReason            = "AsExpected"
 	NodePoolValidationFailedConditionReason      = "ValidationFailed"
 	NodePoolInplaceUpgradeFailedConditionReason  = "InplaceUpgradeFailed"
+	NodePoolNotFoundReason                       = "NotFound"
+	NodePoolFailedToGetReason                    = "FailedToGet"
+	// NodePoolLabel is used to label Nodes.
+	NodePoolLabel = "hypershift.openshift.io/nodePool"
 )
 
 // The following are reasons for the IgnitionEndpointAvailable condition.
@@ -51,7 +56,7 @@ func init() {
 // independent of the control plane’s underlying machine architecture.
 //
 // +kubebuilder:resource:path=nodepools,shortName=np;nps,scope=Namespaced
-// +kubebuilder:storageversion
+// +kubebuilder:deprecatedversion:warning="v1alpha1 is a deprecated version for NodePool"
 // +kubebuilder:subresource:status
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas
@@ -82,6 +87,7 @@ type NodePoolSpec struct {
 	// TODO(dan): Should this be a LocalObjectReference?
 	//
 	// +immutable
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="ClusterName is immutable"
 	ClusterName string `json:"clusterName"`
 
 	// Release specifies the OCP release used for the NodePool. This informs the
@@ -93,6 +99,7 @@ type NodePoolSpec struct {
 	// and is used to configure platform specific behavior.
 	//
 	// +immutable
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="Platform is immutable"
 	Platform NodePoolPlatform `json:"platform"`
 
 	// Deprecated: Use Replicas instead. NodeCount will be dropped in the next
@@ -136,12 +143,32 @@ type NodePoolSpec struct {
 	// +optional
 	NodeDrainTimeout *metav1.Duration `json:"nodeDrainTimeout,omitempty"`
 
+	// NodeLabels propagates a list of labels to Nodes, only once on creation.
+	// Valid values are those in https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set
+	// +optional
+	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
+
+	// Taints if specified, propagates a list of taints to Nodes, only once on creation.
+	// +optional
+	Taints []Taint `json:"taints,omitempty"`
+
 	// PausedUntil is a field that can be used to pause reconciliation on a resource.
 	// Either a date can be provided in RFC3339 format or a boolean. If a date is
 	// provided: reconciliation is paused on the resource until that date. If the boolean true is
 	// provided: reconciliation is paused on the resource until the field is removed.
 	// +optional
 	PausedUntil *string `json:"pausedUntil,omitempty"`
+
+	// TuningConfig is a list of references to ConfigMaps containing serialized
+	// Tuned resources to define the tuning configuration to be applied to
+	// nodes in the NodePool. The Tuned API is defined here:
+	//
+	// https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go
+	//
+	// Each ConfigMap must have a single key named "tuned" whose value is the
+	// JSON or YAML of a serialized Tuned.
+	// +kubebuilder:validation:Optional
+	TuningConfig []corev1.LocalObjectReference `json:"tuningConfig,omitempty"`
 }
 
 // NodePoolStatus is the latest observed status of a NodePool.
@@ -159,7 +186,8 @@ type NodePoolStatus struct {
 
 	// Conditions represents the latest available observations of the node pool's
 	// current state.
-	Conditions []NodePoolCondition `json:"conditions"`
+	// +optional
+	Conditions []NodePoolCondition `json:"conditions,omitempty"`
 }
 
 // NodePoolList contains a list of NodePools.
@@ -260,7 +288,26 @@ type RollingUpdate struct {
 
 // InPlaceUpgrade specifies an upgrade strategy which upgrades nodes in-place
 // without any new nodes being created or any old nodes being deleted.
-type InPlaceUpgrade struct{}
+type InPlaceUpgrade struct {
+	// MaxUnavailable is the maximum number of nodes that can be unavailable
+	// during the update.
+	//
+	// Value can be an absolute number (ex: 5) or a percentage of desired nodes
+	// (ex: 10%).
+	//
+	// Absolute number is calculated from percentage by rounding down.
+	//
+	// Defaults to 1.
+	//
+	// Example: when this is set to 30%, a max of 30% of the nodes can be made
+	// unschedulable/unavailable immediately when the update starts. Once a set
+	// of nodes is updated, more nodes can be made unschedulable for update,
+	// ensuring that the total number of nodes schedulable at all times during
+	// the update is at least 70% of desired nodes.
+	//
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+}
 
 // NodePoolManagement specifies behavior for managing nodes in a NodePool, such
 // as upgrade strategies and auto-repair behaviors.
@@ -268,6 +315,7 @@ type NodePoolManagement struct {
 	// UpgradeType specifies the type of strategy for handling upgrades.
 	//
 	// +kubebuilder:validation:Enum=Replace;InPlace
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="UpgradeType is immutable"
 	UpgradeType UpgradeType `json:"upgradeType"`
 
 	// Replace is the configuration for rolling upgrades.
@@ -308,6 +356,7 @@ type NodePoolPlatform struct {
 	//
 	// +unionDiscriminator
 	// +immutable
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="Type is immutable"
 	Type PlatformType `json:"type"`
 
 	// AWS specifies the configuration used when operating on AWS.
@@ -335,6 +384,44 @@ type NodePoolPlatform struct {
 	// +optional
 	PowerVS *PowerVSNodePoolPlatform `json:"powervs,omitempty"`
 }
+
+// PowerVSNodePoolProcType defines processor type to be used for PowerVSNodePoolPlatform
+type PowerVSNodePoolProcType string
+
+func (p *PowerVSNodePoolProcType) String() string {
+	return string(*p)
+}
+
+func (p *PowerVSNodePoolProcType) Set(s string) error {
+	switch s {
+	case string(PowerVSNodePoolSharedProcType), string(PowerVSNodePoolCappedProcType), string(PowerVSNodePoolDedicatedProcType):
+		*p = PowerVSNodePoolProcType(s)
+		return nil
+	default:
+		return fmt.Errorf("unknown processor type used %s", s)
+	}
+}
+
+func (p *PowerVSNodePoolProcType) Type() string {
+	return "PowerVSNodePoolProcType"
+}
+
+const (
+	// PowerVSNodePoolDedicatedProcType defines dedicated processor type
+	PowerVSNodePoolDedicatedProcType = PowerVSNodePoolProcType("dedicated")
+
+	// PowerVSNodePoolSharedProcType defines shared processor type
+	PowerVSNodePoolSharedProcType = PowerVSNodePoolProcType("shared")
+
+	// PowerVSNodePoolCappedProcType defines capped processor type
+	PowerVSNodePoolCappedProcType = PowerVSNodePoolProcType("capped")
+)
+
+// PowerVSNodePoolStorageType defines storage type to be used for PowerVSNodePoolPlatform
+type PowerVSNodePoolStorageType string
+
+// PowerVSNodePoolImageDeletePolicy defines image delete policy to be used for PowerVSNodePoolPlatform
+type PowerVSNodePoolImageDeletePolicy string
 
 // PowerVSNodePoolPlatform specifies the configuration of a NodePool when operating
 // on IBMCloud PowerVS platform.
@@ -365,7 +452,7 @@ type PowerVSNodePoolPlatform struct {
 	// +kubebuilder:default=shared
 	// +kubebuilder:validation:Enum=dedicated;shared;capped
 	// +optional
-	ProcessorType string `json:"processorType,omitempty"`
+	ProcessorType PowerVSNodePoolProcType `json:"processorType,omitempty"`
 
 	// Processors is the number of virtual processors in a virtual machine.
 	// when the processorType is selected as Dedicated the processors value cannot be fractional.
@@ -414,7 +501,7 @@ type PowerVSNodePoolPlatform struct {
 	// +kubebuilder:default=tier1
 	// +kubebuilder:validation:Enum=tier1;tier3
 	// +optional
-	StorageType string `json:"storageType,omitempty"`
+	StorageType PowerVSNodePoolStorageType `json:"storageType,omitempty"`
 
 	// ImageDeletePolicy is policy for the image deletion.
 	//
@@ -426,7 +513,7 @@ type PowerVSNodePoolPlatform struct {
 	// +kubebuilder:default=delete
 	// +kubebuilder:validation:Enum=delete;retain
 	// +optional
-	ImageDeletePolicy string `json:"imageDeletePolicy,omitempty"`
+	ImageDeletePolicy PowerVSNodePoolImageDeletePolicy `json:"imageDeletePolicy,omitempty"`
 }
 
 // KubevirtCompute contains values associated with the virtual compute hardware requested for the VM.
@@ -567,21 +654,19 @@ type AWSNodePoolPlatform struct {
 	// for the user.
 	//
 	// +kubebuilder:validation:MaxItems=25
+	// +listType=map
+	// +listMapKey=key
 	// +optional
 	ResourceTags []AWSResourceTag `json:"resourceTags,omitempty"`
 }
 
-// AWSResourceReference is a reference to a specific AWS resource by ID, ARN, or filters.
-// Only one of ID, ARN or Filters may be specified. Specifying more than one will result in
+// AWSResourceReference is a reference to a specific AWS resource by ID or filters.
+// Only one of ID or Filters may be specified. Specifying more than one will result in
 // a validation error.
 type AWSResourceReference struct {
 	// ID of resource
 	// +optional
 	ID *string `json:"id,omitempty"`
-
-	// ARN of resource
-	// +optional
-	ARN *string `json:"arn,omitempty"`
 
 	// Filters is a set of key/value pairs used to identify a resource
 	// They are applied according to the rules defined by the AWS API:
@@ -616,6 +701,17 @@ type Volume struct {
 	//
 	// +optional
 	IOPS int64 `json:"iops,omitempty"`
+
+	// Encrypted is whether the volume should be encrypted or not.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="Encrypted is immutable"
+	Encrypted *bool `json:"encrypted,omitempty"`
+
+	// EncryptionKey is the KMS key to use to encrypt the volume. Can be either a KMS key ID or ARN.
+	// If Encrypted is set and this is omitted, the default AWS key will be used.
+	// The key must already exist and be accessible by the controller.
+	// +optional
+	EncryptionKey string `json:"encryptionKey,omitempty"`
 }
 
 // AgentNodePoolPlatform specifies the configuration of a NodePool when operating
@@ -692,4 +788,18 @@ type NodePoolCondition struct {
 
 	// +kubebuilder:validation:Minimum=0
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+}
+
+// Taint is as v1 Core but without TimeAdded.
+// https://github.com/kubernetes/kubernetes/blob/ed8cad1e80d096257921908a52ac69cf1f41a098/staging/src/k8s.io/api/core/v1/types.go#L3037-L3053
+type Taint struct {
+	// Required. The taint key to be applied to a node.
+	Key string `json:"key"`
+	// The taint value corresponding to the taint key.
+	// +optional
+	Value string `json:"value,omitempty"`
+	// Required. The effect of the taint on pods
+	// that do not tolerate the taint.
+	// Valid effects are NoSchedule, PreferNoSchedule and NoExecute.
+	Effect corev1.TaintEffect `json:"effect"`
 }

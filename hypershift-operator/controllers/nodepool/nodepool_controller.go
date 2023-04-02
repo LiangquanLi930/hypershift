@@ -2,29 +2,33 @@ package nodepool
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/blang/semver"
 	ignitionapi "github.com/coreos/ignition/v2/config/v3_2/types"
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	configv1 "github.com/openshift/api/config/v1"
 	"github.com/openshift/api/operator/v1alpha1"
 	agentv1 "github.com/openshift/cluster-api-provider-agent/api/v1alpha1"
-	api "github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	tunedv1 "github.com/openshift/cluster-node-tuning-operator/pkg/apis/tuned/v1"
+	"github.com/openshift/hypershift/api"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests/ignitionserver"
+	"github.com/openshift/hypershift/hypershift-operator/controllers/nodepool/kubevirt"
+	ignserver "github.com/openshift/hypershift/ignition-server/controllers"
 	"github.com/openshift/hypershift/support/globalconfig"
 	"github.com/openshift/hypershift/support/releaseinfo"
+	"github.com/openshift/hypershift/support/supportedversion"
 	"github.com/openshift/hypershift/support/upsert"
 	supportutil "github.com/openshift/hypershift/support/util"
 	mcfgv1 "github.com/openshift/hypershift/thirdparty/machineconfigoperator/pkg/apis/machineconfiguration.openshift.io/v1"
@@ -36,12 +40,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	serializer "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	k8sutilspointer "k8s.io/utils/pointer"
-	capiaws "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capiaws "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	capiazure "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	capipowervs "sigs.k8s.io/cluster-api-provider-ibmcloud/api/v1beta1"
 	capikubevirt "sigs.k8s.io/cluster-api-provider-kubevirt/api/v1alpha1"
@@ -68,14 +73,29 @@ const (
 	nodePoolAnnotationTargetConfigVersion    = "hypershift.openshift.io/nodePoolTargetConfigVersion"
 	nodePoolAnnotationUpgradeInProgressTrue  = "hypershift.openshift.io/nodePoolUpgradeInProgressTrue"
 	nodePoolAnnotationUpgradeInProgressFalse = "hypershift.openshift.io/nodePoolUpgradeInProgressFalse"
+	nodePoolAnnotationMaxUnavailable         = "hypershift.openshift.io/nodePoolMaxUnavailable"
 
 	nodePoolAnnotationPlatformMachineTemplate = "hypershift.openshift.io/nodePoolPlatformMachineTemplate"
+	nodePoolAnnotationTaints                  = "hypershift.openshift.io/nodePoolTaints"
 	nodePoolCoreIgnitionConfigLabel           = "hypershift.openshift.io/core-ignition-config"
 	TokenSecretTokenGenerationTime            = "hypershift.openshift.io/last-token-generation-time"
 	TokenSecretReleaseKey                     = "release"
 	TokenSecretTokenKey                       = "token"
+	TokenSecretPullSecretHashKey              = "pull-secret-hash"
 	TokenSecretConfigKey                      = "config"
 	TokenSecretAnnotation                     = "hypershift.openshift.io/ignition-config"
+	TokenSecretIgnitionReachedAnnotation      = "hypershift.openshift.io/ignition-reached"
+	TokenSecretNodePoolUpgradeType            = "hypershift.openshift.io/node-pool-upgrade-type"
+
+	tuningConfigKey                = "tuning"
+	tuningConfigMapLabel           = "hypershift.openshift.io/tuned-config"
+	nodeTuningGeneratedConfigLabel = "hypershift.openshift.io/nto-generated-machine-config"
+
+	controlPlaneOperatorManagesDecompressAndDecodeConfig = "io.openshift.hypershift.control-plane-operator-manages.decompress-decode-config"
+
+	controlPlaneOperatorCreatesDefaultAWSSecurityGroup = "io.openshift.hypershift.control-plane-operator-creates-aws-sg"
+
+	labelManagedPrefix = "managed.hypershift.openshift.io"
 )
 
 type NodePoolReconciler struct {
@@ -86,6 +106,15 @@ type NodePoolReconciler struct {
 	upsert.CreateOrUpdateProvider
 	HypershiftOperatorImage string
 	ImageMetadataProvider   supportutil.ImageMetadataProvider
+}
+
+type NotReadyError struct {
+	error
+}
+
+type CPOCapabilities struct {
+	DecompressAndDecodeConfig     bool
+	CreateDefaultAWSSecurityGroup bool
 }
 
 func (r *NodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -140,6 +169,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.delete(ctx, nodePool, controlPlaneNamespace); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to delete nodepool: %w", err)
 		}
+
 		// Now we can remove the finalizer.
 		if controllerutil.ContainsFinalizer(nodePool, finalizer) {
 			controllerutil.RemoveFinalizer(nodePool, finalizer)
@@ -193,13 +223,6 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.HostedCluster, nodePool *hyperv1.NodePool) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	// The nodeCount field got renamed, copy the old field for compatibility purposes if the
-	// new one is unset.
-	if nodePool.Spec.Replicas == nil {
-		//lint:ignore SA1019 maintain backward compatibility
-		nodePool.Spec.Replicas = nodePool.Spec.NodeCount
-	}
-
 	// HostedCluster owns NodePools. This should ensure orphan NodePools are garbage collected when cascading deleting.
 	nodePool.OwnerReferences = util.EnsureOwnerRef(nodePool.OwnerReferences, metav1.OwnerReference{
 		APIVersion: hyperv1.GroupVersion.String(),
@@ -226,11 +249,11 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 
 	// Validate autoscaling input.
 	if err := validateAutoscaling(nodePool); err != nil {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolAutoscalingEnabledConditionType,
 			Status:             corev1.ConditionFalse,
 			Message:            err.Error(),
-			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+			Reason:             hyperv1.NodePoolValidationFailedReason,
 			ObservedGeneration: nodePool.Generation,
 		})
 		// We don't return the error here as reconciling won't solve the input problem.
@@ -239,29 +262,29 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		return ctrl.Result{}, nil
 	}
 	if isAutoscalingEnabled(nodePool) {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolAutoscalingEnabledConditionType,
 			Status:             corev1.ConditionTrue,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			Message:            fmt.Sprintf("Maximum nodes: %v, Minimum nodes: %v", nodePool.Spec.AutoScaling.Max, nodePool.Spec.AutoScaling.Min),
 			ObservedGeneration: nodePool.Generation,
 		})
 	} else {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolAutoscalingEnabledConditionType,
 			Status:             corev1.ConditionFalse,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			ObservedGeneration: nodePool.Generation,
 		})
 	}
 
 	// Validate management input.
 	if err := validateManagement(nodePool); err != nil {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolUpdateManagementEnabledConditionType,
 			Status:             corev1.ConditionFalse,
 			Message:            err.Error(),
-			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+			Reason:             hyperv1.NodePoolValidationFailedReason,
 			ObservedGeneration: nodePool.Generation,
 		})
 		// We don't return the error here as reconciling won't solve the input problem.
@@ -269,16 +292,16 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		log.Error(err, "validating management parameters failed")
 		return ctrl.Result{}, nil
 	}
-	setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+	SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 		Type:               hyperv1.NodePoolUpdateManagementEnabledConditionType,
 		Status:             corev1.ConditionTrue,
-		Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+		Reason:             hyperv1.AsExpectedReason,
 		ObservedGeneration: nodePool.Generation,
 	})
 
 	// Validate IgnitionEndpoint.
 	if ignEndpoint == "" {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               string(hyperv1.IgnitionEndpointAvailable),
 			Status:             corev1.ConditionFalse,
 			Message:            "Ignition endpoint not available, waiting",
@@ -294,7 +317,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 	caSecret := ignitionserver.IgnitionCACertSecret(controlPlaneNamespace)
 	if err := r.Get(ctx, client.ObjectKeyFromObject(caSecret), caSecret); err != nil {
 		if apierrors.IsNotFound(err) {
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 				Type:               string(hyperv1.IgnitionEndpointAvailable),
 				Status:             corev1.ConditionFalse,
 				Reason:             hyperv1.IgnitionCACertMissingReason,
@@ -311,7 +334,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 
 	caCertBytes, hasCACert := caSecret.Data[corev1.TLSCertKey]
 	if !hasCACert {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               string(hyperv1.IgnitionEndpointAvailable),
 			Status:             corev1.ConditionFalse,
 			Reason:             hyperv1.IgnitionCACertMissingReason,
@@ -324,26 +347,26 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 	removeStatusCondition(&nodePool.Status.Conditions, string(hyperv1.IgnitionEndpointAvailable))
 
 	// Validate and get releaseImage.
-	releaseImage, err := r.getReleaseImage(ctx, hcluster, nodePool.Spec.Release.Image)
+	releaseImage, err := r.getReleaseImage(ctx, hcluster, nodePool.Status.Version, nodePool.Spec.Release.Image)
 	if err != nil {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolValidReleaseImageConditionType,
 			Status:             corev1.ConditionFalse,
-			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+			Reason:             hyperv1.NodePoolValidationFailedReason,
 			Message:            fmt.Sprintf("Failed to get release image: %v", err.Error()),
 			ObservedGeneration: nodePool.Generation,
 		})
 		return ctrl.Result{}, fmt.Errorf("failed to look up release image metadata: %w", err)
 	}
-	setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+	SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 		Type:               hyperv1.NodePoolValidReleaseImageConditionType,
 		Status:             corev1.ConditionTrue,
-		Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+		Reason:             hyperv1.AsExpectedReason,
 		Message:            fmt.Sprintf("Using release image: %s", nodePool.Spec.Release.Image),
 		ObservedGeneration: nodePool.Generation,
 	})
 
-	// Validate platform specific input.
+	// Validate AWS platform specific input
 	var ami string
 	if nodePool.Spec.Platform.Type == hyperv1.AWSPlatform {
 		if hcluster.Spec.Platform.AWS == nil {
@@ -352,93 +375,112 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		if nodePool.Spec.Platform.AWS.AMI != "" {
 			ami = nodePool.Spec.Platform.AWS.AMI
 			// User-defined AMIs cannot be validated
-			removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolValidAMIConditionType)
+			removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolValidPlatformImageType)
 		} else {
 			// TODO: Should the region be included in the NodePool platform information?
 			ami, err = defaultNodePoolAMI(hcluster.Spec.Platform.AWS.Region, releaseImage)
 			if err != nil {
-				setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-					Type:               hyperv1.NodePoolValidAMIConditionType,
+				SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+					Type:               hyperv1.NodePoolValidPlatformImageType,
 					Status:             corev1.ConditionFalse,
-					Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+					Reason:             hyperv1.NodePoolValidationFailedReason,
 					Message:            fmt.Sprintf("Couldn't discover an AMI for release image %q: %s", nodePool.Spec.Release.Image, err.Error()),
 					ObservedGeneration: nodePool.Generation,
 				})
 				return ctrl.Result{}, fmt.Errorf("couldn't discover an AMI for release image: %w", err)
 			}
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-				Type:               hyperv1.NodePoolValidAMIConditionType,
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidPlatformImageType,
 				Status:             corev1.ConditionTrue,
-				Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+				Reason:             hyperv1.AsExpectedReason,
 				Message:            fmt.Sprintf("Bootstrap AMI is %q", ami),
+				ObservedGeneration: nodePool.Generation,
+			})
+		}
+
+		if len(nodePool.Spec.Platform.AWS.SecurityGroups) == 0 &&
+			(hcluster.Status.Platform == nil || hcluster.Status.Platform.AWS == nil || hcluster.Status.Platform.AWS.DefaultWorkerSecurityGroupID == "") {
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolAWSSecurityGroupAvailableConditionType,
+				Status:             corev1.ConditionFalse,
+				Reason:             hyperv1.DefaultAWSSecurityGroupNotReadyReason,
+				Message:            "Waiting for AWS default security group to be created for hosted cluster",
+				ObservedGeneration: nodePool.Generation,
+			})
+		} else {
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolAWSSecurityGroupAvailableConditionType,
+				Status:             corev1.ConditionTrue,
+				Reason:             hyperv1.AsExpectedReason,
+				Message:            "NodePool has a security group",
 				ObservedGeneration: nodePool.Generation,
 			})
 		}
 	}
 
-	// Validate PowerVS platform specific input.
+	// Validate PowerVS platform specific input
 	var coreOSPowerVSImage *releaseinfo.CoreOSPowerVSImage
 	var powervsImageRegion string
 	var powervsBootImage string
 	if nodePool.Spec.Platform.Type == hyperv1.PowerVSPlatform {
 		coreOSPowerVSImage, powervsImageRegion, err = getPowerVSImage(hcluster.Spec.Platform.PowerVS.Region, releaseImage)
 		if err != nil {
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-				Type:               hyperv1.NodePoolValidPowerVSImageConditionType,
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidPlatformImageType,
 				Status:             corev1.ConditionFalse,
-				Reason:             hyperv1.NodePoolValidationFailedConditionReason,
-				Message:            fmt.Sprintf("Couldn't discover an PowerVS Image for release image %q: %s", nodePool.Spec.Release.Image, err.Error()),
+				Reason:             hyperv1.NodePoolValidationFailedReason,
+				Message:            fmt.Sprintf("Couldn't discover a PowerVS Image for release image %q: %s", nodePool.Spec.Release.Image, err.Error()),
 				ObservedGeneration: nodePool.Generation,
 			})
-			return ctrl.Result{}, fmt.Errorf("couldn't discover PowerVS Image for release image: %w", err)
+			return ctrl.Result{}, fmt.Errorf("couldn't discover a PowerVS Image for release image: %w", err)
 		}
 		powervsBootImage = coreOSPowerVSImage.Release
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-			Type:               hyperv1.NodePoolValidPowerVSImageConditionType,
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolValidPlatformImageType,
 			Status:             corev1.ConditionTrue,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			Message:            fmt.Sprintf("Bootstrap PowerVS Image is %q", powervsBootImage),
 			ObservedGeneration: nodePool.Generation,
 		})
 	}
 
-	// Validate KubeVirt platform specific format
+	// Validate KubeVirt platform specific input
 	var kubevirtBootImage string
 	if nodePool.Spec.Platform.Type == hyperv1.KubevirtPlatform {
-		if err := kubevirtPlatformValidation(nodePool); err != nil {
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-				Type:               hyperv1.NodePoolValidKubevirtConfigConditionType,
+		if err := kubevirt.PlatformValidation(nodePool); err != nil {
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 				Status:             corev1.ConditionFalse,
-				Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+				Reason:             hyperv1.NodePoolValidationFailedReason,
 				Message:            fmt.Sprintf("validation of NodePool KubeVirt platform failed: %s", err.Error()),
 				ObservedGeneration: nodePool.Generation,
 			})
 			return ctrl.Result{}, fmt.Errorf("validation of NodePool KubeVirt platform failed: %w", err)
 		}
-		removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolValidKubevirtConfigConditionType)
+		removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolValidMachineConfigConditionType)
 
-		kubevirtBootImage, err = getKubeVirtImage(nodePool, releaseImage)
+		kubevirtBootImage, err = kubevirt.GetImage(nodePool, releaseImage)
 		if err != nil {
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-				Type:               hyperv1.NodePoolValidKubeVirtImageConditionType,
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidPlatformImageType,
 				Status:             corev1.ConditionFalse,
-				Reason:             hyperv1.NodePoolValidationFailedConditionReason,
-				Message:            fmt.Sprintf("Couldn't discover an KubeVirt Image for release image %q: %s", nodePool.Spec.Release.Image, err.Error()),
+				Reason:             hyperv1.NodePoolValidationFailedReason,
+				Message:            fmt.Sprintf("Couldn't discover a KubeVirt Image for release image %q: %s", nodePool.Spec.Release.Image, err.Error()),
 				ObservedGeneration: nodePool.Generation,
 			})
-			return ctrl.Result{}, fmt.Errorf("couldn't discover an KubeVirt disk image in release payload image: %w", err)
+			return ctrl.Result{}, fmt.Errorf("couldn't discover a KubeVirt Image in release payload image: %w", err)
 		}
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
-			Type:               hyperv1.NodePoolValidKubeVirtImageConditionType,
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolValidPlatformImageType,
 			Status:             corev1.ConditionTrue,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			Message:            fmt.Sprintf("Bootstrap KubeVirt Image is %q", kubevirtBootImage),
 			ObservedGeneration: nodePool.Generation,
 		})
 	}
 
 	// Validate config input.
-	// 3 generic core config resoures: fips, ssh and haproxy.
+	// 3 generic core config resources: fips, ssh and haproxy.
 	// TODO (alberto): consider moving the expectedCoreConfigResources check
 	// into the token Secret controller so we don't block Machine infra creation on this.
 	expectedCoreConfigResources := 3
@@ -448,41 +490,52 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 	}
 	config, missingConfigs, err := r.getConfig(ctx, nodePool, expectedCoreConfigResources, controlPlaneNamespace, releaseImage, hcluster)
 	if err != nil {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 			Status:             corev1.ConditionFalse,
-			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+			Reason:             hyperv1.NodePoolValidationFailedReason,
 			Message:            err.Error(),
 			ObservedGeneration: nodePool.Generation,
 		})
 		return ctrl.Result{}, fmt.Errorf("failed to get config: %w", err)
 	}
 	if missingConfigs {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 			Status:             corev1.ConditionFalse,
-			Reason:             hyperv1.NodePoolValidationFailedConditionReason,
+			Reason:             hyperv1.NodePoolValidationFailedReason,
 			Message:            "Core ignition config has not been created yet",
 			ObservedGeneration: nodePool.Generation,
 		})
 		// We watch configmaps so we will get an event when these get created
 		return ctrl.Result{}, nil
 	}
-	setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+	SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 		Type:               hyperv1.NodePoolValidMachineConfigConditionType,
 		Status:             corev1.ConditionTrue,
-		Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+		Reason:             hyperv1.AsExpectedReason,
 		ObservedGeneration: nodePool.Generation,
 	})
 
+	// Initialize NodePool annotations
+	if nodePool.Annotations == nil {
+		nodePool.Annotations = make(map[string]string)
+	}
+
+	// Retrieve pull secret name to check for changes when config is checked for updates
+	pullSecretName, err := r.getPullSecretName(ctx, hcluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Check if config needs to be updated.
-	targetConfigHash := hashStruct(config)
+	targetConfigHash := supportutil.HashStruct(config + pullSecretName)
 	isUpdatingConfig := isUpdatingConfig(nodePool, targetConfigHash)
 	if isUpdatingConfig {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolUpdatingConfigConditionType,
 			Status:             corev1.ConditionTrue,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			Message:            fmt.Sprintf("Updating config in progress. Target config: %s", targetConfigHash),
 			ObservedGeneration: nodePool.Generation,
 		})
@@ -493,14 +546,14 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolUpdatingConfigConditionType)
 	}
 
-	// Check if version needs to be updated.
+	// Check if release image version needs to be updated.
 	targetVersion := releaseImage.Version()
 	isUpdatingVersion := isUpdatingVersion(nodePool, targetVersion)
 	if isUpdatingVersion {
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolUpdatingVersionConditionType,
 			Status:             corev1.ConditionTrue,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			Message:            fmt.Sprintf("Updating version in progress. Target version: %s", targetVersion),
 			ObservedGeneration: nodePool.Generation,
 		})
@@ -510,8 +563,43 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		removeStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolUpdatingVersionConditionType)
 	}
 
+	// Signal ignition payload generation
+	targetPayloadConfigHash := supportutil.HashStruct(config + targetVersion + pullSecretName)
+	tokenSecret := TokenSecret(controlPlaneNamespace, nodePool.Name, targetPayloadConfigHash)
+	condition, err := r.createValidGeneratedPayloadCondition(ctx, tokenSecret, nodePool.Generation)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("error setting ValidGeneratedPayload condition: %w", err)
+	}
+	SetStatusCondition(&nodePool.Status.Conditions, *condition)
+
+	reachedIgnitionEndpointCondition, err := r.createReachedIgnitionEndpointCondition(ctx, tokenSecret, nodePool.Generation)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("error setting IgnitionReached condition: %w", err)
+	}
+	SetStatusCondition(&nodePool.Status.Conditions, *reachedIgnitionEndpointCondition)
+
+	// Validate tuningConfig input.
+	tuningConfig, err := r.getTuningConfig(ctx, nodePool)
+	if err != nil {
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolValidTuningConfigConditionType,
+			Status:             corev1.ConditionFalse,
+			Reason:             hyperv1.NodePoolValidationFailedReason,
+			Message:            err.Error(),
+			ObservedGeneration: nodePool.Generation,
+		})
+		return ctrl.Result{}, fmt.Errorf("failed to get tuningConfig: %w", err)
+	}
+
+	SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		Type:               hyperv1.NodePoolValidTuningConfigConditionType,
+		Status:             corev1.ConditionTrue,
+		Reason:             hyperv1.AsExpectedReason,
+		ObservedGeneration: nodePool.Generation,
+	})
+
 	// Set ReconciliationActive condition
-	setStatusCondition(&nodePool.Status.Conditions, generateReconciliationActiveCondition(nodePool.Spec.PausedUntil, nodePool.Generation))
+	SetStatusCondition(&nodePool.Status.Conditions, generateReconciliationActiveCondition(nodePool.Spec.PausedUntil, nodePool.Generation))
 
 	// If reconciliation is paused we return before modifying any state
 	if isPaused, duration := supportutil.IsReconciliationPaused(log, nodePool.Spec.PausedUntil); isPaused {
@@ -529,15 +617,142 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		return ctrl.Result{RequeueAfter: duration}, nil
 	}
 
-	// 2. - Reconcile towards expected state of the world.
-	targetConfigVersionHash := hashStruct(config + targetVersion)
-	compressedConfig, err := compress([]byte(config))
+	tuningConfigMap := TuningConfigMap(controlPlaneNamespace, nodePool.Name)
+	if tuningConfig == "" {
+		err = r.Get(ctx, client.ObjectKeyFromObject(tuningConfigMap), tuningConfigMap)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to get tuningConfig ConfigMap: %w", err)
+		}
+		if err == nil {
+			if err := r.Delete(ctx, tuningConfigMap); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to delete tuningConfig ConfigMap with no Tuneds defined: %w", err)
+			}
+		}
+	} else {
+		if result, err := r.CreateOrUpdate(ctx, r.Client, tuningConfigMap, func() error {
+			return reconcileTuningConfigMap(tuningConfigMap, nodePool, tuningConfig)
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to reconcile Tuned ConfigMap: %w", err)
+		} else {
+			log.Info("Reconciled Tuned ConfigMap", "result", result)
+		}
+	}
+
+	// Set AllMachinesReadyCondition.
+	// Get all Machines for NodePool.
+	machines, err := r.getMachinesForNodePool(nodePool)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to compress config: %w", err)
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolAllMachinesReadyConditionType,
+			Status:             corev1.ConditionUnknown,
+			Reason:             hyperv1.NodePoolFailedToGetReason,
+			Message:            err.Error(),
+			ObservedGeneration: nodePool.Generation,
+		})
+		return ctrl.Result{}, fmt.Errorf("failed to get Machines: %w", err)
+	}
+
+	status := corev1.ConditionTrue
+	reason := hyperv1.AsExpectedReason
+	var message string
+
+	if len(machines) < 1 {
+		status = corev1.ConditionFalse
+		reason = hyperv1.NodePoolNotFoundReason
+		message = "No Machines are created"
+	}
+
+	// Aggregate conditions.
+	// TODO (alberto): consider bubbling failureReason / failureMessage.
+	// This a rudimentary approach which aggregates every Machine, until
+	// https://github.com/kubernetes-sigs/cluster-api/pull/6218 and
+	// https://github.com/kubernetes-sigs/cluster-api/pull/6025
+	// are solved.
+	// Eventually we should solve this in CAPI to make it available in MachineDeployments / MachineSets
+	// with a consumable "Reason" and an aggregated "Message".
+	for _, machine := range machines {
+		condition := findCAPIStatusCondition(machine.Status.Conditions, capiv1.ReadyCondition)
+		if condition != nil && condition.Status != corev1.ConditionTrue {
+			status = corev1.ConditionFalse
+			reason = condition.Reason
+			// We append the reason as part of the higher Message, since the message is meaningless.
+			// This is how a CAPI condition looks like in AWS for an instance deleted out of band failure.
+			//	- lastTransitionTime: "2022-11-28T15:14:28Z"
+			//		message: 1 of 2 completed
+			//		reason: InstanceTerminated
+			//		severity: Error
+			//		status: "False"
+			//		type: Ready
+			message = message + fmt.Sprintf("Machine %s: %s\n", machine.Name, condition.Reason)
+		}
+	}
+
+	if status == corev1.ConditionTrue {
+		message = hyperv1.AllIsWellMessage
+	}
+
+	SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		Type:               hyperv1.NodePoolAllMachinesReadyConditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: nodePool.Generation,
+	})
+
+	// Set AllNodesHealthyCondition.
+	status = corev1.ConditionTrue
+	reason = hyperv1.AsExpectedReason
+	message = ""
+
+	if len(machines) < 1 {
+		status = corev1.ConditionFalse
+		reason = hyperv1.NodePoolNotFoundReason
+		message = "No Machines are created"
+	}
+
+	for _, machine := range machines {
+		condition := findCAPIStatusCondition(machine.Status.Conditions, capiv1.MachineNodeHealthyCondition)
+		if condition != nil && condition.Status != corev1.ConditionTrue {
+			status = corev1.ConditionFalse
+			reason = condition.Reason
+			message = message + fmt.Sprintf("Machine %s: %s\n", machine.Name, condition.Reason)
+		}
+	}
+
+	if status == corev1.ConditionTrue {
+		message = hyperv1.AllIsWellMessage
+	}
+
+	SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		Type:               hyperv1.NodePoolAllNodesHealthyConditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: nodePool.Generation,
+	})
+
+	// 2. - Reconcile towards expected state of the world.
+	compressedConfig, err := supportutil.CompressAndEncode([]byte(config))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to compress and decode config: %w", err)
+	}
+
+	cpoCapabilities, err := r.detectCPOCapabilities(ctx, hcluster)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to detect CPO capabilities: %w", err)
+	}
+
+	// TODO (alberto): Drop this after dropping < 4.12 support.
+	// So all CPOs ign server will know to decompress and decode.
+	if !cpoCapabilities.DecompressAndDecodeConfig {
+		compressedConfig, err = supportutil.Compress([]byte(config))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to compress config: %w", err)
+		}
 	}
 
 	// Token Secrets exist for each NodePool config/version and follow "prefixName-configVersionHash" naming convention.
-	// Ensure old configVersionHash resources are deleted, i.e token Secret and userdata Secret.
+	// Ensure old configVersionHash resources are deleted, i.e. token Secret and userdata Secret.
 	if isUpdatingVersion || isUpdatingConfig {
 		tokenSecret := TokenSecret(controlPlaneNamespace, nodePool.Name, nodePool.GetAnnotations()[nodePoolAnnotationCurrentConfigVersion])
 		err := r.Get(ctx, client.ObjectKeyFromObject(tokenSecret), tokenSecret)
@@ -550,21 +765,30 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 			}
 		}
 
-		userDataSecret := IgnitionUserDataSecret(controlPlaneNamespace, nodePool.GetName(), nodePool.GetAnnotations()[nodePoolAnnotationCurrentConfigVersion])
-		err = r.Get(ctx, client.ObjectKeyFromObject(userDataSecret), userDataSecret)
-		if err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("failed to get user data Secret: %w", err)
-		}
-		if err == nil {
-			if err := r.Delete(ctx, userDataSecret); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("failed to delete user data Secret: %w", err)
+		// For AWS, we keep the old userdata Secret so old Machines during rolled out can be deleted.
+		// Otherwise, deletion fails because of https://github.com/kubernetes-sigs/cluster-api-provider-aws/pull/3805.
+		// TODO (Alberto): enable back deletion when the PR above gets merged.
+		if nodePool.Spec.Platform.Type != hyperv1.AWSPlatform {
+			userDataSecret := IgnitionUserDataSecret(controlPlaneNamespace, nodePool.GetName(), nodePool.GetAnnotations()[nodePoolAnnotationCurrentConfigVersion])
+			err = r.Get(ctx, client.ObjectKeyFromObject(userDataSecret), userDataSecret)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("failed to get user data Secret: %w", err)
+			}
+			if err == nil {
+				if err := r.Delete(ctx, userDataSecret); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("failed to delete user data Secret: %w", err)
+				}
 			}
 		}
 	}
 
-	tokenSecret := TokenSecret(controlPlaneNamespace, nodePool.Name, targetConfigVersionHash)
+	tokenSecret = TokenSecret(controlPlaneNamespace, nodePool.Name, targetPayloadConfigHash)
+	pullSecretBytes, err := r.getPullSecretBytes(ctx, hcluster)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get pull secret bytes: %w", err)
+	}
 	if result, err := r.CreateOrUpdate(ctx, r.Client, tokenSecret, func() error {
-		return reconcileTokenSecret(tokenSecret, nodePool, compressedConfig)
+		return reconcileTokenSecret(tokenSecret, nodePool, compressedConfig.Bytes(), pullSecretBytes)
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to reconcile token Secret: %w", err)
 	} else {
@@ -577,9 +801,9 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		return ctrl.Result{}, fmt.Errorf("token secret is missing token key")
 	}
 
-	userDataSecret := IgnitionUserDataSecret(controlPlaneNamespace, nodePool.GetName(), targetConfigVersionHash)
+	userDataSecret := IgnitionUserDataSecret(controlPlaneNamespace, nodePool.GetName(), targetPayloadConfigHash)
 	if result, err := r.CreateOrUpdate(ctx, r.Client, userDataSecret, func() error {
-		return reconcileUserDataSecret(userDataSecret, nodePool, caCertBytes, tokenBytes, ignEndpoint, proxy)
+		return reconcileUserDataSecret(userDataSecret, nodePool, caCertBytes, tokenBytes, ignEndpoint, targetPayloadConfigHash, proxy)
 	}); err != nil {
 		return ctrl.Result{}, err
 	} else {
@@ -599,7 +823,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 				"previous", nodePool.Annotations[nodePoolAnnotationCurrentConfig], "new", targetConfigHash)
 			nodePool.Annotations[nodePoolAnnotationCurrentConfig] = targetConfigHash
 		}
-		nodePool.Annotations[nodePoolAnnotationCurrentConfigVersion] = targetConfigVersionHash
+		nodePool.Annotations[nodePoolAnnotationCurrentConfigVersion] = targetPayloadConfigHash
 		return ctrl.Result{}, nil
 	}
 
@@ -618,8 +842,12 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 	}
 
 	// Reconcile (Platform)MachineTemplate.
-	template, mutateTemplate, machineTemplateSpecJSON, err := machineTemplateBuilders(hcluster, nodePool, infraID, ami, powervsBootImage, kubevirtBootImage)
+	template, mutateTemplate, machineTemplateSpecJSON, err := machineTemplateBuilders(hcluster, nodePool, infraID, ami, powervsBootImage, kubevirtBootImage, cpoCapabilities.CreateDefaultAWSSecurityGroup)
 	if err != nil {
+		if _, isNotReady := err.(*NotReadyError); isNotReady {
+			log.Info("Waiting to create machine template", "message", err.Error())
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
 		return ctrl.Result{}, err
 	}
 	if result, err := r.CreateOrUpdate(ctx, r.Client, template, func() error {
@@ -639,7 +867,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 				userDataSecret,
 				template,
 				infraID,
-				targetVersion, targetConfigHash, targetConfigVersionHash, machineTemplateSpecJSON)
+				targetVersion, targetConfigHash, targetPayloadConfigHash, machineTemplateSpecJSON)
 		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile MachineSet %q: %w",
 				client.ObjectKeyFromObject(ms).String(), err)
@@ -657,7 +885,7 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 				userDataSecret,
 				template,
 				infraID,
-				targetVersion, targetConfigHash, targetConfigVersionHash, machineTemplateSpecJSON)
+				targetVersion, targetConfigHash, targetPayloadConfigHash, machineTemplateSpecJSON)
 		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to reconcile MachineDeployment %q: %w",
 				client.ObjectKeyFromObject(md).String(), err)
@@ -668,6 +896,11 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 
 	mhc := machineHealthCheck(nodePool, controlPlaneNamespace)
 	if nodePool.Spec.Management.AutoRepair {
+		if c := FindStatusCondition(nodePool.Status.Conditions, hyperv1.NodePoolReachedIgnitionEndpoint); c == nil || c.Status != corev1.ConditionTrue {
+			log.Info("ReachedIgnitionEndpoint is false, MachineHealthCheck won't be created until this is true")
+			return ctrl.Result{}, nil
+		}
+
 		if result, err := ctrl.CreateOrUpdate(ctx, r.Client, mhc, func() error {
 			return r.reconcileMachineHealthCheck(mhc, nodePool, infraID)
 		}); err != nil {
@@ -676,10 +909,10 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 		} else {
 			log.Info("Reconciled MachineHealthCheck", "result", result)
 		}
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolAutorepairEnabledConditionType,
 			Status:             corev1.ConditionTrue,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			ObservedGeneration: nodePool.Generation,
 		})
 	} else {
@@ -692,14 +925,112 @@ func (r *NodePoolReconciler) reconcile(ctx context.Context, hcluster *hyperv1.Ho
 				return ctrl.Result{}, err
 			}
 		}
-		setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+		SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 			Type:               hyperv1.NodePoolAutorepairEnabledConditionType,
 			Status:             corev1.ConditionFalse,
-			Reason:             hyperv1.NodePoolAsExpectedConditionReason,
+			Reason:             hyperv1.AsExpectedReason,
 			ObservedGeneration: nodePool.Generation,
 		})
 	}
 	return ctrl.Result{}, nil
+}
+
+// createReachedIgnitionEndpointCondition creates a condition for the NodePool based on the tokenSecret data.
+func (r NodePoolReconciler) createReachedIgnitionEndpointCondition(ctx context.Context, tokenSecret *corev1.Secret, generation int64) (*hyperv1.NodePoolCondition, error) {
+	var condition *hyperv1.NodePoolCondition
+	if err := r.Get(ctx, client.ObjectKeyFromObject(tokenSecret), tokenSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			condition = &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolReachedIgnitionEndpoint,
+				Status:             corev1.ConditionFalse,
+				Reason:             hyperv1.NodePoolFailedToGetReason,
+				Message:            err.Error(),
+				ObservedGeneration: generation,
+			}
+			return nil, fmt.Errorf("failed to get token secret: %w", err)
+		} else {
+			condition = &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolReachedIgnitionEndpoint,
+				Status:             corev1.ConditionFalse,
+				Reason:             hyperv1.NodePoolNotFoundReason,
+				Message:            err.Error(),
+				ObservedGeneration: generation,
+			}
+		}
+		return condition, nil
+	}
+
+	if _, ok := tokenSecret.Annotations[TokenSecretIgnitionReachedAnnotation]; !ok {
+		condition = &hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolReachedIgnitionEndpoint,
+			Status:             corev1.ConditionFalse,
+			Reason:             hyperv1.IgnitionNotReached,
+			Message:            "",
+			ObservedGeneration: generation,
+		}
+		return condition, nil
+	}
+
+	condition = &hyperv1.NodePoolCondition{
+		Type:               hyperv1.NodePoolReachedIgnitionEndpoint,
+		Status:             corev1.ConditionTrue,
+		Reason:             hyperv1.AsExpectedReason,
+		Message:            "",
+		ObservedGeneration: generation,
+	}
+
+	return condition, nil
+}
+
+// createValidGeneratedPayloadCondition creates a condition for the NodePool based on the tokenSecret data.
+func (r NodePoolReconciler) createValidGeneratedPayloadCondition(ctx context.Context, tokenSecret *corev1.Secret, generation int64) (*hyperv1.NodePoolCondition, error) {
+	var condition *hyperv1.NodePoolCondition
+	if err := r.Get(ctx, client.ObjectKeyFromObject(tokenSecret), tokenSecret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			condition = &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+				Status:             corev1.ConditionFalse,
+				Reason:             hyperv1.NodePoolFailedToGetReason,
+				Message:            err.Error(),
+				ObservedGeneration: generation,
+			}
+			return nil, fmt.Errorf("failed to get token secret: %w", err)
+		} else {
+			condition = &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+				Status:             corev1.ConditionFalse,
+				Reason:             hyperv1.NodePoolNotFoundReason,
+				Message:            err.Error(),
+				ObservedGeneration: generation,
+			}
+		}
+		return condition, nil
+	}
+
+	if _, ok := tokenSecret.Data[ignserver.TokenSecretReasonKey]; !ok {
+		condition = &hyperv1.NodePoolCondition{
+			Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+			Status:             corev1.ConditionUnknown,
+			Reason:             string(tokenSecret.Data[ignserver.TokenSecretReasonKey]),
+			Message:            "Unable to get status data from token secret",
+			ObservedGeneration: generation,
+		}
+		return condition, nil
+	}
+
+	var status corev1.ConditionStatus
+	if string(tokenSecret.Data[ignserver.TokenSecretReasonKey]) == hyperv1.AsExpectedReason {
+		status = corev1.ConditionTrue
+	}
+	condition = &hyperv1.NodePoolCondition{
+		Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+		Status:             status,
+		Reason:             string(tokenSecret.Data[ignserver.TokenSecretReasonKey]),
+		Message:            string(tokenSecret.Data[ignserver.TokenSecretMessageKey]),
+		ObservedGeneration: generation,
+	}
+
+	return condition, nil
 }
 
 func deleteMachineDeployment(ctx context.Context, c client.Client, md *capiv1.MachineDeployment) error {
@@ -815,7 +1146,42 @@ func (r *NodePoolReconciler) delete(ctx context.Context, nodePool *hyperv1.NodeP
 		}
 	}
 
-	// Delete any secret belonging to this NodePool i.e token Secret and userdata Secret.
+	if err := deleteMachineDeployment(ctx, r.Client, md); err != nil {
+		return fmt.Errorf("failed to delete MachineDeployment: %w", err)
+	}
+
+	if err := deleteMachineHealthCheck(ctx, r.Client, mhc); err != nil {
+		return fmt.Errorf("failed to delete MachineHealthCheck: %w", err)
+	}
+
+	if err := deleteMachineSet(ctx, r.Client, ms); err != nil {
+		return fmt.Errorf("failed to delete MachineSet: %w", err)
+	}
+
+	// Delete any ConfigMap belonging to this NodePool i.e. TunedConfig ConfigMaps.
+	err = r.DeleteAllOf(ctx, &corev1.ConfigMap{},
+		client.InNamespace(controlPlaneNamespace),
+		client.MatchingLabels{nodePoolAnnotation: nodePool.GetName()},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete ConfigMaps with nodePool label: %w", err)
+	}
+
+	// Ensure all machines in NodePool are deleted
+	if err = r.ensureMachineDeletion(nodePool); err != nil {
+		return err
+	}
+
+	// Delete all secrets related to the NodePool
+	if err := r.deleteNodePoolSecrets(ctx, nodePool); err != nil {
+		return fmt.Errorf("failed to delete NodePool secrets: %w", err)
+	}
+
+	return nil
+}
+
+// deleteNodePoolSecrets deletes any secret belonging to this NodePool (ex. token Secret and userdata Secret)
+func (r *NodePoolReconciler) deleteNodePoolSecrets(ctx context.Context, nodePool *hyperv1.NodePool) error {
 	secrets, err := r.listSecrets(ctx, nodePool)
 	if err != nil {
 		return fmt.Errorf("failed to list secrets: %w", err)
@@ -825,27 +1191,15 @@ func (r *NodePoolReconciler) delete(ctx context.Context, nodePool *hyperv1.NodeP
 			return fmt.Errorf("failed to delete secret: %w", err)
 		}
 	}
-
-	if err := deleteMachineDeployment(ctx, r.Client, md); err != nil {
-		return fmt.Errorf("failed to delete MachineDeployment: %w", err)
-	}
-
-	if err := deleteMachineSet(ctx, r.Client, ms); err != nil {
-		return fmt.Errorf("failed to delete MachineSet: %w", err)
-	}
-
-	if err := deleteMachineHealthCheck(ctx, r.Client, mhc); err != nil {
-		return fmt.Errorf("failed to delete MachineHealthCheck: %w", err)
-	}
 	return nil
 }
 
-func reconcileUserDataSecret(userDataSecret *corev1.Secret, nodePool *hyperv1.NodePool, CA, token []byte, ignEndpoint string, proxy *configv1.Proxy) error {
+func reconcileUserDataSecret(userDataSecret *corev1.Secret, nodePool *hyperv1.NodePool, CA, token []byte, ignEndpoint, targetConfigVersionHash string, proxy *configv1.Proxy) error {
 	// The token secret controller deletes expired token Secrets.
 	// When that happens the NodePool controller reconciles and create a new one.
 	// Then it reconciles the userData Secret with the new generated token.
-	// Therefore this secret is mutable.
-	userDataSecret.Immutable = k8sutilspointer.BoolPtr(false)
+	// Therefore, this secret is mutable.
+	userDataSecret.Immutable = k8sutilspointer.Bool(false)
 
 	if userDataSecret.Annotations == nil {
 		userDataSecret.Annotations = make(map[string]string)
@@ -854,7 +1208,7 @@ func reconcileUserDataSecret(userDataSecret *corev1.Secret, nodePool *hyperv1.No
 
 	encodedCACert := base64.StdEncoding.EncodeToString(CA)
 	encodedToken := base64.StdEncoding.EncodeToString(token)
-	ignConfig := ignConfig(encodedCACert, encodedToken, ignEndpoint, proxy)
+	ignConfig := ignConfig(encodedCACert, encodedToken, ignEndpoint, targetConfigVersionHash, proxy, nodePool)
 	userDataValue, err := json.Marshal(ignConfig)
 	if err != nil {
 		return fmt.Errorf("failed to marshal ignition config: %w", err)
@@ -866,16 +1220,41 @@ func reconcileUserDataSecret(userDataSecret *corev1.Secret, nodePool *hyperv1.No
 	return nil
 }
 
-func reconcileTokenSecret(tokenSecret *corev1.Secret, nodePool *hyperv1.NodePool, compressedConfig []byte) error {
+// reconcileTuningConfigMap inserts the Tuned object manifest in tuningConfig into ConfigMap tuningConfigMap.
+// This is used to mirror the Tuned object manifest into the control plane namespace, for the Node
+// Tuning Operator to mirror and reconcile in the hosted cluster.
+func reconcileTuningConfigMap(tuningConfigMap *corev1.ConfigMap, nodePool *hyperv1.NodePool, tuningConfig string) error {
+	tuningConfigMap.Immutable = k8sutilspointer.Bool(false)
+	if tuningConfigMap.Annotations == nil {
+		tuningConfigMap.Annotations = make(map[string]string)
+	}
+	if tuningConfigMap.Labels == nil {
+		tuningConfigMap.Labels = make(map[string]string)
+	}
+
+	tuningConfigMap.Labels[tuningConfigMapLabel] = "true"
+	tuningConfigMap.Annotations[nodePoolAnnotation] = nodePool.GetName()
+	tuningConfigMap.Labels[nodePoolAnnotation] = nodePool.GetName()
+
+	if tuningConfigMap.Data == nil {
+		tuningConfigMap.Data = map[string]string{}
+	}
+	tuningConfigMap.Data[tuningConfigKey] = tuningConfig
+
+	return nil
+}
+
+func reconcileTokenSecret(tokenSecret *corev1.Secret, nodePool *hyperv1.NodePool, compressedConfig []byte, pullSecret []byte) error {
 	// The token secret controller updates expired token IDs for token Secrets.
 	// When that happens the NodePool controller reconciles the userData Secret with the new token ID.
-	// Therefore this secret is mutable.
-	tokenSecret.Immutable = k8sutilspointer.BoolPtr(false)
+	// Therefore, this secret is mutable.
+	tokenSecret.Immutable = k8sutilspointer.Bool(false)
 	if tokenSecret.Annotations == nil {
 		tokenSecret.Annotations = make(map[string]string)
 	}
 
 	tokenSecret.Annotations[TokenSecretAnnotation] = "true"
+	tokenSecret.Annotations[TokenSecretNodePoolUpgradeType] = string(nodePool.Spec.Management.UpgradeType)
 	tokenSecret.Annotations[nodePoolAnnotation] = client.ObjectKeyFromObject(nodePool).String()
 	// active token should never be marked as expired.
 	delete(tokenSecret.Annotations, hyperv1.IgnitionServerTokenExpirationTimestampAnnotation)
@@ -886,6 +1265,7 @@ func reconcileTokenSecret(tokenSecret *corev1.Secret, nodePool *hyperv1.NodePool
 		tokenSecret.Data[TokenSecretTokenKey] = []byte(uuid.New().String())
 		tokenSecret.Data[TokenSecretReleaseKey] = []byte(nodePool.Spec.Release.Image)
 		tokenSecret.Data[TokenSecretConfigKey] = compressedConfig
+		tokenSecret.Data[TokenSecretPullSecretHashKey] = []byte(supportutil.HashStruct(pullSecret))
 	}
 	return nil
 }
@@ -912,7 +1292,7 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 	machineDeployment.Labels[capiv1.ClusterLabelName] = CAPIClusterName
 
 	resourcesName := generateName(CAPIClusterName, nodePool.Spec.ClusterName, nodePool.GetName())
-	machineDeployment.Spec.MinReadySeconds = k8sutilspointer.Int32Ptr(int32(0))
+	machineDeployment.Spec.MinReadySeconds = k8sutilspointer.Int32(int32(0))
 
 	gvk, err := apiutil.GVKForObject(machineTemplateCR, api.Scheme)
 	if err != nil {
@@ -922,9 +1302,9 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 	// Set defaults. These are normally set by the CAPI machinedeployment webhook.
 	// However, since we don't run the webhook, CAPI updates the machinedeployment
 	// after it has been created with defaults.
-	machineDeployment.Spec.MinReadySeconds = k8sutilspointer.Int32Ptr(0)
-	machineDeployment.Spec.RevisionHistoryLimit = k8sutilspointer.Int32Ptr(1)
-	machineDeployment.Spec.ProgressDeadlineSeconds = k8sutilspointer.Int32Ptr(600)
+	machineDeployment.Spec.MinReadySeconds = k8sutilspointer.Int32(0)
+	machineDeployment.Spec.RevisionHistoryLimit = k8sutilspointer.Int32(1)
+	machineDeployment.Spec.ProgressDeadlineSeconds = k8sutilspointer.Int32(600)
 
 	// Set selector and template
 	machineDeployment.Spec.ClusterName = CAPIClusterName
@@ -939,13 +1319,15 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 				resourcesName:           resourcesName,
 				capiv1.ClusterLabelName: CAPIClusterName,
 			},
+			// Annotations here propagate down to Machines
+			// https://cluster-api.sigs.k8s.io/developer/architecture/controllers/metadata-propagation.html#machinedeployment.
 			Annotations: map[string]string{
 				// TODO (alberto): Use conditions to signal an in progress rolling upgrade
 				// similar to what we do with nodePoolAnnotationCurrentConfig
 				nodePoolAnnotationPlatformMachineTemplate: machineTemplateSpecJSON, // This will trigger a deployment rolling upgrade when its value changes.
+				nodePoolAnnotation:                        client.ObjectKeyFromObject(nodePool).String(),
 			},
 		},
-
 		Spec: capiv1.MachineSpec{
 			ClusterName: CAPIClusterName,
 			Bootstrap: capiv1.Bootstrap{
@@ -964,6 +1346,21 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 		},
 	}
 
+	// Propagate labels.
+	for k, v := range nodePool.Spec.NodeLabels {
+		// Propagated managed labels down to Machines with a known hardcoded prefix
+		// so the CPO HCCO Node controller can recognize them and apply them to Nodes.
+		labelKey := fmt.Sprintf("%s.%s", labelManagedPrefix, k)
+		machineDeployment.Spec.Template.Labels[labelKey] = v
+	}
+
+	// Propagate taints.
+	taintsInJSON, err := taintsToJSON(nodePool.Spec.Taints)
+	if err != nil {
+		return err
+	}
+	machineDeployment.Spec.Template.Annotations[nodePoolAnnotationTaints] = taintsInJSON
+
 	// Set strategy
 	machineDeployment.Spec.Strategy = &capiv1.MachineDeploymentStrategy{}
 	machineDeployment.Spec.Strategy.Type = capiv1.MachineDeploymentStrategyType(nodePool.Spec.Management.Replace.Strategy)
@@ -975,12 +1372,12 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 	}
 
 	// Propagate version and userData Secret to the machineDeployment.
-	if userDataSecret.Name != k8sutilspointer.StringPtrDerefOr(machineDeployment.Spec.Template.Spec.Bootstrap.DataSecretName, "") {
+	if userDataSecret.Name != k8sutilspointer.StringDeref(machineDeployment.Spec.Template.Spec.Bootstrap.DataSecretName, "") {
 		log.Info("New user data Secret has been generated",
 			"current", machineDeployment.Spec.Template.Spec.Bootstrap.DataSecretName,
 			"target", userDataSecret.Name)
 
-		if targetVersion != k8sutilspointer.StringPtrDerefOr(machineDeployment.Spec.Template.Spec.Version, "") {
+		if targetVersion != k8sutilspointer.StringDeref(machineDeployment.Spec.Template.Spec.Version, "") {
 			log.Info("Starting version update: Propagating new version to the MachineDeployment",
 				"releaseImage", nodePool.Spec.Release.Image, "target", targetVersion)
 		}
@@ -990,7 +1387,7 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 				"current", nodePool.Annotations[nodePoolAnnotationCurrentConfig], "target", targetConfigHash)
 		}
 		machineDeployment.Spec.Template.Spec.Version = &targetVersion
-		machineDeployment.Spec.Template.Spec.Bootstrap.DataSecretName = k8sutilspointer.StringPtr(userDataSecret.Name)
+		machineDeployment.Spec.Template.Spec.Bootstrap.DataSecretName = k8sutilspointer.String(userDataSecret.Name)
 
 		// We return early here during a version/config update to persist the resource with new user data Secret,
 		// so in the next reconciling loop we get a new MachineDeployment.Generation
@@ -1003,7 +1400,7 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 		return nil
 	}
 
-	// If the MachineDeployment is no processing we know
+	// If the MachineDeployment is now processing we know
 	// is at the expected version (spec.version) and config (userData Secret) so we reconcile status and annotation.
 	if MachineDeploymentComplete(machineDeployment) {
 		if nodePool.Status.Version != targetVersion {
@@ -1033,12 +1430,12 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 		if c.Type == capiv1.ReadyCondition {
 			// this is so api server does not complain
 			// invalid value: \"\": status.conditions.reason in body should be at least 1 chars long"
-			reason := hyperv1.NodePoolAsExpectedConditionReason
+			reason := hyperv1.AsExpectedReason
 			if c.Reason != "" {
 				reason = c.Reason
 			}
 
-			setStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
+			SetStatusCondition(&nodePool.Status.Conditions, hyperv1.NodePoolCondition{
 				Type:               hyperv1.NodePoolReadyConditionType,
 				Status:             c.Status,
 				ObservedGeneration: nodePool.Generation,
@@ -1050,6 +1447,15 @@ func (r *NodePoolReconciler) reconcileMachineDeployment(log logr.Logger,
 	}
 
 	return nil
+}
+
+func taintsToJSON(taints []hyperv1.Taint) (string, error) {
+	taintsInJSON, err := json.Marshal(taints)
+	if err != nil {
+		return "", err
+	}
+
+	return string(taintsInJSON), nil
 }
 
 func (r *NodePoolReconciler) reconcileMachineHealthCheck(mhc *capiv1.MachineHealthCheck,
@@ -1099,11 +1505,18 @@ func setMachineDeploymentReplicas(nodePool *hyperv1.NodePool, machineDeployment 
 	}
 
 	if isAutoscalingEnabled(nodePool) {
-		if k8sutilspointer.Int32PtrDerefOr(machineDeployment.Spec.Replicas, 0) == 0 {
-			// if autoscaling is enabled and the machineDeployment does not exist yet or it has 0 replicas
-			// we set it to 1 replica as the autoscaler does not support scaling from zero yet.
-			machineDeployment.Spec.Replicas = k8sutilspointer.Int32Ptr(int32(1))
+		// The MachineDeployment replicas field should default to a value inside the (min size, max size) range based on the autoscaler annotations
+		// so the autoscaler can take control of the replicas field.
+		//
+		// 1. if it’s a new MachineDeployment, or the replicas field of the old MachineDeployment is < min size, use min size
+		// 2. if the replicas field of the old MachineDeployment is > max size, use max size
+		mdReplicas := k8sutilspointer.Int32Deref(machineDeployment.Spec.Replicas, 0)
+		if mdReplicas < nodePool.Spec.AutoScaling.Min {
+			machineDeployment.Spec.Replicas = &nodePool.Spec.AutoScaling.Min
+		} else if mdReplicas > nodePool.Spec.AutoScaling.Max {
+			machineDeployment.Spec.Replicas = &nodePool.Spec.AutoScaling.Max
 		}
+
 		machineDeployment.Annotations[autoscalerMaxAnnotation] = strconv.Itoa(int(nodePool.Spec.AutoScaling.Max))
 		machineDeployment.Annotations[autoscalerMinAnnotation] = strconv.Itoa(int(nodePool.Spec.AutoScaling.Min))
 	}
@@ -1112,11 +1525,11 @@ func setMachineDeploymentReplicas(nodePool *hyperv1.NodePool, machineDeployment 
 	if !isAutoscalingEnabled(nodePool) {
 		machineDeployment.Annotations[autoscalerMaxAnnotation] = "0"
 		machineDeployment.Annotations[autoscalerMinAnnotation] = "0"
-		machineDeployment.Spec.Replicas = k8sutilspointer.Int32Ptr(k8sutilspointer.Int32PtrDerefOr(nodePool.Spec.Replicas, 0))
+		machineDeployment.Spec.Replicas = k8sutilspointer.Int32(k8sutilspointer.Int32Deref(nodePool.Spec.Replicas, 0))
 	}
 }
 
-func ignConfig(encodedCACert, encodedToken, endpoint string, proxy *configv1.Proxy) ignitionapi.Config {
+func ignConfig(encodedCACert, encodedToken, endpoint, targetConfigVersionHash string, proxy *configv1.Proxy, nodePool *hyperv1.NodePool) ignitionapi.Config {
 	cfg := ignitionapi.Config{
 		Ignition: ignitionapi.Ignition{
 			Version: "3.2.0",
@@ -1124,7 +1537,7 @@ func ignConfig(encodedCACert, encodedToken, endpoint string, proxy *configv1.Pro
 				TLS: ignitionapi.TLS{
 					CertificateAuthorities: []ignitionapi.Resource{
 						{
-							Source: k8sutilspointer.StringPtr(fmt.Sprintf("data:text/plain;base64,%s", encodedCACert)),
+							Source: k8sutilspointer.String(fmt.Sprintf("data:text/plain;base64,%s", encodedCACert)),
 						},
 					},
 				},
@@ -1132,11 +1545,19 @@ func ignConfig(encodedCACert, encodedToken, endpoint string, proxy *configv1.Pro
 			Config: ignitionapi.IgnitionConfig{
 				Merge: []ignitionapi.Resource{
 					{
-						Source: k8sutilspointer.StringPtr(fmt.Sprintf("https://%s/ignition", endpoint)),
+						Source: k8sutilspointer.String(fmt.Sprintf("https://%s/ignition", endpoint)),
 						HTTPHeaders: []ignitionapi.HTTPHeader{
 							{
 								Name:  "Authorization",
-								Value: k8sutilspointer.StringPtr(fmt.Sprintf("Bearer %s", encodedToken)),
+								Value: k8sutilspointer.String(fmt.Sprintf("Bearer %s", encodedToken)),
+							},
+							{
+								Name:  "NodePool",
+								Value: k8sutilspointer.String(client.ObjectKeyFromObject(nodePool).String()),
+							},
+							{
+								Name:  "TargetConfigVersionHash",
+								Value: k8sutilspointer.String(targetConfigVersionHash),
 							},
 						},
 					},
@@ -1225,6 +1646,17 @@ func (r *NodePoolReconciler) getConfig(ctx context.Context,
 		configs = append(configs, *configConfigMap)
 	}
 
+	// Look for NTO generated MachineConfigs from the hosted control plane namespace
+	nodeTuningGeneratedConfigs := &corev1.ConfigMapList{}
+	if err := r.List(ctx, nodeTuningGeneratedConfigs, client.MatchingLabels{
+		nodeTuningGeneratedConfigLabel: "true",
+		hyperv1.NodePoolLabel:          nodePool.GetName(),
+	}, client.InNamespace(controlPlaneResource)); err != nil {
+		errors = append(errors, err)
+	}
+
+	configs = append(configs, nodeTuningGeneratedConfigs.Items...)
+
 	for _, config := range configs {
 		manifestRaw := config.Data[TokenSecretConfigKey]
 		manifest, err := defaultAndValidateConfigManifest([]byte(manifestRaw))
@@ -1241,6 +1673,76 @@ func (r *NodePoolReconciler) getConfig(ctx context.Context,
 	sort.Strings(allConfigPlainText)
 
 	return strings.Join(allConfigPlainText, "\n---\n"), missingConfigs, utilerrors.NewAggregate(errors)
+}
+
+func (r *NodePoolReconciler) getTuningConfig(ctx context.Context,
+	nodePool *hyperv1.NodePool,
+) (configsRaw string, err error) {
+	var configs []corev1.ConfigMap
+	var allConfigPlainText []string
+	var errors []error
+
+	for _, config := range nodePool.Spec.TuningConfig {
+		configConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      config.Name,
+				Namespace: nodePool.Namespace,
+			},
+		}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(configConfigMap), configConfigMap); err != nil {
+			errors = append(errors, err)
+			continue
+		}
+		configs = append(configs, *configConfigMap)
+	}
+
+	for _, config := range configs {
+		manifestRaw, ok := config.Data[tuningConfigKey]
+		if !ok {
+			errors = append(errors, fmt.Errorf("no manifest found in configmap %q with key %q", config.Name, tuningConfigKey))
+			continue
+		}
+		manifest, err := validateTuningConfigManifest([]byte(manifestRaw))
+		if err != nil {
+			errors = append(errors, fmt.Errorf("configmap %q failed validation: %w", config.Name, err))
+			continue
+		}
+
+		allConfigPlainText = append(allConfigPlainText, string(manifest))
+	}
+
+	// Keep output deterministic to avoid unnecessary no-op changes to Tuned ConfigMap
+	sort.Strings(allConfigPlainText)
+	return strings.Join(allConfigPlainText, "\n---\n"), utilerrors.NewAggregate(errors)
+}
+
+func validateTuningConfigManifest(manifest []byte) ([]byte, error) {
+	scheme := runtime.NewScheme()
+	tunedv1.AddToScheme(scheme)
+
+	yamlSerializer := serializer.NewSerializerWithOptions(
+		serializer.DefaultMetaFactory, scheme, scheme,
+		serializer.SerializerOptions{Yaml: true, Pretty: true, Strict: true},
+	)
+
+	cr, _, err := yamlSerializer.Decode(manifest, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error decoding config: %w", err)
+	}
+
+	switch obj := cr.(type) {
+	case *tunedv1.Tuned:
+		buff := bytes.Buffer{}
+		if err := yamlSerializer.Encode(obj, &buff); err != nil {
+			return nil, fmt.Errorf("failed to encode Tuned object: %w", err)
+		}
+		manifest = buff.Bytes()
+
+	default:
+		return nil, fmt.Errorf("unsupported tuningConfig object type: %T", obj)
+	}
+
+	return manifest, err
 }
 
 // validateManagement does additional backend validation. API validation/default should
@@ -1310,24 +1812,53 @@ func defaultAndValidateConfigManifest(manifest []byte) ([]byte, error) {
 	return manifest, err
 }
 
-func (r *NodePoolReconciler) getReleaseImage(ctx context.Context, hostedCluster *hyperv1.HostedCluster, releaseImage string) (*releaseinfo.ReleaseImage, error) {
-	pullSecret := &corev1.Secret{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: hostedCluster.Namespace, Name: hostedCluster.Spec.PullSecret.Name}, pullSecret); err != nil {
-		return nil, fmt.Errorf("cannot get pull secret %s/%s: %w", hostedCluster.Namespace, hostedCluster.Spec.PullSecret.Name, err)
-	}
-	if _, hasKey := pullSecret.Data[corev1.DockerConfigJsonKey]; !hasKey {
-		return nil, fmt.Errorf("pull secret %s/%s missing %q key", pullSecret.Namespace, pullSecret.Name, corev1.DockerConfigJsonKey)
+func (r *NodePoolReconciler) getReleaseImage(ctx context.Context, hostedCluster *hyperv1.HostedCluster, currentVersion string, releaseImage string) (*releaseinfo.ReleaseImage, error) {
+	pullSecretBytes, err := r.getPullSecretBytes(ctx, hostedCluster)
+	if err != nil {
+		return nil, err
 	}
 	ReleaseImage, err := func(ctx context.Context) (*releaseinfo.ReleaseImage, error) {
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, 1*time.Minute)
 		defer lookupCancel()
-		img, err := r.ReleaseProvider.Lookup(lookupCtx, releaseImage, pullSecret.Data[corev1.DockerConfigJsonKey])
+		img, err := r.ReleaseProvider.Lookup(lookupCtx, releaseImage, pullSecretBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to look up release image metadata: %w", err)
 		}
 		return img, nil
 	}(ctx)
-	return ReleaseImage, err
+	if err != nil {
+		return nil, err
+	}
+
+	wantedVersion, err := semver.Parse(ReleaseImage.Version())
+	if err != nil {
+		return nil, err
+	}
+
+	var currentVersionParsed semver.Version
+	if currentVersion != "" {
+		currentVersionParsed, err = semver.Parse(currentVersion)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	minSupportedVersion := supportedversion.MinSupportedVersion
+	if hostedCluster.Spec.Platform.Type == hyperv1.IBMCloudPlatform {
+		//IBM Cloud is allowed to manage 4.9 clusters
+		minSupportedVersion = semver.MustParse("4.9.0")
+	}
+
+	releaseInfo, err := r.ReleaseProvider.Lookup(ctx, hostedCluster.Spec.Release.Image, pullSecretBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup release image: %w", err)
+	}
+	hostedClusterVersion, err := semver.Parse(releaseInfo.Version())
+	if err != nil {
+		return nil, err
+	}
+
+	return ReleaseImage, supportedversion.IsValidReleaseVersion(&wantedVersion, &currentVersionParsed, &hostedClusterVersion, &minSupportedVersion, hostedCluster.Spec.Networking.NetworkType, hostedCluster.Spec.Platform.Type)
 }
 
 func isUpdatingVersion(nodePool *hyperv1.NodePool, targetVersion string) bool {
@@ -1378,27 +1909,6 @@ func defaultNodePoolAMI(region string, releaseImage *releaseinfo.ReleaseImage) (
 		return "", fmt.Errorf("release image metadata has no image for region %q", region)
 	}
 	return regionData.Image, nil
-}
-
-func defaultKubeVirtImage(releaseImage *releaseinfo.ReleaseImage) (string, error) {
-	arch, foundArch := releaseImage.StreamMetadata.Architectures["x86_64"]
-	if !foundArch {
-		return "", fmt.Errorf("couldn't find OS metadata for architecture %q", "x64_64")
-	}
-	openStack, exists := arch.Artifacts["openstack"]
-	if !exists {
-		return "", fmt.Errorf("couldn't find OS metadata for openstack")
-	}
-	artifact, exists := openStack.Formats["qcow2.gz"]
-	if !exists {
-		return "", fmt.Errorf("couldn't find OS metadata for openstack qcow2.gz")
-	}
-	disk, exists := artifact["disk"]
-	if !exists {
-		return "", fmt.Errorf("couldn't find OS metadata for the openstack qcow2.gz disk")
-	}
-
-	return disk.Location, nil
 }
 
 // MachineDeploymentComplete considers a MachineDeployment to be complete once all of its desired replicas
@@ -1476,19 +1986,72 @@ func (r *NodePoolReconciler) enqueueNodePoolsForConfig(obj client.Object) []reco
 		return result
 	}
 
+	// If the ConfigMap is generated by the NodePool controller and contains Tuned manifests
+	// return the ConfigMaps parent NodePool.
+	if _, ok := obj.GetLabels()[tuningConfigMapLabel]; ok {
+		return enqueueParentNodePool(obj)
+	}
+
+	// Check if the ConfigMap is generated by an operator in the control plane namespace
+	// corresponding to this nodepool.
+	if _, ok := obj.GetLabels()[nodeTuningGeneratedConfigLabel]; ok {
+		nodePoolName := obj.GetLabels()[hyperv1.NodePoolLabel]
+		nodePoolNamespacedName, err := r.getNodePoolNamespacedName(nodePoolName, obj.GetNamespace())
+		if err != nil {
+			return result
+		}
+		obj.SetAnnotations(map[string]string{
+			nodePoolAnnotation: nodePoolNamespacedName.String(),
+		})
+		return enqueueParentNodePool(obj)
+	}
+
 	// Otherwise reconcile NodePools which are referencing the given ConfigMap.
 	for key := range nodePoolList.Items {
+		reconcileNodePool := false
 		for _, v := range nodePoolList.Items[key].Spec.Config {
 			if v.Name == cm.Name {
-				result = append(result,
-					reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&nodePoolList.Items[key])},
-				)
+				reconcileNodePool = true
 				break
 			}
 		}
+
+		// Check TuningConfig as well, unless ConfigMap was already found in .Spec.Config.
+		if !reconcileNodePool {
+			for _, v := range nodePoolList.Items[key].Spec.TuningConfig {
+				if v.Name == cm.Name {
+					reconcileNodePool = true
+					break
+				}
+			}
+		}
+		if reconcileNodePool {
+			result = append(result,
+				reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&nodePoolList.Items[key])},
+			)
+		}
+
 	}
 
 	return result
+}
+
+// getNodePoolNamespace returns the namespaced name of a NodePool, given the NodePools name
+// and the control plane namespace name for the hosted cluster that this NodePool is a part of.
+func (r *NodePoolReconciler) getNodePoolNamespacedName(nodePoolName string, controlPlaneNamespace string) (types.NamespacedName, error) {
+	hcpList := &hyperv1.HostedControlPlaneList{}
+	if err := r.List(context.Background(), hcpList, &client.ListOptions{
+		Namespace: controlPlaneNamespace,
+	}); err != nil || len(hcpList.Items) < 1 {
+		return types.NamespacedName{Name: nodePoolName}, err
+	}
+	hostedCluster, ok := hcpList.Items[0].Annotations[hostedcluster.HostedClusterAnnotation]
+	if !ok {
+		return types.NamespacedName{Name: nodePoolName}, fmt.Errorf("failed to get Hosted Cluster name for HostedControlPlane %s", hcpList.Items[0].Name)
+	}
+	nodePoolNamespace := supportutil.ParseNamespacedName(hostedCluster).Namespace
+
+	return types.NamespacedName{Name: nodePoolName, Namespace: nodePoolNamespace}, nil
 }
 
 func enqueueParentNodePool(obj client.Object) []reconcile.Request {
@@ -1575,28 +2138,6 @@ func (r *NodePoolReconciler) listMachineTemplates(nodePool *hyperv1.NodePool) ([
 	return filtered, nil
 }
 
-func compress(content []byte) ([]byte, error) {
-	if len(content) == 0 {
-		return nil, nil
-	}
-	var b bytes.Buffer
-	gz := gzip.NewWriter(&b)
-	if _, err := gz.Write(content); err != nil {
-		return nil, fmt.Errorf("failed to compress content: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		return nil, fmt.Errorf("compress closure failure %w", err)
-	}
-	return b.Bytes(), nil
-}
-
-func hashStruct(o interface{}) string {
-	hash := fnv.New32a()
-	hash.Write([]byte(fmt.Sprintf("%v", o)))
-	intHash := hash.Sum32()
-	return fmt.Sprintf("%08x", intHash)
-}
-
 // TODO (alberto) drop this deterministic naming logic and get the name for child MachineDeployment from the status/annotation/label?
 func generateName(infraName, clusterName, suffix string) string {
 	return getName(fmt.Sprintf("%s-%s", infraName, clusterName), suffix, 43)
@@ -1623,13 +2164,13 @@ func getName(base, suffix string, maxLength int) string {
 	if baseLength < 1 {
 		prefix := base[0:min(len(base), max(0, maxLength-9))]
 		// Calculate hash on initial base-suffix string
-		shortName := fmt.Sprintf("%s-%s", prefix, hashStruct(name))
+		shortName := fmt.Sprintf("%s-%s", prefix, supportutil.HashStruct(name))
 		return shortName[:min(maxLength, len(shortName))]
 	}
 
 	prefix := base[0:baseLength]
 	// Calculate hash on initial base-suffix string
-	return fmt.Sprintf("%s-%s-%s", prefix, hashStruct(base), suffix)
+	return fmt.Sprintf("%s-%s-%s", prefix, supportutil.HashStruct(base), suffix)
 }
 
 // max returns the greater of its 2 inputs
@@ -1664,7 +2205,7 @@ func isPlatformNone(nodePool *hyperv1.NodePool) bool {
 // a func to mutate the (platform)MachineTemplate.spec, a json string representation for (platform)MachineTemplate.spec
 // and an error.
 func machineTemplateBuilders(hcluster *hyperv1.HostedCluster, nodePool *hyperv1.NodePool,
-	infraID, ami, powervsBootImage, kubevirtBootImage string) (client.Object, func(object client.Object) error, string, error) {
+	infraID, ami, powervsBootImage, kubevirtBootImage string, defaultSG bool) (client.Object, func(object client.Object) error, string, error) {
 	var mutateTemplate func(object client.Object) error
 	var template client.Object
 	var machineTemplateSpec interface{}
@@ -1673,7 +2214,11 @@ func machineTemplateBuilders(hcluster *hyperv1.HostedCluster, nodePool *hyperv1.
 	// Define the desired template type and mutateTemplate function.
 	case hyperv1.AWSPlatform:
 		template = &capiaws.AWSMachineTemplate{}
-		machineTemplateSpec = awsMachineTemplateSpec(infraID, ami, hcluster, nodePool)
+		var err error
+		machineTemplateSpec, err = awsMachineTemplateSpec(infraID, ami, hcluster, nodePool, defaultSG)
+		if err != nil {
+			return nil, nil, "", err
+		}
 		mutateTemplate = func(object client.Object) error {
 			o, _ := object.(*capiaws.AWSMachineTemplate)
 			o.Spec = *machineTemplateSpec.(*capiaws.AWSMachineTemplateSpec)
@@ -1697,7 +2242,7 @@ func machineTemplateBuilders(hcluster *hyperv1.HostedCluster, nodePool *hyperv1.
 		}
 	case hyperv1.KubevirtPlatform:
 		template = &capikubevirt.KubevirtMachineTemplate{}
-		machineTemplateSpec = kubevirtMachineTemplateSpec(kubevirtBootImage, nodePool)
+		machineTemplateSpec = kubevirt.MachineTemplateSpec(kubevirtBootImage, nodePool, hcluster)
 		mutateTemplate = func(object client.Object) error {
 			o, _ := object.(*capikubevirt.KubevirtMachineTemplate)
 			o.Spec = *machineTemplateSpec.(*capikubevirt.KubevirtMachineTemplateSpec)
@@ -1765,4 +2310,89 @@ func setExpirationTimestampOnToken(ctx context.Context, c client.Client, tokenSe
 	}
 	tokenSecret.Annotations[hyperv1.IgnitionServerTokenExpirationTimestampAnnotation] = time.Now().Add(timeUntilExpiry).Format(time.RFC3339)
 	return c.Update(ctx, tokenSecret)
+}
+
+func (r *NodePoolReconciler) detectCPOCapabilities(ctx context.Context, hostedCluster *hyperv1.HostedCluster) (*CPOCapabilities, error) {
+	pullSecretBytes, err := r.getPullSecretBytes(ctx, hostedCluster)
+	if err != nil {
+		return nil, err
+	}
+	controlPlaneOperatorImage, err := hostedcluster.GetControlPlaneOperatorImage(ctx, hostedCluster, r.ReleaseProvider, r.HypershiftOperatorImage, pullSecretBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get controlPlaneOperatorImage: %w", err)
+	}
+
+	controlPlaneOperatorImageMetadata, err := r.ImageMetadataProvider.ImageMetadata(ctx, controlPlaneOperatorImage, pullSecretBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to look up image metadata for %s: %w", controlPlaneOperatorImage, err)
+	}
+
+	imageLabels := supportutil.ImageLabels(controlPlaneOperatorImageMetadata)
+	result := &CPOCapabilities{}
+	_, result.DecompressAndDecodeConfig = imageLabels[controlPlaneOperatorManagesDecompressAndDecodeConfig]
+	_, result.CreateDefaultAWSSecurityGroup = imageLabels[controlPlaneOperatorCreatesDefaultAWSSecurityGroup]
+
+	return result, nil
+}
+
+// ensureMachineDeletion ensures all the machines belonging to the NodePool's MachineSet are fully deleted.
+// This function can be deleted once the upstream PR (https://github.com/kubernetes-sigs/cluster-api-provider-aws/pull/3805) is merged and pulled into https://github.com/openshift/cluster-api-provider-aws.
+// This function is necessary to ensure AWSMachines are fully deleted prior to deleting the NodePull secrets being deleted due to a bug introduced by https://github.com/kubernetes-sigs/cluster-api-provider-aws/pull/2271
+// See https://github.com/openshift/hypershift/pull/1826#discussion_r1007349564 for more details.
+func (r *NodePoolReconciler) ensureMachineDeletion(nodePool *hyperv1.NodePool) error {
+	machines, err := r.getMachinesForNodePool(nodePool)
+	if err != nil {
+		return fmt.Errorf("error getting Machines: %w", err)
+	}
+
+	if len(machines) > 0 {
+		return fmt.Errorf("there are still Machines in for NodePool %q", nodePool.Name)
+	}
+
+	return nil
+}
+
+// getMachinesForNodePool get all Machines listed with the nodePoolAnnotation
+// within the control plane Namespace for that NodePool.
+func (r *NodePoolReconciler) getMachinesForNodePool(nodePool *hyperv1.NodePool) ([]capiv1.Machine, error) {
+	machines := capiv1.MachineList{}
+	controlPlaneNamespace := fmt.Sprintf("%s-%s", nodePool.Namespace, strings.ReplaceAll(nodePool.Spec.ClusterName, ".", "-"))
+
+	if err := r.List(context.Background(), &machines, &client.ListOptions{Namespace: controlPlaneNamespace}); err != nil {
+		return nil, fmt.Errorf("failed to list Machines: %w", err)
+	}
+
+	// Filter out only machines belonging to deleted NodePool
+	var machinesForNodePool []capiv1.Machine
+	for i, machine := range machines.Items {
+		if machine.Annotations[nodePoolAnnotation] == client.ObjectKeyFromObject(nodePool).String() {
+			machinesForNodePool = append(machinesForNodePool, machines.Items[i])
+		}
+	}
+
+	return machinesForNodePool, nil
+}
+
+// getPullSecretBytes retrieves the pull secret bytes from the hosted cluster
+func (r *NodePoolReconciler) getPullSecretBytes(ctx context.Context, hostedCluster *hyperv1.HostedCluster) ([]byte, error) {
+	pullSecret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: hostedCluster.Namespace, Name: hostedCluster.Spec.PullSecret.Name}, pullSecret); err != nil {
+		return nil, fmt.Errorf("cannot get pull secret %s/%s: %w", hostedCluster.Namespace, hostedCluster.Spec.PullSecret.Name, err)
+	}
+	if _, hasKey := pullSecret.Data[corev1.DockerConfigJsonKey]; !hasKey {
+		return nil, fmt.Errorf("pull secret %s/%s missing %q key", pullSecret.Namespace, pullSecret.Name, corev1.DockerConfigJsonKey)
+	}
+	return pullSecret.Data[corev1.DockerConfigJsonKey], nil
+}
+
+// getPullSecretName retrieves the name of the pull secret in the hosted cluster spec
+func (r *NodePoolReconciler) getPullSecretName(ctx context.Context, hostedCluster *hyperv1.HostedCluster) (string, error) {
+	pullSecret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: hostedCluster.Namespace, Name: hostedCluster.Spec.PullSecret.Name}, pullSecret); err != nil {
+		return "", fmt.Errorf("cannot get pull secret %s/%s: %w", hostedCluster.Namespace, hostedCluster.Spec.PullSecret.Name, err)
+	}
+	if _, hasKey := pullSecret.Data[corev1.DockerConfigJsonKey]; !hasKey {
+		return "", fmt.Errorf("pull secret %s/%s missing %q key when retrieving pull secret name", pullSecret.Namespace, pullSecret.Name, corev1.DockerConfigJsonKey)
+	}
+	return pullSecret.Name, nil
 }

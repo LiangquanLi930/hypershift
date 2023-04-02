@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/support/globalconfig"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -40,6 +41,7 @@ var (
 			oauthVolumeLoginTemplate().Name:     "/etc/kubernetes/secrets/templates/login",
 			oauthVolumeProvidersTemplate().Name: "/etc/kubernetes/secrets/templates/providers",
 			oauthVolumeWorkLogs().Name:          "/var/run/kubernetes",
+			oauthVolumeMasterCABundle().Name:    "/etc/kubernetes/certs/master-ca",
 		},
 	}
 )
@@ -51,7 +53,7 @@ func oauthLabels() map[string]string {
 	}
 }
 
-func ReconcileDeployment(ctx context.Context, client client.Client, deployment *appsv1.Deployment, ownerRef config.OwnerRef, config *corev1.ConfigMap, image string, deploymentConfig config.DeploymentConfig, identityProviders []configv1.IdentityProvider, providerOverrides map[string]*ConfigOverride, availabilityProberImage string, apiPort *int32, namedCertificates []configv1.APIServerNamedServingCert, socks5ProxyImage string) error {
+func ReconcileDeployment(ctx context.Context, client client.Client, deployment *appsv1.Deployment, ownerRef config.OwnerRef, config *corev1.ConfigMap, image string, deploymentConfig config.DeploymentConfig, identityProviders []configv1.IdentityProvider, providerOverrides map[string]*ConfigOverride, availabilityProberImage string, apiPort *int32, namedCertificates []configv1.APIServerNamedServingCert, socks5ProxyImage string, noProxy []string) error {
 	ownerRef.ApplyTo(deployment)
 
 	// preserve existing resource requirements for main oauth container
@@ -88,7 +90,7 @@ func ReconcileDeployment(ctx context.Context, client client.Client, deployment *
 	deployment.Spec.Template.Spec = corev1.PodSpec{
 		AutomountServiceAccountToken: utilpointer.BoolPtr(false),
 		Containers: []corev1.Container{
-			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(image)),
+			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(image, noProxy)),
 			socks5ProxyContainer(socks5ProxyImage),
 		},
 		Volumes: []corev1.Volume{
@@ -100,8 +102,10 @@ func ReconcileDeployment(ctx context.Context, client client.Client, deployment *
 			util.BuildVolume(oauthVolumeLoginTemplate(), buildOAuthVolumeLoginTemplate),
 			util.BuildVolume(oauthVolumeProvidersTemplate(), buildOAuthVolumeProvidersTemplate),
 			util.BuildVolume(oauthVolumeWorkLogs(), buildOAuthVolumeWorkLogs),
-			{Name: "admin-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "service-network-admin-kubeconfig", DefaultMode: utilpointer.Int32Ptr(416)}}},
-			{Name: "konnectivity-proxy-cert", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.KonnectivityClientSecret("").Name, DefaultMode: utilpointer.Int32Ptr(416)}}},
+			util.BuildVolume(oauthVolumeMasterCABundle(), buildOAuthVolumeMasterCABundle),
+			{Name: "admin-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "service-network-admin-kubeconfig", DefaultMode: utilpointer.Int32Ptr(0640)}}},
+			{Name: "konnectivity-proxy-cert", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.KonnectivityClientSecret("").Name, DefaultMode: utilpointer.Int32Ptr(0640)}}},
+			{Name: "konnectivity-proxy-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: manifests.KonnectivityCAConfigMap("").Name}, DefaultMode: utilpointer.Int32Ptr(0640)}}},
 		},
 	}
 	deploymentConfig.ApplyTo(deployment)
@@ -124,7 +128,7 @@ func oauthContainerMain() *corev1.Container {
 	}
 }
 
-func buildOAuthContainerMain(image string) func(c *corev1.Container) {
+func buildOAuthContainerMain(image string, noProxy []string) func(c *corev1.Container) {
 	return func(c *corev1.Container) {
 		c.Image = image
 		c.Args = []string{
@@ -143,8 +147,12 @@ func buildOAuthContainerMain(image string) func(c *corev1.Container) {
 				Value: fmt.Sprintf("socks5://127.0.0.1:%d", konnectivity.KonnectivityServerLocalPort),
 			},
 			{
+				Name:  "ALL_PROXY",
+				Value: fmt.Sprintf("socks5://127.0.0.1:%d", konnectivity.KonnectivityServerLocalPort),
+			},
+			{
 				Name:  "NO_PROXY",
-				Value: manifests.KubeAPIServerService("").Name,
+				Value: strings.Join(noProxy, ","),
 			},
 		}
 	}
@@ -182,7 +190,8 @@ func oauthVolumeKubeconfig() *corev1.Volume {
 
 func buildOAuthVolumeKubeconfig(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.KASServiceKubeconfigSecret("").Name,
+		DefaultMode: utilpointer.Int32Ptr(0640),
+		SecretName:  manifests.KASServiceKubeconfigSecret("").Name,
 	}
 }
 func oauthVolumeServingCert() *corev1.Volume {
@@ -193,7 +202,8 @@ func oauthVolumeServingCert() *corev1.Volume {
 
 func buildOAuthVolumeServingCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.OpenShiftOAuthServerCert("").Name,
+		DefaultMode: utilpointer.Int32Ptr(0640),
+		SecretName:  manifests.OpenShiftOAuthServerCert("").Name,
 	}
 }
 func oauthVolumeSessionSecret() *corev1.Volume {
@@ -203,7 +213,8 @@ func oauthVolumeSessionSecret() *corev1.Volume {
 }
 func buildOAuthVolumeSessionSecret(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.OAuthServerServiceSessionSecret("").Name,
+		DefaultMode: utilpointer.Int32Ptr(0640),
+		SecretName:  manifests.OAuthServerServiceSessionSecret("").Name,
 	}
 }
 func oauthVolumeErrorTemplate() *corev1.Volume {
@@ -214,7 +225,8 @@ func oauthVolumeErrorTemplate() *corev1.Volume {
 
 func buildOAuthVolumeErrorTemplate(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.OAuthServerDefaultErrorTemplateSecret("").Name,
+		DefaultMode: utilpointer.Int32Ptr(0640),
+		SecretName:  manifests.OAuthServerDefaultErrorTemplateSecret("").Name,
 	}
 }
 
@@ -226,7 +238,8 @@ func oauthVolumeLoginTemplate() *corev1.Volume {
 
 func buildOAuthVolumeLoginTemplate(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.OAuthServerDefaultLoginTemplateSecret("").Name,
+		DefaultMode: utilpointer.Int32Ptr(0640),
+		SecretName:  manifests.OAuthServerDefaultLoginTemplateSecret("").Name,
 	}
 }
 
@@ -238,15 +251,27 @@ func oauthVolumeProvidersTemplate() *corev1.Volume {
 
 func buildOAuthVolumeProvidersTemplate(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.OAuthServerDefaultProviderSelectionTemplateSecret("").Name,
+		DefaultMode: utilpointer.Int32Ptr(0640),
+		SecretName:  manifests.OAuthServerDefaultProviderSelectionTemplateSecret("").Name,
 	}
+}
+
+func oauthVolumeMasterCABundle() *corev1.Volume {
+	return &corev1.Volume{
+		Name: "master-ca-bundle",
+	}
+}
+
+func buildOAuthVolumeMasterCABundle(v *corev1.Volume) {
+	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
+	v.ConfigMap.Name = manifests.OpenShiftOAuthMasterCABundle("").Name
 }
 
 func socks5ProxyContainer(socks5ProxyImage string) corev1.Container {
 	c := corev1.Container{
 		Name:    socks5ProxyContainerName,
 		Image:   socks5ProxyImage,
-		Command: []string{"/usr/bin/control-plane-operator", "konnectivity-socks5-proxy"},
+		Command: []string{"/usr/bin/control-plane-operator", "konnectivity-socks5-proxy", "--resolve-from-guest-cluster-dns=true", "--resolve-from-management-cluster-dns=true"},
 		Args:    []string{"run"},
 		Env: []corev1.EnvVar{{
 			Name:  "KUBECONFIG",
@@ -260,8 +285,10 @@ func socks5ProxyContainer(socks5ProxyImage string) corev1.Container {
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "admin-kubeconfig", MountPath: "/etc/kubernetes"},
-			{Name: "konnectivity-proxy-cert", MountPath: "/etc/konnectivity-proxy-tls"},
+			{Name: "konnectivity-proxy-cert", MountPath: "/etc/konnectivity/proxy-client"},
+			{Name: "konnectivity-proxy-ca", MountPath: "/etc/konnectivity/proxy-ca"},
 		},
 	}
+
 	return c
 }

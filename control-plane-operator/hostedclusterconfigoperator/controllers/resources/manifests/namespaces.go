@@ -5,6 +5,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func NamespaceOpenShiftInfra() *corev1.Namespace {
+	return &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "openshift-infra",
+		},
+	}
+}
+
+func NamespaceOpenshiftCloudControllerManager() *corev1.Namespace {
+	return &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "openshift-cloud-controller-manager",
+		},
+	}
+}
+
 func NamespaceOpenShiftAPIServer() *corev1.Namespace {
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -72,5 +88,11 @@ func NamespaceAuthentication() *corev1.Namespace {
 func NamespaceRouteControllerManager() *corev1.Namespace {
 	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "openshift-route-controller-manager"},
+	}
+}
+
+func NamespaceKubeSystem() *corev1.Namespace {
+	return &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "kube-system"},
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests/controlplaneoperator"
@@ -21,8 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func ReconcileAutoscalerDeployment(deployment *appsv1.Deployment, hcp *hyperv1.HostedControlPlane, sa *corev1.ServiceAccount, kubeConfigSecret *corev1.Secret, options hyperv1.ClusterAutoscaling, clusterAutoscalerImage, availabilityProberImage string, setDefaultSecurityContext bool) error {
-	config.OwnerRefFrom(hcp).ApplyTo(deployment)
+func ReconcileAutoscalerDeployment(deployment *appsv1.Deployment, hcp *hyperv1.HostedControlPlane, sa *corev1.ServiceAccount, kubeConfigSecret *corev1.Secret, options hyperv1.ClusterAutoscaling, clusterAutoscalerImage, availabilityProberImage string, setDefaultSecurityContext bool, ownerRef config.OwnerRef) error {
+	ownerRef.ApplyTo(deployment)
 	args := []string{
 		"--cloud-provider=clusterapi",
 		"--node-group-auto-discovery=clusterapi:namespace=$(MY_NAMESPACE)",
@@ -38,6 +38,11 @@ func ReconcileAutoscalerDeployment(deployment *appsv1.Deployment, hcp *hyperv1.H
 		fmt.Sprintf("--leader-elect-retry-period=%s", config.RecommendedRetryPeriod),
 		fmt.Sprintf("--leader-elect-renew-deadline=%s", config.RecommendedRenewDeadline),
 		"--v=4",
+	}
+
+	ignoreLabels := GetIgnoreLabels()
+	for _, v := range ignoreLabels {
+		args = append(args, fmt.Sprintf("%s=%v", BalancingIgnoreLabelArg, v))
 	}
 
 	// TODO if the options for the cluster autoscaler continues to grow, we should take inspiration
@@ -95,7 +100,8 @@ func ReconcileAutoscalerDeployment(deployment *appsv1.Deployment, hcp *hyperv1.H
 						Name: "target-kubeconfig",
 						VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{
-								SecretName: kubeConfigSecret.Name,
+								SecretName:  kubeConfigSecret.Name,
+								DefaultMode: k8sutilspointer.Int32Ptr(0640),
 								Items: []corev1.KeyToPath{
 									{
 										// TODO: should the key be published on status?
@@ -130,7 +136,7 @@ func ReconcileAutoscalerDeployment(deployment *appsv1.Deployment, hcp *hyperv1.H
 						},
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("35Mi"),
+								corev1.ResourceMemory: resource.MustParse("60Mi"),
 								corev1.ResourceCPU:    resource.MustParse("10m"),
 							},
 						},
@@ -201,6 +207,11 @@ func ReconcileAutoscalerRole(role *rbacv1.Role, owner config.OwnerRef) error {
 			},
 			Verbs: []string{"*"},
 		},
+		{
+			APIGroups: []string{"infrastructure.cluster.x-k8s.io"},
+			Resources: []string{"*"},
+			Verbs:     []string{"get", "list"},
+		},
 	}
 	return nil
 }
@@ -225,10 +236,10 @@ func ReconcileAutoscalerRoleBinding(binding *rbacv1.RoleBinding, role *rbacv1.Ro
 }
 
 // ReconcileAutoscaler orchestrates reconciliation of autoscaler components.
-func ReconcileAutoscaler(ctx context.Context, c client.Client, hcp *hyperv1.HostedControlPlane, autoscalerImage, availabilityProberImage string, createOrUpdate upsert.CreateOrUpdateFN, setDefaultSecurityContext bool) error {
+func ReconcileAutoscaler(ctx context.Context, c client.Client, hcp *hyperv1.HostedControlPlane, autoscalerImage, availabilityProberImage string, createOrUpdate upsert.CreateOrUpdateFN, setDefaultSecurityContext bool, ownerRef config.OwnerRef) error {
 	autoscalerRole := manifests.AutoscalerRole(hcp.Namespace)
 	_, err := createOrUpdate(ctx, c, autoscalerRole, func() error {
-		return ReconcileAutoscalerRole(autoscalerRole, config.OwnerRefFrom(hcp))
+		return ReconcileAutoscalerRole(autoscalerRole, ownerRef)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile autoscaler role: %w", err)
@@ -237,7 +248,7 @@ func ReconcileAutoscaler(ctx context.Context, c client.Client, hcp *hyperv1.Host
 	autoscalerServiceAccount := manifests.AutoscalerServiceAccount(hcp.Namespace)
 	_, err = createOrUpdate(ctx, c, autoscalerServiceAccount, func() error {
 		util.EnsurePullSecret(autoscalerServiceAccount, controlplaneoperator.PullSecret("").Name)
-		config.OwnerRefFrom(hcp).ApplyTo(autoscalerServiceAccount)
+		ownerRef.ApplyTo(autoscalerServiceAccount)
 		return nil
 	})
 	if err != nil {
@@ -246,7 +257,7 @@ func ReconcileAutoscaler(ctx context.Context, c client.Client, hcp *hyperv1.Host
 
 	autoscalerRoleBinding := manifests.AutoscalerRoleBinding(hcp.Namespace)
 	_, err = createOrUpdate(ctx, c, autoscalerRoleBinding, func() error {
-		return ReconcileAutoscalerRoleBinding(autoscalerRoleBinding, autoscalerRole, autoscalerServiceAccount, config.OwnerRefFrom(hcp))
+		return ReconcileAutoscalerRoleBinding(autoscalerRoleBinding, autoscalerRole, autoscalerServiceAccount, ownerRef)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile autoscaler role binding: %w", err)
@@ -269,7 +280,7 @@ func ReconcileAutoscaler(ctx context.Context, c client.Client, hcp *hyperv1.Host
 
 		autoscalerDeployment := manifests.AutoscalerDeployment(hcp.Namespace)
 		_, err = createOrUpdate(ctx, c, autoscalerDeployment, func() error {
-			return ReconcileAutoscalerDeployment(autoscalerDeployment, hcp, autoscalerServiceAccount, capiKubeConfigSecret, hcp.Spec.Autoscaling, autoscalerImage, availabilityProberImage, setDefaultSecurityContext)
+			return ReconcileAutoscalerDeployment(autoscalerDeployment, hcp, autoscalerServiceAccount, capiKubeConfigSecret, hcp.Spec.Autoscaling, autoscalerImage, availabilityProberImage, setDefaultSecurityContext, ownerRef)
 		})
 		if err != nil {
 			return fmt.Errorf("failed to reconcile autoscaler deployment: %w", err)
@@ -277,4 +288,39 @@ func ReconcileAutoscaler(ctx context.Context, c client.Client, hcp *hyperv1.Host
 	}
 
 	return nil
+}
+
+const BalancingIgnoreLabelArg = "--balancing-ignore-label"
+
+// AWS cloud provider ignore labels for the autoscaler.
+const (
+	// AwsIgnoredLabelEbsCsiZone is a label used by the AWS EBS CSI driver as a target for Persistent Volume Node Affinity.
+	AwsIgnoredLabelEbsCsiZone = "topology.ebs.csi.aws.com/zone"
+)
+
+// IBM cloud provider ignore labels for the autoscaler.
+const (
+	// IbmcloudIgnoredLabelWorkerId is a label used by the IBM Cloud Cloud Controler Manager.
+	IbmcloudIgnoredLabelWorkerId = "ibm-cloud.kubernetes.io/worker-id"
+
+	// IbmcloudIgnoredLabelVpcBlockCsi is a label used by the IBM Cloud CSI driver as a target for Persistent Volume Node Affinity.
+	IbmcloudIgnoredLabelVpcBlockCsi = "vpc-block-csi-driver-labels"
+)
+
+// Azure cloud provider ignore labels for the autoscaler.
+const (
+	// AzureDiskTopologyKey is the topology key of Azure Disk CSI driver.
+	AzureDiskTopologyKey = "topology.disk.csi.azure.com/zone"
+)
+
+func GetIgnoreLabels() []string {
+	return []string{
+		// AWS
+		AwsIgnoredLabelEbsCsiZone,
+		// Azure
+		AzureDiskTopologyKey,
+		// IBM
+		IbmcloudIgnoredLabelWorkerId,
+		IbmcloudIgnoredLabelVpcBlockCsi,
+	}
 }

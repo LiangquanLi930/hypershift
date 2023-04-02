@@ -10,7 +10,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 )
 
 const (
@@ -153,6 +153,24 @@ func KASServiceMonitor(ns string) *prometheusoperatorv1.ServiceMonitor {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "kube-apiserver",
 			Namespace: ns,
+		},
+	}
+}
+
+func ControlPlaneRecordingRules(ns string) *prometheusoperatorv1.PrometheusRule {
+	return &prometheusoperatorv1.PrometheusRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "recording-rules",
+			Namespace: ns,
+		},
+	}
+}
+
+func KASContainerAWSKMSProviderServiceAccount() *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kms-provider",
+			Namespace: "kube-system",
 		},
 	}
 }

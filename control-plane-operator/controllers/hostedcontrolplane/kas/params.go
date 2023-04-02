@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	configv1 "github.com/openshift/api/config/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
-	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/aws"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/azure"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
@@ -64,12 +63,11 @@ type KubeAPIServerParams struct {
 }
 
 type KubeAPIServerServiceParams struct {
-	APIServerPort     int
-	AllowedCIDRBlocks []string
-	OwnerReference    *metav1.OwnerReference
+	APIServerPort       int
+	APIServerListenPort int
+	AllowedCIDRBlocks   []string
+	OwnerReference      *metav1.OwnerReference
 }
-
-const APIServerListenPort = 6443
 
 func NewKubeAPIServerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane, images map[string]string, externalAPIAddress string, externalAPIPort int32, externalOAuthAddress string, externalOAuthPort int32, setDefaultSecurityContext bool) *KubeAPIServerParams {
 	dns := globalconfig.DNSConfig()
@@ -78,6 +76,7 @@ func NewKubeAPIServerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 		ExternalAddress:      externalAPIAddress,
 		ExternalPort:         externalAPIPort,
 		InternalAddress:      fmt.Sprintf("api.%s.hypershift.local", hcp.Name),
+		InternalPort:         util.InternalAPIPortWithDefault(hcp, config.DefaultAPIServerPort),
 		ExternalOAuthAddress: externalOAuthAddress,
 		ExternalOAuthPort:    externalOAuthPort,
 		ServiceAccountIssuer: hcp.Spec.IssuerURL,
@@ -104,8 +103,7 @@ func NewKubeAPIServerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 		params.Scheduler = hcp.Spec.Configuration.Scheduler
 	}
 	params.AdvertiseAddress = util.AdvertiseAddressWithDefault(hcp, config.DefaultAdvertiseAddress)
-	params.APIServerPort = util.APIPortWithDefault(hcp, config.DefaultAPIServerPort)
-	params.InternalPort = util.APIPortWithDefault(hcp, config.DefaultAPIServerPort)
+	params.APIServerPort = util.BindAPIPortWithDefault(hcp, config.DefaultAPIServerPort)
 	if _, ok := hcp.Annotations[hyperv1.PortierisImageAnnotation]; ok {
 		params.Images.Portieris = hcp.Annotations[hyperv1.PortierisImageAnnotation]
 	}
@@ -125,7 +123,7 @@ func NewKubeAPIServerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Scheme: corev1.URISchemeHTTPS,
-				Port:   intstr.FromInt(int(APIServerListenPort)),
+				Port:   intstr.FromInt(int(params.APIServerPort)),
 				Path:   "livez?exclude=etcd",
 			},
 		},
@@ -226,7 +224,7 @@ func NewKubeAPIServerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Scheme: corev1.URISchemeHTTPS,
-					Port:   intstr.FromInt(int(APIServerListenPort)),
+					Port:   intstr.FromInt(int(params.APIServerPort)),
 					Path:   "readyz",
 				},
 			},
@@ -277,10 +275,6 @@ func NewKubeAPIServerParams(ctx context.Context, hcp *hyperv1.HostedControlPlane
 	}
 
 	switch hcp.Spec.Platform.Type {
-	case hyperv1.AWSPlatform:
-		params.CloudProvider = aws.Provider
-		params.CloudProviderConfig = &corev1.LocalObjectReference{Name: manifests.AWSProviderConfig("").Name}
-		params.CloudProviderCreds = &corev1.LocalObjectReference{Name: aws.KubeCloudControllerCredsSecret("").Name}
 	case hyperv1.AzurePlatform:
 		params.CloudProvider = azure.Provider
 		params.CloudProviderConfig = &corev1.LocalObjectReference{Name: manifests.AzureProviderConfigWithCredentials("").Name}
@@ -375,6 +369,7 @@ func (p *KubeAPIServerParams) ConfigParams() KubeAPIServerConfigParams {
 		NodePortRange:                p.ServiceNodePortRange(),
 		AuditWebhookEnabled:          p.AuditWebhookRef != nil,
 		ConsolePublicURL:             p.ConsolePublicURL,
+		DisableProfiling:             p.DisableProfiling,
 	}
 }
 
@@ -465,14 +460,16 @@ func (p *KubeAPIServerParams) ServiceNodePortRange() string {
 }
 
 func NewKubeAPIServerServiceParams(hcp *hyperv1.HostedControlPlane) *KubeAPIServerServiceParams {
-	port := util.APIPortWithDefault(hcp, config.DefaultAPIServerPort)
+	listenPort := util.BindAPIPortWithDefault(hcp, config.DefaultAPIServerPort)
+	port := util.InternalAPIPortWithDefault(hcp, config.DefaultAPIServerPort)
 	var allowedCIDRBlocks []string
 	for _, block := range util.AllowedCIDRBlocks(hcp) {
 		allowedCIDRBlocks = append(allowedCIDRBlocks, string(block))
 	}
 	return &KubeAPIServerServiceParams{
-		APIServerPort:     int(port),
-		AllowedCIDRBlocks: allowedCIDRBlocks,
-		OwnerReference:    config.ControllerOwnerRef(hcp),
+		APIServerPort:       int(port),
+		APIServerListenPort: int(listenPort),
+		AllowedCIDRBlocks:   allowedCIDRBlocks,
+		OwnerReference:      config.ControllerOwnerRef(hcp),
 	}
 }

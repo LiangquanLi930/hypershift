@@ -19,6 +19,8 @@ fi
 generate_junit() {
   cat  /tmp/test_out | go tool test2json -t > /tmp/test_out.json
   gotestsum --raw-command --junitfile="${ARTIFACT_DIR}/junit.xml" --format=standard-verbose -- cat /tmp/test_out.json
+  # Ensure generated junit has a useful suite name
+  sed -i 's/\(<testsuite.*\)name=""/\1 name="hypershift-e2e"/' "${ARTIFACT_DIR}/junit.xml"
 }
 trap generate_junit EXIT
 
@@ -29,7 +31,6 @@ bin/test-e2e \
   -test.parallel=20 \
   --e2e.aws-credentials-file=/etc/hypershift-pool-aws-credentials/credentials \
   --e2e.aws-zones=us-east-1a,us-east-1b,us-east-1c \
-  --e2e.node-pool-replicas=1 \
   --e2e.pull-secret-file=/etc/ci-pull-credentials/.dockerconfigjson \
   --e2e.base-domain=ci.hypershift.devcluster.openshift.com \
   --e2e.latest-release-image="${OCP_IMAGE_LATEST}" \

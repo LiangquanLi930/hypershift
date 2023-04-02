@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -37,7 +37,7 @@ const LoopDetectorWarningMessage = "WARNING: Object got updated more than one ti
 // a bug in the defaulting, we will end up always updating.
 func updateLoopThreshold(o runtime.Object) int {
 	// Give some leeway, if we actually revert defaults we will do a lot more than this
-	return 5
+	return 10
 }
 
 type updateLoopDetector struct {

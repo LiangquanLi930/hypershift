@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
 
@@ -79,7 +79,7 @@ func TestGenerateReconciliationPausedCondition(t *testing.T) {
 			expectedCondition: metav1.Condition{
 				Type:               string(hyperv1.ReconciliationActive),
 				Status:             metav1.ConditionTrue,
-				Reason:             reconciliationActiveConditionReason,
+				Reason:             hyperv1.AsExpectedReason,
 				Message:            "Reconciliation active on resource",
 				ObservedGeneration: fakeInputGeneration,
 			},
@@ -90,7 +90,7 @@ func TestGenerateReconciliationPausedCondition(t *testing.T) {
 			expectedCondition: metav1.Condition{
 				Type:               string(hyperv1.ReconciliationActive),
 				Status:             metav1.ConditionFalse,
-				Reason:             reconciliationPausedConditionReason,
+				Reason:             hyperv1.ReconciliationPausedConditionReason,
 				Message:            fmt.Sprintf("Reconciliation paused until: %s", *fakeFutureDate),
 				ObservedGeneration: fakeInputGeneration,
 			},
@@ -101,7 +101,7 @@ func TestGenerateReconciliationPausedCondition(t *testing.T) {
 			expectedCondition: metav1.Condition{
 				Type:               string(hyperv1.ReconciliationActive),
 				Status:             metav1.ConditionTrue,
-				Reason:             reconciliationActiveConditionReason,
+				Reason:             hyperv1.AsExpectedReason,
 				Message:            "Reconciliation active on resource",
 				ObservedGeneration: fakeInputGeneration,
 			},
@@ -112,7 +112,7 @@ func TestGenerateReconciliationPausedCondition(t *testing.T) {
 			expectedCondition: metav1.Condition{
 				Type:               string(hyperv1.ReconciliationActive),
 				Status:             metav1.ConditionFalse,
-				Reason:             reconciliationPausedConditionReason,
+				Reason:             hyperv1.ReconciliationPausedConditionReason,
 				Message:            "Reconciliation paused until field removed",
 				ObservedGeneration: fakeInputGeneration,
 			},
@@ -123,7 +123,7 @@ func TestGenerateReconciliationPausedCondition(t *testing.T) {
 			expectedCondition: metav1.Condition{
 				Type:               string(hyperv1.ReconciliationActive),
 				Status:             metav1.ConditionTrue,
-				Reason:             reconciliationInvalidPausedUntilConditionReason,
+				Reason:             hyperv1.ReconciliationInvalidPausedUntilConditionReason,
 				Message:            "Invalid value provided for PausedUntil field",
 				ObservedGeneration: fakeInputGeneration,
 			},

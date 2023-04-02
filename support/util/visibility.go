@@ -1,7 +1,7 @@
 package util
 
 import (
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 )
 
 func IsPrivateHCP(hcp *hyperv1.HostedControlPlane) bool {
@@ -22,4 +22,8 @@ func IsPrivateHC(hc *hyperv1.HostedCluster) bool {
 	return hc.Spec.Platform.Type == hyperv1.AWSPlatform &&
 		(hc.Spec.Platform.AWS.EndpointAccess == hyperv1.PublicAndPrivate ||
 			hc.Spec.Platform.AWS.EndpointAccess == hyperv1.Private)
+}
+
+func IsPublicKASWithDNS(hostedControlPlane *hyperv1.HostedControlPlane) bool {
+	return IsPublicHCP(hostedControlPlane) && UseDedicatedDNSforKAS(hostedControlPlane)
 }

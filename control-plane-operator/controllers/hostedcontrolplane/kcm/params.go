@@ -8,8 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	configv1 "github.com/openshift/api/config/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
-	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/aws"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/azure"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
@@ -103,10 +102,6 @@ func NewKubeControllerManagerParams(ctx context.Context, hcp *hyperv1.HostedCont
 	params.DeploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
 
 	switch hcp.Spec.Platform.Type {
-	case hyperv1.AWSPlatform:
-		params.CloudProvider = aws.Provider
-		params.CloudProviderConfig = &corev1.LocalObjectReference{Name: manifests.AWSProviderConfig("").Name}
-		params.CloudProviderCreds = &corev1.LocalObjectReference{Name: aws.KubeCloudControllerCredsSecret("").Name}
 	case hyperv1.AzurePlatform:
 		params.CloudProvider = azure.Provider
 		params.CloudProviderConfig = &corev1.LocalObjectReference{Name: manifests.AzureProviderConfigWithCredentials("").Name}

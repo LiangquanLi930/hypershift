@@ -16,7 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
-	capiawsv1beta1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capiaws "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	capiazure "sigs.k8s.io/cluster-api-provider-azure/api/v1beta1"
 	capiibmv1 "sigs.k8s.io/cluster-api-provider-ibmcloud/api/v1beta1"
 	capikubevirt "sigs.k8s.io/cluster-api-provider-kubevirt/api/v1alpha1"
@@ -32,7 +32,7 @@ type CreateOrUpdateProvider interface {
 }
 
 var withStatusSubresource = sets.NewString(
-	fmt.Sprintf("%T", &capiawsv1beta1.AWSCluster{}),
+	fmt.Sprintf("%T", &capiaws.AWSCluster{}),
 	fmt.Sprintf("%T", &configv1.ClusterOperator{}),
 	fmt.Sprintf("%T", &capikubevirt.KubevirtCluster{}),
 	fmt.Sprintf("%T", &capiv1.Cluster{}),
@@ -138,7 +138,7 @@ func mutate(f controllerutil.MutateFn, key crclient.ObjectKey, obj crclient.Obje
 		return err
 	}
 	if newKey := crclient.ObjectKeyFromObject(obj); key != newKey {
-		return fmt.Errorf("MutateFn cannot mutate object name and/or object namespace")
+		return fmt.Errorf("MutateFn cannot mutate object name and/or object namespace. key: %s, kind: %s, namespace: %s", key, obj.GetObjectKind(), obj.GetNamespace())
 	}
 	return nil
 }

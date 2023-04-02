@@ -18,28 +18,33 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/utils/pointer"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	imageapi "github.com/openshift/api/image/v1"
 	hyperapi "github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/cmd/install/assets"
 	"github.com/openshift/hypershift/cmd/util"
 	"github.com/openshift/hypershift/cmd/version"
 	"github.com/openshift/hypershift/support/metrics"
+	"github.com/openshift/hypershift/support/rhobsmonitoring"
 )
 
 type Options struct {
@@ -49,7 +54,8 @@ type Options struct {
 	ImageRefsFile                             string
 	HyperShiftOperatorReplicas                int32
 	Development                               bool
-	EnableWebhook                             bool
+	EnableValidatingWebhook                   bool
+	EnableConversionWebhook                   bool
 	Template                                  bool
 	Format                                    string
 	ExcludeEtcdManifests                      bool
@@ -73,6 +79,9 @@ type Options struct {
 	EnableAdminRBACGeneration                 bool
 	EnableUWMTelemetryRemoteWrite             bool
 	MetricsSet                                metrics.MetricsSet
+	WaitUntilAvailable                        bool
+	RHOBSMonitoring                           bool
+	SLOsAlerts                                bool
 }
 
 func (o *Options) Validate() error {
@@ -113,6 +122,10 @@ func (o *Options) Validate() error {
 	if o.HyperShiftImage != version.HyperShiftImage && len(o.ImageRefsFile) > 0 {
 		errs = append(errs, fmt.Errorf("only one of --hypershift-image or --image-refs-file should be specified"))
 	}
+	if o.RHOBSMonitoring && os.Getenv(rhobsmonitoring.EnvironmentVariable) != "1" {
+		errs = append(errs, fmt.Errorf("when invoking this command with the --rhobs-monitoring flag, the RHOBS_MONITORING environment variable must be set to \"1\""))
+	}
+
 	return errors.NewAggregate(errs)
 }
 
@@ -120,7 +133,7 @@ func (o *Options) ApplyDefaults() {
 	switch {
 	case o.Development:
 		o.HyperShiftOperatorReplicas = 0
-	case o.EnableWebhook:
+	case o.EnableConversionWebhook:
 		o.HyperShiftOperatorReplicas = 2
 	default:
 		o.HyperShiftOperatorReplicas = 1
@@ -141,11 +154,14 @@ func NewCommand() *cobra.Command {
 	}
 	opts.PrivatePlatform = string(hyperv1.NonePlatform)
 	opts.MetricsSet = metrics.DefaultMetricsSet
+	opts.EnableConversionWebhook = true // default to enabling the conversion webhook
 
 	cmd.PersistentFlags().StringVar(&opts.Namespace, "namespace", "hypershift", "The namespace in which to install HyperShift")
 	cmd.PersistentFlags().StringVar(&opts.HyperShiftImage, "hypershift-image", version.HyperShiftImage, "The HyperShift image to deploy")
 	cmd.PersistentFlags().BoolVar(&opts.Development, "development", false, "Enable tweaks to facilitate local development")
-	cmd.PersistentFlags().BoolVar(&opts.EnableWebhook, "enable-webhook", false, "Enable webhook for hypershift API types")
+	cmd.PersistentFlags().BoolVar(&opts.EnableValidatingWebhook, "enable-validating-webhook", false, "Enable webhook for validating hypershift API types")
+	cmd.PersistentFlags().MarkDeprecated("enable-validating-webhook", "This field is deprecated and has no effect")
+	cmd.PersistentFlags().BoolVar(&opts.EnableConversionWebhook, "enable-conversion-webhook", true, "Enable webhook for converting hypershift API types")
 	cmd.PersistentFlags().BoolVar(&opts.ExcludeEtcdManifests, "exclude-etcd", false, "Leave out etcd manifests")
 	cmd.PersistentFlags().Var(&opts.PlatformMonitoring, "platform-monitoring", "Select an option for enabling platform cluster monitoring. Valid values are: None, OperatorOnly, All")
 	cmd.PersistentFlags().BoolVar(&opts.EnableCIDebugOutput, "enable-ci-debug-output", opts.EnableCIDebugOutput, "If extra CI debug output should be enabled")
@@ -169,6 +185,9 @@ func NewCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.AdditionalTrustBundle, "additional-trust-bundle", opts.AdditionalTrustBundle, "Path to a file with user CA bundle")
 	cmd.PersistentFlags().Var(&opts.MetricsSet, "metrics-set", "The set of metrics to produce for each HyperShift control plane. Valid values are: Telemetry, SRE, All")
 	cmd.PersistentFlags().BoolVar(&opts.EnableUWMTelemetryRemoteWrite, "enable-uwm-telemetry-remote-write", opts.EnableUWMTelemetryRemoteWrite, "If true, HyperShift operator ensures user workload monitoring is enabled and that it is configured to remote write telemetry metrics from control planes")
+	cmd.Flags().BoolVar(&opts.WaitUntilAvailable, "wait-until-available", opts.WaitUntilAvailable, "If true, pauses installation until hypershift operator has been rolled out and its webhook service is available (if installing the webhook)")
+	cmd.PersistentFlags().BoolVar(&opts.RHOBSMonitoring, "rhobs-monitoring", opts.RHOBSMonitoring, "If true, HyperShift will generate and use the RHOBS version of monitoring resources (ServiceMonitors, PodMonitors, etc)")
+	cmd.PersistentFlags().BoolVar(&opts.SLOsAlerts, "slos-alerts", opts.SLOsAlerts, "If true, HyperShift will generate and use the prometheus alerts for monitoring HostedCluster and NodePools")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		opts.ApplyDefaults()
@@ -187,6 +206,12 @@ func NewCommand() *cobra.Command {
 			return err
 		}
 
+		if opts.WaitUntilAvailable {
+			if err := waitUntilAvailable(cmd.Context(), opts); err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}
 
@@ -200,6 +225,7 @@ func apply(ctx context.Context, objects []crclient.Object) error {
 	if err != nil {
 		return err
 	}
+
 	for _, object := range objects {
 		var objectBytes bytes.Buffer
 		err := hyperapi.YamlSerializer.Encode(object, &objectBytes)
@@ -224,11 +250,103 @@ func apply(ctx context.Context, objects []crclient.Object) error {
 			fmt.Printf("applied %s %s/%s\n", object.GetObjectKind().GroupVersionKind().Kind, object.GetNamespace(), object.GetName())
 		}
 	}
+
 	return nil
 }
 
+func waitUntilAvailable(ctx context.Context, opts Options) error {
+	client, err := util.GetClient()
+	if err != nil {
+		return err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	fmt.Printf("Waiting for operator rollout...\n")
+	err = wait.PollImmediateUntilWithContext(waitCtx, 2*time.Second, func(ctx context.Context) (bool, error) {
+		deployment := operatorDeployment(opts)
+		if err := client.Get(ctx, crclient.ObjectKeyFromObject(deployment), deployment); err != nil {
+			return false, err
+		}
+		if deployment.Generation <= deployment.Status.ObservedGeneration {
+			cond := getDeploymentCondition(deployment.Status, appsv1.DeploymentProgressing)
+			if cond != nil && cond.Reason == "ProgressDeadlineExceeded" {
+				return false, fmt.Errorf("deployment %q exceeded its progress deadline", deployment.Name)
+			}
+			if deployment.Spec.Replicas != nil && deployment.Status.UpdatedReplicas < *deployment.Spec.Replicas {
+				fmt.Printf("Waiting for deployment %q rollout to finish: %d out of %d new replicas have been updated...\n", deployment.Name, deployment.Status.UpdatedReplicas, *deployment.Spec.Replicas)
+				return false, nil
+			}
+			if deployment.Status.Replicas > deployment.Status.UpdatedReplicas {
+				fmt.Printf("Waiting for deployment %q rollout to finish: %d old replicas are pending termination...\n", deployment.Name, deployment.Status.Replicas-deployment.Status.UpdatedReplicas)
+				return false, nil
+			}
+			if deployment.Status.AvailableReplicas < deployment.Status.UpdatedReplicas {
+				fmt.Printf("Waiting for deployment %q rollout to finish: %d of %d updated replicas are available...\n", deployment.Name, deployment.Status.AvailableReplicas, deployment.Status.UpdatedReplicas)
+				return false, nil
+			}
+			fmt.Printf("Deployment %q successfully rolled out\n", deployment.Name)
+			return true, nil
+		} else {
+			fmt.Printf("Waiting for operator deployment to be observed\n")
+			return false, nil
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("failed to wait for operator deployment: %w", err)
+	}
+
+	if opts.Development {
+		return nil
+	}
+	err = wait.PollImmediateUntilWithContext(waitCtx, 2*time.Second, func(ctx context.Context) (bool, error) {
+		endpoints := operatorEndpoints(opts)
+		if err := client.Get(ctx, crclient.ObjectKeyFromObject(endpoints), endpoints); err != nil {
+			if apierrors.IsNotFound(err) {
+				fmt.Printf("Operator service endpoints have not been created yet\n")
+				return false, nil
+			}
+			return false, err
+		}
+		if len(endpoints.Subsets) == 0 || len(endpoints.Subsets[0].Addresses) == 0 {
+			fmt.Printf("Waiting for endpoints addresses to be populated\n")
+			return false, nil
+		}
+		fmt.Printf("Endpoints available\n")
+		return true, nil
+
+	})
+	if err != nil {
+		return fmt.Errorf("failed to wait for operator service endpoints: %w", err)
+	}
+	return nil
+}
+
+// getDeploymentCondition returns the condition with the provided type.
+func getDeploymentCondition(status appsv1.DeploymentStatus, condType appsv1.DeploymentConditionType) *appsv1.DeploymentCondition {
+	for i := range status.Conditions {
+		c := status.Conditions[i]
+		if c.Type == condType {
+			return &c
+		}
+	}
+	return nil
+}
+
+func operatorDeployment(opts Options) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "operator", Namespace: opts.Namespace},
+	}
+}
+
+func operatorEndpoints(opts Options) *corev1.Endpoints {
+	return &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{Name: "operator", Namespace: opts.Namespace},
+	}
+}
+
 func fetchImageRefs(file string) (map[string]string, error) {
-	content, err := ioutil.ReadFile(file)
+	content, err := os.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read image references file: %w", err)
 	}
@@ -291,16 +409,9 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 	}.Build()
 	objects = append(objects, operatorRoleBinding)
 
-	if opts.EnableWebhook {
-		validatingWebhookConfiguration := assets.HyperShiftValidatingWebhookConfiguration{
-			Namespace: operatorNamespace,
-		}.Build()
-		objects = append(objects, validatingWebhookConfiguration)
-	}
-
 	var oidcSecret *corev1.Secret
 	if opts.OIDCStorageProviderS3Credentials != "" {
-		oidcCreds, err := ioutil.ReadFile(opts.OIDCStorageProviderS3Credentials)
+		oidcCreds, err := os.ReadFile(opts.OIDCStorageProviderS3Credentials)
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +435,7 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 	switch hyperv1.PlatformType(opts.PrivatePlatform) {
 	case hyperv1.AWSPlatform:
 		if opts.AWSPrivateCreds != "" {
-			credBytes, err := ioutil.ReadFile(opts.AWSPrivateCreds)
+			credBytes, err := os.ReadFile(opts.AWSPrivateCreds)
 			if err != nil {
 				return objects, err
 			}
@@ -347,7 +458,7 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 
 	var userCABundleCM *corev1.ConfigMap
 	if opts.AdditionalTrustBundle != "" {
-		userCABundle, err := ioutil.ReadFile(opts.AdditionalTrustBundle)
+		userCABundle, err := os.ReadFile(opts.AdditionalTrustBundle)
 		if err != nil {
 			return nil, err
 		}
@@ -380,7 +491,7 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 
 		var externalDNSSecret *corev1.Secret
 		if opts.ExternalDNSCredentials != "" {
-			externalDNSCreds, err := ioutil.ReadFile(opts.ExternalDNSCredentials)
+			externalDNSCreds, err := os.ReadFile(opts.ExternalDNSCredentials)
 			if err != nil {
 				return nil, err
 			}
@@ -420,7 +531,7 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 		Replicas:                       opts.HyperShiftOperatorReplicas,
 		EnableOCPClusterMonitoring:     opts.PlatformMonitoring == metrics.PlatformMonitoringAll,
 		EnableCIDebugOutput:            opts.EnableCIDebugOutput,
-		EnableWebhook:                  opts.EnableWebhook,
+		EnableWebhook:                  opts.EnableConversionWebhook,
 		PrivatePlatform:                opts.PrivatePlatform,
 		AWSPrivateRegion:               opts.AWSPrivateRegion,
 		AWSPrivateSecret:               operatorCredentialsSecret,
@@ -433,6 +544,7 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 		MetricsSet:                     opts.MetricsSet,
 		IncludeVersion:                 !opts.Template,
 		UWMTelemetry:                   opts.EnableUWMTelemetryRemoteWrite,
+		RHOBSMonitoring:                opts.RHOBSMonitoring,
 	}.Build()
 	objects = append(objects, operatorDeployment)
 
@@ -463,11 +575,42 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 	}.Build()
 	objects = append(objects, recordingRule)
 
+	if opts.SLOsAlerts {
+		alertingRule := assets.HypershiftAlertingRule{
+			Namespace: &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "openshift-monitoring"}},
+		}.Build()
+		objects = append(objects, alertingRule)
+	}
+
 	objects = append(objects, assets.CustomResourceDefinitions(func(path string) bool {
 		if strings.Contains(path, "etcd") && opts.ExcludeEtcdManifests {
 			return false
 		}
 		return true
+	}, func(crd *apiextensionsv1.CustomResourceDefinition) {
+		if crd.Spec.Group == "hypershift.openshift.io" {
+			if !opts.EnableConversionWebhook {
+				return
+			}
+			if crd.Annotations != nil {
+				crd.Annotations = map[string]string{}
+			}
+			crd.Annotations["service.beta.openshift.io/inject-cabundle"] = "true"
+			crd.Spec.Conversion = &apiextensionsv1.CustomResourceConversion{
+				Strategy: apiextensionsv1.WebhookConverter,
+				Webhook: &apiextensionsv1.WebhookConversion{
+					ClientConfig: &apiextensionsv1.WebhookClientConfig{
+						Service: &apiextensionsv1.ServiceReference{
+							Namespace: operatorNamespace.Name,
+							Name:      operatorService.Name,
+							Port:      pointer.Int32(443),
+							Path:      pointer.String("/convert"),
+						},
+					},
+					ConversionReviewVersions: []string{"v1beta2", "v1beta1", "v1alpha1"},
+				},
+			}
+		}
 	})...)
 
 	if opts.EnableAdminRBACGeneration {
@@ -512,11 +655,11 @@ func hyperShiftOperatorManifests(opts Options) ([]crclient.Object, error) {
 	}
 
 	for idx := range objects {
-		gvk, err := apiutil.GVKForObject(objects[idx], hyperapi.Scheme)
+		gvk, err := apiutil.GVKForObject(objects[idx], hyperapi.InstallScheme)
 		if err != nil {
 			return nil, fmt.Errorf("failed to look up gvk for %T: %w", objects[idx], err)
 		}
-		// Everything that embedds metav1.TypeMeta implements this
+		// Everything that embeds metav1.TypeMeta implements this
 		objects[idx].(interface {
 			SetGroupVersionKind(gvk schema.GroupVersionKind)
 		}).SetGroupVersionKind(gvk)

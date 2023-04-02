@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/pki"
@@ -25,14 +26,19 @@ import (
 var (
 	oauthVolumeMounts = util.PodVolumeMounts{
 		oauthContainerMain().Name: {
-			oauthVolumeWorkLogs().Name:           "/var/log/openshift-apiserver",
-			oauthVolumeAuditConfig().Name:        "/etc/kubernetes/audit-config",
-			oauthVolumeAggregatorClientCA().Name: "/etc/kubernetes/certs/aggregator-client-ca",
-			oauthVolumeEtcdClientCA().Name:       "/etc/kubernetes/certs/etcd-client-ca",
-			oauthVolumeServingCA().Name:          "/etc/kubernetes/certs/serving-ca",
-			oauthVolumeKubeconfig().Name:         "/etc/kubernetes/secrets/svc-kubeconfig",
-			oauthVolumeServingCert().Name:        "/etc/kubernetes/certs/serving",
-			oauthVolumeEtcdClientCert().Name:     "/etc/kubernetes/certs/etcd-client",
+			oauthVolumeWorkLogs().Name:        "/var/log/openshift-oauth-apiserver",
+			oauthVolumeAuditConfig().Name:     "/etc/kubernetes/audit-config",
+			common.VolumeAggregatorCA().Name:  "/etc/kubernetes/certs/aggregator-client-ca",
+			oauthVolumeEtcdClientCA().Name:    "/etc/kubernetes/certs/etcd-client-ca",
+			oauthVolumeKubeconfig().Name:      "/etc/kubernetes/secrets/svc-kubeconfig",
+			oauthVolumeServingCert().Name:     "/etc/kubernetes/certs/serving",
+			oauthVolumeEtcdClientCert().Name:  "/etc/kubernetes/certs/etcd-client",
+			common.VolumeTotalClientCA().Name: "/etc/kubernetes/certs/client-ca",
+		},
+	}
+	oauthAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
+		oauthContainerMain().Name: {
+			oauthAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
 		},
 	}
 )
@@ -73,18 +79,44 @@ func ReconcileOAuthAPIServerDeployment(deployment *appsv1.Deployment, ownerRef c
 		AutomountServiceAccountToken: pointer.BoolPtr(false),
 		Containers: []corev1.Container{
 			util.BuildContainer(oauthContainerMain(), buildOAuthContainerMain(p)),
+			{
+				Name:            "audit-logs",
+				Image:           p.Image,
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Command: []string{
+					"/usr/bin/tail",
+					"-c+1",
+					"-F",
+					fmt.Sprintf("%s/%s", oauthVolumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name), "audit.log"),
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("5m"),
+						corev1.ResourceMemory: resource.MustParse("10Mi"),
+					},
+				},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      oauthVolumeWorkLogs().Name,
+					MountPath: oauthVolumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name),
+				}},
+			},
 		},
 		Volumes: []corev1.Volume{
 			util.BuildVolume(oauthVolumeWorkLogs(), buildOAuthVolumeWorkLogs),
 			util.BuildVolume(oauthVolumeAuditConfig(), buildOAuthVolumeAuditConfig),
-			util.BuildVolume(oauthVolumeAggregatorClientCA(), buildOAuthVolumeAggregatorClientCA),
+			util.BuildVolume(common.VolumeAggregatorCA(), common.BuildVolumeAggregatorCA),
 			util.BuildVolume(oauthVolumeEtcdClientCA(), buildOAuthVolumeEtcdClientCA),
-			util.BuildVolume(oauthVolumeServingCA(), buildOAuthVolumeServingCA),
 			util.BuildVolume(oauthVolumeKubeconfig(), buildOAuthVolumeKubeconfig),
 			util.BuildVolume(oauthVolumeServingCert(), buildOAuthVolumeServingCert),
 			util.BuildVolume(oauthVolumeEtcdClientCert(), buildOAuthVolumeEtcdClientCert),
+			util.BuildVolume(common.VolumeTotalClientCA(), common.BuildVolumeTotalClientCA),
 		},
 	}
+
+	if p.AuditWebhookRef != nil {
+		applyOauthAuditWebhookConfigFileVolume(&deployment.Spec.Template.Spec, p.AuditWebhookRef)
+	}
+
 	util.AvailabilityProber(kas.InClusterKASReadyURL(deployment.Namespace, apiPort), p.AvailabilityProberImage, &deployment.Spec.Template.Spec)
 	p.DeploymentConfig.ApplyTo(deployment)
 	return nil
@@ -126,6 +158,16 @@ func buildOAuthContainerMain(p *OAuthDeploymentParams) func(c *corev1.Container)
 			fmt.Sprintf("--etcd-servers=%s", p.EtcdURL),
 			"--v=2",
 			fmt.Sprintf("--tls-min-version=%s", p.MinTLSVersion),
+			fmt.Sprintf("--requestheader-client-ca-file=%s", cpath(common.VolumeAggregatorCA().Name, certs.CASignerCertMapKey)),
+			"--requestheader-allowed-names=kube-apiserver-proxy,system:kube-apiserver-proxy,system:openshift-aggregator",
+			"--requestheader-username-headers=X-Remote-User",
+			"--requestheader-group-headers=X-Remote-Group",
+			"--requestheader-extra-headers-prefix=X-Remote-Extra-",
+			fmt.Sprintf("--client-ca-file=%s", cpath(common.VolumeTotalClientCA().Name, certs.CASignerCertMapKey)),
+		}
+		if p.AuditWebhookRef != nil {
+			c.Args = append(c.Args, fmt.Sprintf("audit-webhook-config-file=%s", oauthAuditWebhookConfigFile()))
+			c.Args = append(c.Args, "audit-webhook-mode=batch")
 		}
 		c.VolumeMounts = oauthVolumeMounts.ContainerMounts(c.Name)
 		c.WorkingDir = oauthVolumeMounts.Path(oauthContainerMain().Name, oauthVolumeWorkLogs().Name)
@@ -168,17 +210,7 @@ func oauthVolumeKubeconfig() *corev1.Volume {
 func buildOAuthVolumeKubeconfig(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.KASServiceKubeconfigSecret("").Name
-}
-
-func oauthVolumeAggregatorClientCA() *corev1.Volume {
-	return &corev1.Volume{
-		Name: "aggregator-client-ca",
-	}
-}
-
-func buildOAuthVolumeAggregatorClientCA(v *corev1.Volume) {
-	v.Secret = &corev1.SecretVolumeSource{}
-	v.Secret.SecretName = manifests.RootCASecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
 }
 
 func oauthVolumeEtcdClientCA() *corev1.Volume {
@@ -188,19 +220,8 @@ func oauthVolumeEtcdClientCA() *corev1.Volume {
 }
 
 func buildOAuthVolumeEtcdClientCA(v *corev1.Volume) {
-	v.Secret = &corev1.SecretVolumeSource{}
-	v.Secret.SecretName = manifests.RootCASecret("").Name
-}
-
-func oauthVolumeServingCA() *corev1.Volume {
-	return &corev1.Volume{
-		Name: "serving-ca",
-	}
-}
-
-func buildOAuthVolumeServingCA(v *corev1.Volume) {
-	v.Secret = &corev1.SecretVolumeSource{}
-	v.Secret.SecretName = manifests.RootCASecret("").Name
+	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
+	v.ConfigMap.Name = manifests.EtcdSignerCAConfigMap("").Name
 }
 
 func oauthVolumeServingCert() *corev1.Volume {
@@ -212,6 +233,7 @@ func oauthVolumeServingCert() *corev1.Volume {
 func buildOAuthVolumeServingCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.OpenShiftOAuthAPIServerCertSecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
 }
 
 func oauthVolumeEtcdClientCert() *corev1.Volume {
@@ -220,9 +242,43 @@ func oauthVolumeEtcdClientCert() *corev1.Volume {
 	}
 }
 
+func oauthAuditWebhookConfigFileVolume() *corev1.Volume {
+	return &corev1.Volume{
+		Name: "oauth-audit-webhook",
+	}
+}
+
+func buildOauthAuditWebhookConfigFileVolume(auditWebhookRef *corev1.LocalObjectReference) func(v *corev1.Volume) {
+	return func(v *corev1.Volume) {
+		v.Secret = &corev1.SecretVolumeSource{}
+		v.Secret.SecretName = auditWebhookRef.Name
+	}
+}
+
+func applyOauthAuditWebhookConfigFileVolume(podSpec *corev1.PodSpec, auditWebhookRef *corev1.LocalObjectReference) {
+	podSpec.Volumes = append(podSpec.Volumes, util.BuildVolume(oauthAuditWebhookConfigFileVolume(), buildOauthAuditWebhookConfigFileVolume(auditWebhookRef)))
+	var container *corev1.Container
+	for i, c := range podSpec.Containers {
+		if c.Name == oauthContainerMain().Name {
+			container = &podSpec.Containers[i]
+			break
+		}
+	}
+	if container == nil {
+		panic("main openshift apiserver container not found in spec")
+	}
+	container.VolumeMounts = append(container.VolumeMounts,
+		oauthAuditWebhookConfigFileVolumeMount.ContainerMounts(oauthContainerMain().Name)...)
+}
+func oauthAuditWebhookConfigFile() string {
+	cfgDir := oauthAuditWebhookConfigFileVolumeMount.Path(oauthContainerMain().Name, oauthAuditWebhookConfigFileVolume().Name)
+	return path.Join(cfgDir, hyperv1.AuditWebhookKubeconfigKey)
+}
+
 func buildOAuthVolumeEtcdClientCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.EtcdClientSecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
 }
 
 func ReconcileOpenShiftOAuthAPIServerPodDisruptionBudget(pdb *policyv1.PodDisruptionBudget, p *OAuthDeploymentParams) error {

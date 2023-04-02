@@ -16,15 +16,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"k8s.io/client-go/rest"
 	"os"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/api"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/configmetrics"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/cmca"
+	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/drainer"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/hcpstatus"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/inplaceupgrader"
+	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/node"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/operator"
 	"github.com/openshift/hypershift/pkg/version"
@@ -52,6 +54,8 @@ var controllerFuncs = map[string]operator.ControllerSetupFunc{
 	"controller-manager-ca":  cmca.Setup,
 	resources.ControllerName: resources.Setup,
 	"inplaceupgrader":        inplaceupgrader.Setup,
+	"node":                   node.Setup,
+	"drainer":                drainer.Setup,
 	hcpstatus.ControllerName: hcpstatus.Setup,
 }
 
@@ -64,6 +68,9 @@ type HostedClusterConfigOperator struct {
 
 	// TargetKubeconfig is a kubeconfig to access the target cluster.
 	TargetKubeconfig string
+
+	// KubevirtInfraKubeconfig is a kubeconfig to access the infra cluster.
+	KubevirtInfraKubeconfig string
 
 	// InitialCAFile is a file containing the initial contents of the Kube controller manager CA.
 	InitialCAFile string
@@ -120,6 +127,7 @@ func newHostedClusterConfigOperatorCommand() *cobra.Command {
 	flags.AddGoFlagSet(flag.CommandLine)
 	flags.StringVar(&cpo.Namespace, "namespace", cpo.Namespace, "Namespace for control plane components on management cluster")
 	flags.StringVar(&cpo.TargetKubeconfig, "target-kubeconfig", cpo.TargetKubeconfig, "Kubeconfig for target cluster")
+	flags.StringVar(&cpo.KubevirtInfraKubeconfig, "kubevirt-infra-kubeconfig", cpo.KubevirtInfraKubeconfig, "Kubeconfig for infra cluster (kubevirt provider)")
 	flags.StringVar(&cpo.InitialCAFile, "initial-ca-file", cpo.InitialCAFile, "Path to controller manager initial CA file")
 	flags.StringVar(&cpo.ClusterSignerCAFile, "cluster-signer-ca-file", cpo.ClusterSignerCAFile, "Path to the cluster signer CA cert")
 	flags.StringSliceVar(&cpo.Controllers, "controllers", cpo.Controllers, "Controllers to run with this operator")
@@ -160,13 +168,13 @@ func (o *HostedClusterConfigOperator) Validate() error {
 func (o *HostedClusterConfigOperator) Complete() error {
 	var err error
 	if len(o.InitialCAFile) > 0 {
-		o.initialCA, err = ioutil.ReadFile(o.InitialCAFile)
+		o.initialCA, err = os.ReadFile(o.InitialCAFile)
 		if err != nil {
 			return err
 		}
 	}
 	if o.ClusterSignerCAFile != "" {
-		o.clusterSignerCA, err = ioutil.ReadFile(o.ClusterSignerCAFile)
+		o.clusterSignerCA, err = os.ReadFile(o.ClusterSignerCAFile)
 		if err != nil {
 			return err
 		}
@@ -207,6 +215,14 @@ func (o *HostedClusterConfigOperator) Run(ctx context.Context) error {
 	if err := mgr.Add(cpCluster); err != nil {
 		return fmt.Errorf("cannot add CPCluster to manager: %v", err)
 	}
+	var kubevirtInfraConfig *rest.Config
+	if o.KubevirtInfraKubeconfig != "" {
+		kubevirtInfraConfig = operator.CfgFromFile(o.KubevirtInfraKubeconfig)
+	} else {
+		// in case infra kubeconfig hasn't been provided, default the kubevirtInfraCluster to cpConfig
+		kubevirtInfraConfig = cpConfig
+	}
+
 	releaseProvider := &releaseinfo.StaticProviderDecorator{
 		Delegate: &releaseinfo.CachedProvider{
 			Inner: &releaseinfo.RegistryClientProvider{},
@@ -223,6 +239,7 @@ func (o *HostedClusterConfigOperator) Run(ctx context.Context) error {
 		},
 		Config:                cpConfig,
 		TargetConfig:          cfg,
+		KubevirtInfraConfig:   kubevirtInfraConfig,
 		Manager:               mgr,
 		Namespace:             o.Namespace,
 		HCPName:               o.HostedControlPlaneName,

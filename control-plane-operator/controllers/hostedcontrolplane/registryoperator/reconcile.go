@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/certs"
@@ -47,7 +47,6 @@ cp "{{ .CABundle }}" "{{ .TokenDir }}/ca.crt"
 export KUBERNETES_SERVICE_HOST=kube-apiserver
 export KUBERNETES_SERVICE_PORT=$KUBE_APISERVER_SERVICE_PORT
 exec /usr/bin/cluster-image-registry-operator \
-  --files="{{ .TokenDir }}/token" \
   --files="{{ .ServingCertDir }}/tls.crt" \
   --files="{{ .ServingCertDir }}/tls.key"
 `
@@ -167,6 +166,7 @@ func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[strin
 			},
 		},
 	}
+	params.deploymentConfig.SetRestartAnnotation(hcp.ObjectMeta)
 	params.deploymentConfig.SetDefaults(hcp, selectorLabels(), pointer.Int(1))
 	params.deploymentConfig.SetReleaseImageAnnotation(hcp.Spec.ReleaseImage)
 	return params
@@ -364,7 +364,8 @@ func volumeServingCert() *corev1.Volume {
 
 func buildVolumeServingCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.ImageRegistryOperatorServingCert("").Name,
+		SecretName:  manifests.ImageRegistryOperatorServingCert("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
 }
 
@@ -376,7 +377,8 @@ func volumeAdminKubeconfig() *corev1.Volume {
 
 func buildVolumeAdminKubeconfig(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.KASServiceKubeconfigSecret("").Name,
+		SecretName:  manifests.KASServiceKubeconfigSecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
 }
 
@@ -388,7 +390,8 @@ func volumeCABundle() *corev1.Volume {
 
 func buildVolumeCABundle(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.RootCASecret("").Name,
+		SecretName:  manifests.RootCASecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
 }
 
@@ -423,22 +426,21 @@ func ReconcilePodMonitor(pm *prometheusoperatorv1.PodMonitor, clusterID string, 
 	pm.Spec.NamespaceSelector = prometheusoperatorv1.NamespaceSelector{
 		MatchNames: []string{pm.Namespace},
 	}
-	targetPort := intstr.FromString("metrics")
 	pm.Spec.PodMetricsEndpoints = []prometheusoperatorv1.PodMetricsEndpoint{
 		{
-			Interval:   "60s",
-			TargetPort: &targetPort,
-			Path:       "/metrics",
-			Scheme:     "https",
+			Interval: "60s",
+			Port:     "metrics",
+			Path:     "/metrics",
+			Scheme:   "https",
 			TLSConfig: &prometheusoperatorv1.PodMetricsEndpointTLSConfig{
 				SafeTLSConfig: prometheusoperatorv1.SafeTLSConfig{
 					ServerName: metricsHostname,
 					CA: prometheusoperatorv1.SecretOrConfigMap{
-						Secret: &corev1.SecretKeySelector{
+						ConfigMap: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
-								Name: manifests.MetricsClientCertSecret(pm.Namespace).Name,
+								Name: manifests.RootCAConfigMap(pm.Namespace).Name,
 							},
-							Key: "ca.crt",
+							Key: certs.CASignerCertMapKey,
 						},
 					},
 				},

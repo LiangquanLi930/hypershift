@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
@@ -28,13 +28,12 @@ func ReconcileServiceAccount(sa *corev1.ServiceAccount, ownerRef config.OwnerRef
 	return nil
 }
 
-func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef) error {
+func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef, platform hyperv1.PlatformType) error {
 	ownerRef.ApplyTo(role)
 	role.Rules = []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{corev1.SchemeGroupVersion.Group},
 			Resources: []string{
-				"configmaps",
 				"pods",
 			},
 			Verbs: []string{
@@ -44,6 +43,21 @@ func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef) error {
 				"create",
 				"list",
 				"watch",
+			},
+		},
+		{
+			APIGroups: []string{corev1.SchemeGroupVersion.Group},
+			Resources: []string{
+				"configmaps",
+			},
+			Verbs: []string{
+				"get",
+				"patch",
+				"update",
+				"create",
+				"list",
+				"watch",
+				"delete", // Needed to be able to set owner reference on configmaps
 			},
 		},
 		{
@@ -137,6 +151,51 @@ func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef) error {
 			},
 		},
 	}
+
+	switch platform {
+	case hyperv1.KubevirtPlatform:
+		// By isolating these rules behind the KubevirtPlatform switch case,
+		// we know we can add/remove from this list in the future without
+		// impacting other platforms.
+		role.Rules = append(role.Rules, []rbacv1.PolicyRule{
+			// These are needed by the KubeVirt platform in order to
+			// use a subdomain route for the guest cluster's default
+			// ingress
+			{
+				APIGroups: []string{"route.openshift.io"},
+				Resources: []string{"routes"},
+				Verbs: []string{
+					"create",
+					"get",
+					"patch",
+					"update",
+					"list",
+					"watch",
+				},
+			},
+			{
+				APIGroups: []string{"route.openshift.io"},
+				Resources: []string{"routes/custom-host"},
+				Verbs: []string{
+					"create",
+				},
+			},
+			{
+				APIGroups: []string{corev1.SchemeGroupVersion.Group},
+				Resources: []string{
+					"services",
+				},
+				Verbs: []string{
+					"create",
+					"get",
+					"patch",
+					"update",
+					"list",
+					"watch",
+				},
+			},
+		}...)
+	}
 	return nil
 }
 
@@ -160,7 +219,7 @@ var (
 	volumeMounts = util.PodVolumeMounts{
 		hccContainerMain().Name: util.ContainerVolumeMounts{
 			hccVolumeKubeconfig().Name:      "/etc/kubernetes/kubeconfig",
-			hccVolumeCombinedCA().Name:      "/etc/kubernetes/combined-ca",
+			hccVolumeRootCA().Name:          "/etc/kubernetes/root-ca",
 			hccVolumeClusterSignerCA().Name: "/etc/kubernetes/cluster-signer-ca",
 		},
 	}
@@ -170,7 +229,7 @@ var (
 	}
 )
 
-func ReconcileDeployment(deployment *appsv1.Deployment, image, hcpName, openShiftVersion, kubeVersion string, ownerRef config.OwnerRef, config *config.DeploymentConfig, availabilityProberImage string, enableCIDebugOutput bool, platformType hyperv1.PlatformType, apiInternalPort *int32, konnectivityAddress string, konnectivityPort int32, oauthAddress string, oauthPort int32, releaseImage string, additionalTrustBundle *corev1.LocalObjectReference) error {
+func ReconcileDeployment(deployment *appsv1.Deployment, image, hcpName, openShiftVersion, kubeVersion string, ownerRef config.OwnerRef, config *config.DeploymentConfig, availabilityProberImage string, enableCIDebugOutput bool, platformType hyperv1.PlatformType, apiInternalPort *int32, konnectivityAddress string, konnectivityPort int32, oauthAddress string, oauthPort int32, releaseImage string, additionalTrustBundle *corev1.LocalObjectReference, hcp *hyperv1.HostedControlPlane) error {
 	ownerRef.ApplyTo(deployment)
 	deployment.Spec = appsv1.DeploymentSpec{
 		Selector: &metav1.LabelSelector{
@@ -189,7 +248,7 @@ func ReconcileDeployment(deployment *appsv1.Deployment, image, hcpName, openShif
 				},
 				Volumes: []corev1.Volume{
 					util.BuildVolume(hccVolumeKubeconfig(), buildHCCVolumeKubeconfig),
-					util.BuildVolume(hccVolumeCombinedCA(), buildHCCVolumeCombinedCA),
+					util.BuildVolume(hccVolumeRootCA(), buildHCCVolumeRootCA),
 					util.BuildVolume(hccVolumeClusterSignerCA(), buildHCCClusterSignerCA),
 				},
 				ServiceAccountName: manifests.ConfigOperatorServiceAccount("").Name,
@@ -198,6 +257,10 @@ func ReconcileDeployment(deployment *appsv1.Deployment, image, hcpName, openShif
 	}
 	if additionalTrustBundle != nil {
 		util.DeploymentAddTrustBundleVolume(additionalTrustBundle, deployment)
+	}
+	if isExternalInfraKv(hcp) {
+		// injects the kubevirt credentials secret volume, volume mount path, and appends cli arg.
+		util.DeploymentAddKubevirtInfraCredentials(deployment)
 	}
 
 	config.ApplyTo(deployment)
@@ -224,9 +287,9 @@ func hccVolumeKubeconfig() *corev1.Volume {
 	}
 }
 
-func hccVolumeCombinedCA() *corev1.Volume {
+func hccVolumeRootCA() *corev1.Volume {
 	return &corev1.Volume{
-		Name: "combined-ca",
+		Name: "root-ca",
 	}
 }
 
@@ -243,7 +306,7 @@ func buildHCCContainerMain(image, hcpName, openShiftVersion, kubeVersion string,
 		c.Command = []string{
 			"/usr/bin/control-plane-operator",
 			"hosted-cluster-config-operator",
-			fmt.Sprintf("--initial-ca-file=%s", path.Join(volumeMounts.Path(c.Name, hccVolumeCombinedCA().Name), certs.CASignerCertMapKey)),
+			fmt.Sprintf("--initial-ca-file=%s", path.Join(volumeMounts.Path(c.Name, hccVolumeRootCA().Name), certs.CASignerCertMapKey)),
 			fmt.Sprintf("--cluster-signer-ca-file=%s", path.Join(volumeMounts.Path(c.Name, hccVolumeClusterSignerCA().Name), certs.CASignerCertMapKey)),
 			fmt.Sprintf("--target-kubeconfig=%s", path.Join(volumeMounts.Path(c.Name, hccVolumeKubeconfig().Name), kas.KubeconfigKey)),
 			"--namespace", "$(POD_NAMESPACE)",
@@ -254,6 +317,9 @@ func buildHCCContainerMain(image, hcpName, openShiftVersion, kubeVersion string,
 			fmt.Sprintf("--konnectivity-port=%d", konnectivityPort),
 			fmt.Sprintf("--oauth-address=%s", oauthAddress),
 			fmt.Sprintf("--oauth-port=%d", oauthPort),
+		}
+		if platformType == hyperv1.IBMCloudPlatform {
+			c.Command = append(c.Command, "--controllers=controller-manager-ca,resources,inplaceupgrader,drainer,hcpstatus")
 		}
 		c.Ports = []corev1.ContainerPort{{Name: "metrics", ContainerPort: 8080}}
 		c.Env = []corev1.EnvVar{
@@ -285,18 +351,31 @@ func buildHCCContainerMain(image, hcpName, openShiftVersion, kubeVersion string,
 
 func buildHCCVolumeKubeconfig(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.KASServiceKubeconfigSecret("").Name,
+		SecretName:  manifests.KASServiceKubeconfigSecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
 }
 
-func buildHCCVolumeCombinedCA(v *corev1.Volume) {
+func buildHCCVolumeRootCA(v *corev1.Volume) {
 	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
 	v.ConfigMap.DefaultMode = pointer.Int32Ptr(420)
-	v.ConfigMap.Name = manifests.CombinedCAConfigMap("").Name
+	v.ConfigMap.Name = manifests.RootCAConfigMap("").Name
 }
 
 func buildHCCClusterSignerCA(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.ClusterSignerCASecret("").Name,
+		SecretName:  manifests.CSRSignerCASecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
+	}
+}
+
+func isExternalInfraKv(hcp *hyperv1.HostedControlPlane) bool {
+	if hcp.Spec.Platform.Kubevirt != nil &&
+		hcp.Spec.Platform.Kubevirt.Credentials != nil &&
+		hcp.Spec.Platform.Kubevirt.Credentials.InfraKubeConfigSecret != nil &&
+		hcp.Spec.Platform.Kubevirt.Credentials.InfraNamespace != "" {
+		return true
+	} else {
+		return false
 	}
 }

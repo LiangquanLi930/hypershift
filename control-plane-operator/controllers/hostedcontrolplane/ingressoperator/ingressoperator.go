@@ -3,13 +3,15 @@ package ingressoperator
 import (
 	"fmt"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/konnectivity"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/metrics"
 	"github.com/openshift/hypershift/support/proxy"
 	"github.com/openshift/hypershift/support/util"
+	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -20,7 +22,9 @@ import (
 )
 
 const (
+	operatorName                 = "ingress-operator"
 	ingressOperatorContainerName = "ingress-operator"
+	metricsHostname              = "ingress-operator"
 	socks5ProxyContainerName     = "socks-proxy"
 	ingressOperatorMetricsPort   = 60000
 )
@@ -88,7 +92,6 @@ func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[strin
 }
 
 func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) {
-	operatorName := "ingress-operator"
 	dep.Spec.Replicas = utilpointer.Int32(1)
 	dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"name": operatorName}}
 	dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
@@ -144,7 +147,7 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("10m"),
-			corev1.ResourceMemory: resource.MustParse("56Mi"),
+			corev1.ResourceMemory: resource.MustParse("80Mi"),
 		}},
 		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		VolumeMounts: []corev1.VolumeMount{
@@ -153,9 +156,10 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 	}}
 	dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers, ingressOperatorSocks5ProxyContainer(params.Socks5ProxyImage))
 	dep.Spec.Template.Spec.Volumes = []corev1.Volume{
-		{Name: "ingress-operator-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.IngressOperatorKubeconfig("").Name, DefaultMode: utilpointer.Int32Ptr(416)}}},
-		{Name: "admin-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "service-network-admin-kubeconfig", DefaultMode: utilpointer.Int32Ptr(416)}}},
-		{Name: "konnectivity-proxy-cert", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.KonnectivityClientSecret("").Name, DefaultMode: utilpointer.Int32Ptr(416)}}},
+		{Name: "ingress-operator-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.IngressOperatorKubeconfig("").Name, DefaultMode: utilpointer.Int32Ptr(0640)}}},
+		{Name: "admin-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "service-network-admin-kubeconfig", DefaultMode: utilpointer.Int32Ptr(0640)}}},
+		{Name: "konnectivity-proxy-cert", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: manifests.KonnectivityClientSecret("").Name, DefaultMode: utilpointer.Int32Ptr(0640)}}},
+		{Name: "konnectivity-proxy-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: manifests.KonnectivityCAConfigMap("").Name}, DefaultMode: utilpointer.Int32Ptr(0640)}}},
 	}
 
 	if params.Platform == hyperv1.AWSPlatform {
@@ -182,6 +186,12 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 				{Name: "serviceaccount-token", MountPath: "/var/run/secrets/openshift/serviceaccount"},
 				{Name: "admin-kubeconfig", MountPath: "/etc/kubernetes"},
 			},
+			Ports: []corev1.ContainerPort{
+				{
+					ContainerPort: ingressOperatorMetricsPort,
+					Name:          "metrics",
+				},
+			},
 		})
 		dep.Spec.Template.Spec.Volumes = append(dep.Spec.Template.Spec.Volumes,
 			corev1.Volume{Name: "serviceaccount-token", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
@@ -206,7 +216,7 @@ func ingressOperatorSocks5ProxyContainer(socks5ProxyImage string) corev1.Contain
 	c := corev1.Container{
 		Name:    socks5ProxyContainerName,
 		Image:   socks5ProxyImage,
-		Command: []string{"/usr/bin/control-plane-operator", "konnectivity-socks5-proxy"},
+		Command: []string{"/usr/bin/control-plane-operator", "konnectivity-socks5-proxy", "--resolve-from-guest-cluster-dns=true"},
 		Args: []string{
 			"run",
 			// Do not route cloud provider traffic through konnektivity and thus nodes to speed
@@ -225,9 +235,30 @@ func ingressOperatorSocks5ProxyContainer(socks5ProxyImage string) corev1.Contain
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "admin-kubeconfig", MountPath: "/etc/kubernetes"},
-			{Name: "konnectivity-proxy-cert", MountPath: "/etc/konnectivity-proxy-tls"},
+			{Name: "konnectivity-proxy-cert", MountPath: "/etc/konnectivity/proxy-client"},
+			{Name: "konnectivity-proxy-ca", MountPath: "/etc/konnectivity/proxy-ca"},
 		},
 	}
 	proxy.SetEnvVars(&c.Env)
 	return c
+}
+
+func ReconcilePodMonitor(pm *prometheusoperatorv1.PodMonitor, clusterID string, metricsSet metrics.MetricsSet) {
+	pm.Spec.Selector.MatchLabels = map[string]string{
+		"name": operatorName,
+	}
+	pm.Spec.NamespaceSelector = prometheusoperatorv1.NamespaceSelector{
+		MatchNames: []string{pm.Namespace},
+	}
+	pm.Spec.PodMetricsEndpoints = []prometheusoperatorv1.PodMetricsEndpoint{
+		{
+			Interval:             "60s",
+			Port:                 "metrics",
+			Path:                 "/metrics",
+			Scheme:               "http",
+			MetricRelabelConfigs: metrics.RegistryOperatorRelabelConfigs(metricsSet),
+		},
+	}
+
+	util.ApplyClusterIDLabelToPodMonitor(&pm.Spec.PodMetricsEndpoints[0], clusterID)
 }

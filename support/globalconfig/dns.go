@@ -6,7 +6,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configv1 "github.com/openshift/api/config/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 )
 
 func DNSConfig() *configv1.DNS {
@@ -36,5 +36,14 @@ func ReconcileDNSConfig(dns *configv1.DNS, hcp *hyperv1.HostedControlPlane) {
 }
 
 func BaseDomain(hcp *hyperv1.HostedControlPlane) string {
-	return fmt.Sprintf("%s.%s", hcp.Name, hcp.Spec.DNS.BaseDomain)
+	prefix := hcp.Name
+	if hcp.Spec.DNS.BaseDomainPrefix != nil {
+		prefix = *hcp.Spec.DNS.BaseDomainPrefix
+	}
+
+	if prefix == "" {
+		return hcp.Spec.DNS.BaseDomain
+	}
+
+	return fmt.Sprintf("%s.%s", prefix, hcp.Spec.DNS.BaseDomain)
 }

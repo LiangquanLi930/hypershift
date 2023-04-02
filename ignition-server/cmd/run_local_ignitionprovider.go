@@ -11,6 +11,7 @@ import (
 	hyperapi "github.com/openshift/hypershift/api"
 	"github.com/openshift/hypershift/ignition-server/controllers"
 	"github.com/openshift/hypershift/support/releaseinfo"
+	"github.com/openshift/hypershift/support/util"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
@@ -77,10 +78,21 @@ func (o *RunLocalIgnitionProviderOptions) Run(ctx context.Context) error {
 		return err
 	}
 	compressedConfig := token.Data[controllers.TokenSecretConfigKey]
-	config, err := controllers.Decompress(compressedConfig)
+	config, err := util.DecodeAndDecompress(compressedConfig)
 	if err != nil {
 		return nil
 	}
+	// Set up the cache directory
+	cacheDir, err := os.MkdirTemp("", "cache")
+	if err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+	log.Info("Using cache directory", "directory", cacheDir)
+	imageFileCache, err := controllers.NewImageFileCache(cacheDir)
+	if err != nil {
+		return fmt.Errorf("unable to create image file cache: %w", err)
+	}
+
 	p := &controllers.LocalIgnitionProvider{
 		Client:          cl,
 		ReleaseProvider: &releaseinfo.RegistryClientProvider{},
@@ -88,9 +100,10 @@ func (o *RunLocalIgnitionProviderOptions) Run(ctx context.Context) error {
 		Namespace:       o.Namespace,
 		WorkDir:         o.WorkDir,
 		PreserveOutput:  true,
+		ImageFileCache:  imageFileCache,
 	}
 
-	payload, err := p.GetPayload(ctx, o.Image, string(config))
+	payload, err := p.GetPayload(ctx, o.Image, config.String(), "")
 	if err != nil {
 		return err
 	}

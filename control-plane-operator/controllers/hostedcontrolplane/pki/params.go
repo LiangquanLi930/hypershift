@@ -3,9 +3,10 @@ package pki
 import (
 	"fmt"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/globalconfig"
 	"github.com/openshift/hypershift/support/util"
 )
 
@@ -61,7 +62,7 @@ func NewPKIParams(hcp *hyperv1.HostedControlPlane,
 		InternalAPIAddress:           fmt.Sprintf("api.%s.hypershift.local", hcp.Name),
 		ExternalKconnectivityAddress: konnectivityExternalAddress,
 		ExternalOauthAddress:         oauthExternalAddress,
-		IngressSubdomain:             config.IngressSubdomain(hcp),
+		IngressSubdomain:             globalconfig.IngressDomain(hcp),
 		OwnerRef:                     config.OwnerRefFrom(hcp),
 	}
 	p.NodeInternalAPIServerIP = util.AdvertiseAddressWithDefault(hcp, config.DefaultAdvertiseAddress)

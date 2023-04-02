@@ -25,11 +25,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configv1 "github.com/openshift/api/config/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	awsutil "github.com/openshift/hypershift/cmd/infra/aws/util"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster"
 	"github.com/openshift/hypershift/support/upsert"
+	supportutil "github.com/openshift/hypershift/support/util"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,6 +47,9 @@ const (
 	lbNotActiveRequeueDuration             = 20 * time.Second
 )
 
+// AWSEndpointServiceReconciler watches HC/NodePools/awsEndpointService and reconcile the awsEndpointService
+// CRs existing for the KubeAPIServerPrivateService and the PrivateRouterService.
+// It creates the endpoint service in AWS and keeps the SubnetIDs up to date so NodePools are able to attach to the service endpoint.
 type AWSEndpointServiceReconciler struct {
 	client.Client
 	upsert.CreateOrUpdateProvider
@@ -199,6 +203,11 @@ func (r *AWSEndpointServiceReconciler) Reconcile(ctx context.Context, req ctrl.R
 	hc, err := r.hostedCluster(ctx, hcp)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get hosted cluster: %w", err)
+	}
+
+	if isPaused, duration := supportutil.IsReconciliationPaused(log, hc.Spec.PausedUntil); isPaused {
+		log.Info("Reconciliation paused", "pausedUntil", *hc.Spec.PausedUntil)
+		return ctrl.Result{RequeueAfter: duration}, nil
 	}
 
 	// Reconcile the AWSEndpointService Spec
@@ -438,16 +447,17 @@ func (r *AWSEndpointServiceReconciler) reconcileAWSEndpointServiceStatus(ctx con
 	for _, allowed := range permResp.AllowedPrincipals {
 		oldPerms.Insert(aws.StringValue(allowed.Principal))
 	}
-	desriredPerms := sets.NewString(controlPlaneOperatorRoleARN)
+	desiredPerms := sets.NewString(controlPlaneOperatorRoleARN)
+	desiredPerms = desiredPerms.Insert(hostedCluster.Spec.Platform.AWS.AdditionalAllowedPrincipals...)
 
-	if !desriredPerms.Equal(oldPerms) {
+	if !desiredPerms.Equal(oldPerms) {
 		input := &ec2.ModifyVpcEndpointServicePermissionsInput{
 			ServiceId: aws.String(serviceID),
 		}
-		if added := desriredPerms.Difference(oldPerms).List(); len(added) > 0 {
+		if added := desiredPerms.Difference(oldPerms).List(); len(added) > 0 {
 			input.AddAllowedPrincipals = aws.StringSlice(added)
 		}
-		if removed := oldPerms.Difference(desriredPerms).List(); len(removed) > 0 {
+		if removed := oldPerms.Difference(desiredPerms).List(); len(removed) > 0 {
 			input.RemoveAllowedPrincipals = aws.StringSlice(removed)
 		}
 		_, err := ec2Client.ModifyVpcEndpointServicePermissions(input)

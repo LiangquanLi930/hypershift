@@ -1,11 +1,20 @@
 package cno
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"strconv"
+
+	"github.com/openshift/hypershift/support/proxy"
+	"github.com/openshift/hypershift/support/rhobsmonitoring"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/blang/semver"
 	routev1 "github.com/openshift/api/route/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/awsprivatelink"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/kas"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
@@ -13,6 +22,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -43,22 +53,26 @@ type Images struct {
 	CloudNetworkConfigController string
 	TokenMinter                  string
 	CLI                          string
+	Socks5Proxy                  string
 }
 
 type Params struct {
-	ReleaseVersion                        string
-	AvailabilityProberImage               string
-	HostedClusterName                     string
-	APIServerAddress                      string
-	APIServerPort                         int32
-	TokenAudience                         string
-	Images                                Images
-	OwnerRef                              config.OwnerRef
-	DeploymentConfig                      config.DeploymentConfig
-	ConnectsThroughInternetToControlplane bool
+	ReleaseVersion          string
+	AvailabilityProberImage string
+	HostedClusterName       string
+	APIServerAddress        string
+	APIServerPort           int32
+	TokenAudience           string
+	Images                  Images
+	OwnerRef                config.OwnerRef
+	DeploymentConfig        config.DeploymentConfig
+	IsPrivate               bool
+	ExposedThroughHCPRouter bool
+	SbDbPubStrategy         *hyperv1.ServicePublishingStrategy
+	DefaultIngressDomain    string
 }
 
-func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[string]string, setDefaultSecurityContext bool) Params {
+func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[string]string, setDefaultSecurityContext bool, defaultIngressDomain string) Params {
 	p := Params{
 		Images: Images{
 			NetworkOperator:              images["cluster-network-operator"],
@@ -82,11 +96,17 @@ func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[strin
 			CloudNetworkConfigController: images["cloud-network-config-controller"],
 			TokenMinter:                  images["token-minter"],
 			CLI:                          images["cli"],
+			Socks5Proxy:                  images["socks5-proxy"],
 		},
-		ReleaseVersion:                        version,
-		AvailabilityProberImage:               images[util.AvailabilityProberImageName],
-		OwnerRef:                              config.OwnerRefFrom(hcp),
-		ConnectsThroughInternetToControlplane: util.ConnectsThroughInternetToControlplane(hcp.Spec.Platform),
+		ReleaseVersion:          version,
+		AvailabilityProberImage: images[util.AvailabilityProberImageName],
+		OwnerRef:                config.OwnerRefFrom(hcp),
+		IsPrivate:               util.IsPrivateHCP(hcp),
+		ExposedThroughHCPRouter: isOVNSBDBExposedThroughHCPRouter(hcp),
+		HostedClusterName:       hcp.Name,
+		TokenAudience:           hcp.Spec.IssuerURL,
+		SbDbPubStrategy:         util.ServicePublishingStrategyByTypeForHCP(hcp, hyperv1.OVNSbDb),
+		DefaultIngressDomain:    defaultIngressDomain,
 	}
 
 	p.DeploymentConfig.Scheduling.PriorityClass = config.DefaultPriorityClass
@@ -95,19 +115,75 @@ func NewParams(hcp *hyperv1.HostedControlPlane, version string, images map[strin
 	p.DeploymentConfig.SetDefaultSecurityContext = setDefaultSecurityContext
 	if util.IsPrivateHCP(hcp) {
 		p.APIServerAddress = fmt.Sprintf("api.%s.hypershift.local", hcp.Name)
-		p.APIServerPort = util.APIPortWithDefault(hcp, config.DefaultAPIServerPort)
+		p.APIServerPort = util.InternalAPIPortWithDefault(hcp, config.DefaultAPIServerPort)
 	} else {
 		p.APIServerAddress = hcp.Status.ControlPlaneEndpoint.Host
 		p.APIServerPort = hcp.Status.ControlPlaneEndpoint.Port
 	}
-	p.HostedClusterName = hcp.Name
-	p.TokenAudience = hcp.Spec.IssuerURL
 
 	return p
 }
 
-func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef) error {
+func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef, networkType hyperv1.NetworkType) error {
 	ownerRef.ApplyTo(role)
+	if networkType == hyperv1.Calico {
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{corev1.SchemeGroupVersion.Group},
+				Resources: []string{
+					"configmaps",
+				},
+				ResourceNames: []string{
+					"openshift-service-ca.crt",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				APIGroups: []string{appsv1.SchemeGroupVersion.Group},
+				Resources: []string{"statefulsets", "deployments"},
+				Verbs:     []string{"list", "watch"},
+			},
+			{
+				APIGroups: []string{appsv1.SchemeGroupVersion.Group},
+				Resources: []string{"deployments"},
+				ResourceNames: []string{
+					"multus-admission-controller",
+				},
+				Verbs: []string{"*"},
+			},
+			{
+				APIGroups: []string{corev1.SchemeGroupVersion.Group},
+				Resources: []string{"services"},
+				ResourceNames: []string{
+					"multus-admission-controller",
+				},
+				Verbs: []string{"*"},
+			},
+			{
+				APIGroups: []string{hyperv1.GroupVersion.Group},
+				Resources: []string{
+					"hostedcontrolplanes",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				APIGroups: []string{hyperv1.GroupVersion.Group},
+				Resources: []string{
+					"hostedcontrolplanes/status",
+				},
+				Verbs: []string{"*"},
+			},
+		}
+		return nil
+	}
 	// Required by CNO to manage ovn-kubernetes and cloud-network-config-controller control plane components
 	role.Rules = []rbacv1.PolicyRule{
 		{
@@ -137,7 +213,7 @@ func ReconcileRole(role *rbacv1.Role, ownerRef config.OwnerRef) error {
 			Verbs:     []string{"*"},
 		},
 		{
-			APIGroups: []string{"monitoring.coreos.com"},
+			APIGroups: []string{"monitoring.coreos.com", "monitoring.rhobs"},
 			Resources: []string{
 				"servicemonitors",
 				"prometheusrules",
@@ -171,14 +247,20 @@ func ReconcileRoleBinding(rb *rbacv1.RoleBinding, ownerRef config.OwnerRef) erro
 	rb.RoleRef = rbacv1.RoleRef{
 		APIGroup: rbacv1.SchemeGroupVersion.Group,
 		Kind:     "Role",
-		Name:     manifests.ClusterNetworkOperatorRoleBinding("").Name,
+		Name:     manifests.ClusterNetworkOperatorRole("").Name,
 	}
 	rb.Subjects = []rbacv1.Subject{
 		{
 			Kind: "ServiceAccount",
-			Name: "default",
+			Name: manifests.ClusterNetworkOperatorServiceAccount("").Name,
 		},
 	}
+	return nil
+}
+
+func ReconcileServiceAccount(sa *corev1.ServiceAccount, ownerRef config.OwnerRef) error {
+	ownerRef.ApplyTo(sa)
+	util.EnsurePullSecret(sa, common.PullSecret("").Name)
 	return nil
 }
 
@@ -222,9 +304,51 @@ func ReconcileDeployment(dep *appsv1.Deployment, params Params, apiPort *int32) 
 		cnoArgs = append(cnoArgs, "--extra-clusters=management=/configs/management")
 	}
 
-	if params.ConnectsThroughInternetToControlplane {
+	sbDbRouteHost := util.ShortenRouteHostnameIfNeeded("ovnkube-sbdb", dep.Namespace, params.DefaultIngressDomain)
+	if params.IsPrivate {
+		sbDbRouteHost = "ovnkube-sbdb." + awsprivatelink.RouterZoneName(params.HostedClusterName)
+	} else if params.SbDbPubStrategy != nil && params.SbDbPubStrategy.Route != nil && params.SbDbPubStrategy.Route.Hostname != "" {
+		sbDbRouteHost = params.SbDbPubStrategy.Route.Hostname
+	}
+	cnoEnv = append(cnoEnv, corev1.EnvVar{
+		Name: "OVN_SBDB_ROUTE_HOST", Value: sbDbRouteHost,
+	})
+
+	if !params.IsPrivate {
 		cnoEnv = append(cnoEnv, corev1.EnvVar{
 			Name: "PROXY_INTERNAL_APISERVER_ADDRESS", Value: "true",
+		})
+	}
+
+	if os.Getenv(rhobsmonitoring.EnvironmentVariable) == "1" {
+		cnoEnv = append(cnoEnv, corev1.EnvVar{
+			Name:  rhobsmonitoring.EnvironmentVariable,
+			Value: "1",
+		})
+	}
+
+	if params.ExposedThroughHCPRouter && !params.IsPrivate {
+		cnoEnv = append(cnoEnv, corev1.EnvVar{Name: "OVN_SBDB_ROUTE_LABELS", Value: util.HCPRouteLabel + "=" + dep.Namespace})
+	}
+	if params.IsPrivate {
+		cnoEnv = append(cnoEnv, corev1.EnvVar{Name: "OVN_SBDB_ROUTE_LABELS", Value: fmt.Sprintf("%v=%v,%v=%v",
+			util.HCPRouteLabel, dep.Namespace,
+			util.InternalRouteLabel, "true"),
+		})
+	}
+
+	var proxyVars []corev1.EnvVar
+	proxy.SetEnvVars(&proxyVars)
+	// CNO requires the proxy values to deploy cloud network config controller in the management cluster,
+	// but it should not use the proxy itself, hence the prefix
+	for _, v := range proxyVars {
+		cnoEnv = append(cnoEnv, corev1.EnvVar{Name: fmt.Sprintf("MGMT_%s", v.Name), Value: v.Value})
+	}
+
+	// If CP is running on kube cluster, pass user ID for CNO to run its managed services with
+	if params.DeploymentConfig.SetDefaultSecurityContext {
+		cnoEnv = append(cnoEnv, corev1.EnvVar{
+			Name: "RUN_AS_USER", Value: strconv.Itoa(config.DefaultSecurityContextUser),
 		})
 	}
 
@@ -285,6 +409,31 @@ kubectl --kubeconfig $kc config use-context default`,
 		},
 	}
 
+	if semver.MustParse(params.ReleaseVersion).Minor == uint64(12) {
+		dep.Spec.Template.Spec.InitContainers = append(dep.Spec.Template.Spec.InitContainers, corev1.Container{
+			Command: []string{"/bin/bash"},
+			Args: []string{
+				"-c",
+				`
+set -xeuo pipefail
+kc=/etc/hosted-kubernetes/kubeconfig
+sc=$(kubectl --kubeconfig $kc get --ignore-not-found validatingwebhookconfiguration multus.openshift.io -o jsonpath='{.webhooks[?(@.name == "multus-validating-config.k8s.io")].clientConfig.service}')
+if [[ -n $sc ]]; then kubectl --kubeconfig $kc delete --ignore-not-found validatingwebhookconfiguration multus.openshift.io; fi`,
+			},
+			Name:  "remove-old-multus-validating-webhook-configuration",
+			Image: params.Images.CLI,
+			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("50Mi"),
+			}},
+			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "hosted-etc-kube", MountPath: "/etc/hosted-kubernetes"},
+			},
+		})
+	}
+
+	dep.Spec.Template.Spec.ServiceAccountName = manifests.ClusterNetworkOperatorServiceAccount("").Name
 	dep.Spec.Template.Spec.Containers = []corev1.Container{{
 		Command: []string{"/usr/bin/cluster-network-operator"},
 		Args:    cnoArgs,
@@ -332,13 +481,14 @@ kubectl --kubeconfig $kc config use-context default`,
 			{Name: "CLOUD_NETWORK_CONFIG_CONTROLLER_IMAGE", Value: params.Images.CloudNetworkConfigController},
 			{Name: "TOKEN_MINTER_IMAGE", Value: params.Images.TokenMinter},
 			{Name: "CLI_IMAGE", Value: params.Images.CLI},
+			{Name: "SOCKS5_PROXY_IMAGE", Value: params.Images.Socks5Proxy},
 		}...),
 		Name:            operatorName,
 		Image:           params.Images.NetworkOperator,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("10m"),
-			corev1.ResourceMemory: resource.MustParse("50Mi"),
+			corev1.ResourceMemory: resource.MustParse("100Mi"),
 		}},
 		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		VolumeMounts: []corev1.VolumeMount{
@@ -359,6 +509,46 @@ kubectl --kubeconfig $kc config use-context default`,
 			{Group: "network.operator.openshift.io", Version: "v1", Kind: "EgressRouter"},
 			{Group: "network.operator.openshift.io", Version: "v1", Kind: "OperatorPKI"},
 		}
+		o.WaitForInfrastructureResource = true
 	})
+	return nil
+}
+
+func isOVNSBDBExposedThroughHCPRouter(hcp *hyperv1.HostedControlPlane) bool {
+	publishingStrategy := util.ServicePublishingStrategyByTypeForHCP(hcp, hyperv1.OVNSbDb)
+	if publishingStrategy == nil || publishingStrategy.Type != hyperv1.Route {
+		return false
+	}
+
+	if util.IsPrivateHCP(hcp) {
+		return true
+	}
+
+	return util.IsPublicKASWithDNS(hcp) && publishingStrategy.Route.Hostname != ""
+}
+
+func SetRestartAnnotationAndPatch(ctx context.Context, crclient client.Client, dep *appsv1.Deployment, c config.DeploymentConfig) error {
+	if c.AdditionalAnnotations[hyperv1.RestartDateAnnotation] == "" {
+		return nil
+	}
+
+	if err := crclient.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed retrieve deployment: %w", err)
+	}
+
+	patch := dep.DeepCopy()
+	podMeta := patch.Spec.Template.ObjectMeta
+	if podMeta.Annotations == nil {
+		podMeta.Annotations = map[string]string{}
+	}
+	podMeta.Annotations[hyperv1.RestartDateAnnotation] = c.AdditionalAnnotations[hyperv1.RestartDateAnnotation]
+
+	if err := crclient.Patch(ctx, patch, client.MergeFrom(dep)); err != nil {
+		return fmt.Errorf("failed to set restart annotation: %w", err)
+	}
+
 	return nil
 }

@@ -4,13 +4,13 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/pkg/version"
 	"github.com/openshift/hypershift/support/images"
 	"github.com/openshift/hypershift/support/metrics"
+	"github.com/openshift/hypershift/support/rhobsmonitoring"
 	"github.com/openshift/hypershift/support/util"
 	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -36,6 +36,12 @@ const (
 	// DefaultPriorityClass is for pods in the Hypershift control plane that are
 	// not API critical but still need elevated priority.
 	DefaultPriorityClass = "hypershift-control-plane"
+)
+
+var (
+	// allowPrivilegeEscalation is used to set the status of the
+	// privilegeEscalation on SeccompProfile
+	allowPrivilegeEscalation = false
 )
 
 type HyperShiftNamespace struct {
@@ -191,6 +197,8 @@ func (o ExternalDNSDeployment) Build() *appsv1.Deployment {
 								"--registry=txt",
 								"--txt-suffix=-external-dns",
 								fmt.Sprintf("--txt-owner-id=%s", txtOwnerId),
+								fmt.Sprintf("--label-filter=%s!=%s", hyperv1.RouteVisibilityLabel, hyperv1.RouteVisibilityPrivate),
+								"--events",
 							},
 							Ports: []corev1.ContainerPort{{Name: "metrics", ContainerPort: 7979}},
 							LivenessProbe: &corev1.Probe{
@@ -250,7 +258,10 @@ func (o ExternalDNSDeployment) Build() *appsv1.Deployment {
 				// thus we can assume us-east-1 without having to request it on the command line
 				Value: "us-east-1",
 			})
-		deployment.Spec.Template.Spec.Containers[0].Args = append(deployment.Spec.Template.Spec.Containers[0].Args, "--aws-zone-type=public")
+		deployment.Spec.Template.Spec.Containers[0].Args = append(deployment.Spec.Template.Spec.Containers[0].Args,
+			"--aws-zone-type=public",
+			"--aws-batch-change-interval=10s",
+		)
 	}
 
 	return deployment
@@ -277,6 +288,7 @@ type HyperShiftOperatorDeployment struct {
 	MetricsSet                     metrics.MetricsSet
 	IncludeVersion                 bool
 	UWMTelemetry                   bool
+	RHOBSMonitoring                bool
 }
 
 func (o HyperShiftOperatorDeployment) Build() *appsv1.Deployment {
@@ -424,6 +436,13 @@ func (o HyperShiftOperatorDeployment) Build() *appsv1.Deployment {
 		}
 	}
 
+	if o.RHOBSMonitoring {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  rhobsmonitoring.EnvironmentVariable,
+			Value: "1",
+		})
+	}
+
 	deployment := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Deployment",
@@ -474,7 +493,16 @@ func (o HyperShiftOperatorDeployment) Build() *appsv1.Deployment {
 							Name: "operator",
 							// needed since hypershift operator runs with anyuuid scc
 							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{
+										"ALL",
+									},
+								},
 								RunAsUser: k8sutilspointer.Int64Ptr(1000),
+								SeccompProfile: &corev1.SeccompProfile{
+									Type: corev1.SeccompProfileTypeRuntimeDefault,
+								},
 							},
 							Image:           image,
 							ImagePullPolicy: corev1.PullIfNotPresent,
@@ -746,6 +774,7 @@ func (o HyperShiftOperatorClusterRole) Build() *rbacv1.ClusterRole {
 					"exp.cluster.x-k8s.io",
 					"cluster.x-k8s.io",
 					"monitoring.coreos.com",
+					"monitoring.rhobs",
 				},
 				Resources: []string{"*"},
 				Verbs:     []string{"*"},
@@ -762,6 +791,11 @@ func (o HyperShiftOperatorClusterRole) Build() *rbacv1.ClusterRole {
 			},
 			{
 				APIGroups: []string{"route.openshift.io"},
+				Resources: []string{"*"},
+				Verbs:     []string{"*"},
+			},
+			{
+				APIGroups: []string{"image.openshift.io"},
 				Resources: []string{"*"},
 				Verbs:     []string{"*"},
 			},
@@ -802,7 +836,7 @@ func (o HyperShiftOperatorClusterRole) Build() *rbacv1.ClusterRole {
 			},
 			{
 				APIGroups: []string{"apps"},
-				Resources: []string{"deployments", "statefulsets"},
+				Resources: []string{"deployments", "replicasets", "statefulsets"},
 				Verbs:     []string{"*"},
 			},
 			{
@@ -816,7 +850,7 @@ func (o HyperShiftOperatorClusterRole) Build() *rbacv1.ClusterRole {
 				Verbs:     []string{"*"},
 			},
 			{
-				APIGroups: []string{"monitoring.coreos.com"},
+				APIGroups: []string{"monitoring.coreos.com", "monitoring.rhobs"},
 				Resources: []string{"podmonitors"},
 				Verbs:     []string{"get", "list", "watch", "create", "update"},
 			},
@@ -833,6 +867,16 @@ func (o HyperShiftOperatorClusterRole) Build() *rbacv1.ClusterRole {
 			{
 				APIGroups: []string{"kubevirt.io"},
 				Resources: []string{"virtualmachineinstances", "virtualmachines"},
+				Verbs:     []string{"*"},
+			},
+			{ // This allows the kubevirt csi driver to hotplug volumes to KubeVirt VMs.
+				APIGroups: []string{"subresources.kubevirt.io"},
+				Resources: []string{"virtualmachineinstances/addvolume", "virtualmachineinstances/removevolume"},
+				Verbs:     []string{"*"},
+			},
+			{ // This allows the kubevirt csi driver to mirror guest PVCs to the mgmt/infra cluster
+				APIGroups: []string{"cdi.kubevirt.io"},
+				Resources: []string{"datavolumes"},
 				Verbs:     []string{"*"},
 			},
 			{ // This allows hypershift operator to grant RBAC permissions for agents, clusterDeployments and agentClusterInstalls to the capi-provider-agent
@@ -854,6 +898,12 @@ func (o HyperShiftOperatorClusterRole) Build() *rbacv1.ClusterRole {
 				APIGroups: []string{"discovery.k8s.io"},
 				Resources: []string{"endpointslices"},
 				Verbs:     []string{"list", "watch"},
+			},
+			{
+				APIGroups:     []string{"admissionregistration.k8s.io"},
+				Resources:     []string{"validatingwebhookconfigurations"},
+				Verbs:         []string{"delete"},
+				ResourceNames: []string{hyperv1.GroupVersion.Group},
 			},
 		},
 	}
@@ -1115,7 +1165,27 @@ func (r HypershiftRecordingRule) Build() *prometheusoperatorv1.PrometheusRule {
 		},
 	}
 
-	rule.Spec = recordingRuleSpec()
+	rule.Spec = prometheusRuleSpec()
+	return rule
+}
+
+type HypershiftAlertingRule struct {
+	Namespace *corev1.Namespace
+}
+
+func (r HypershiftAlertingRule) Build() *prometheusoperatorv1.PrometheusRule {
+	rule := &prometheusoperatorv1.PrometheusRule{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "PrometheusRule",
+			APIVersion: prometheusoperatorv1.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: r.Namespace.Name,
+			Name:      "alerts",
+		},
+	}
+
+	rule.Spec = prometheusRuleSpec()
 	return rule
 }
 
@@ -1291,7 +1361,7 @@ func (o HyperShiftReaderClusterRole) Build() *rbacv1.ClusterRole {
 				Verbs:     []string{"get", "list", "watch"},
 			},
 			{
-				APIGroups: []string{"monitoring.coreos.com"},
+				APIGroups: []string{"monitoring.coreos.com", "monitoring.rhobs"},
 				Resources: []string{"podmonitors"},
 				Verbs:     []string{"get", "list", "watch"},
 			},
@@ -1333,59 +1403,4 @@ func (o HyperShiftReaderClusterRoleBinding) Build() *rbacv1.ClusterRoleBinding {
 		},
 	}
 	return binding
-}
-
-type HyperShiftValidatingWebhookConfiguration struct {
-	Namespace *corev1.Namespace
-}
-
-func (o HyperShiftValidatingWebhookConfiguration) Build() *admissionregistrationv1.ValidatingWebhookConfiguration {
-	scope := admissionregistrationv1.NamespacedScope
-	path := "/validate-hypershift-openshift-io-v1alpha1-hostedcluster"
-	sideEffects := admissionregistrationv1.SideEffectClassNone
-	timeout := int32(10)
-	validatingWebhookConfiguration := &admissionregistrationv1.ValidatingWebhookConfiguration{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "ValidatingWebhookConfiguration",
-			APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: o.Namespace.Name,
-			Name:      hyperv1.GroupVersion.Group,
-			Annotations: map[string]string{
-				"service.beta.openshift.io/inject-cabundle": "true",
-			},
-		},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{
-			{
-				Name: "hostedclusters.hypershift.openshift.io",
-				Rules: []admissionregistrationv1.RuleWithOperations{
-					{
-						Operations: []admissionregistrationv1.OperationType{
-							// NOTE: uncomment if we want to do create time validation
-							//admissionregistrationv1.Create,
-							admissionregistrationv1.Update,
-						},
-						Rule: admissionregistrationv1.Rule{
-							APIGroups:   []string{"hypershift.openshift.io"},
-							APIVersions: []string{"v1alpha1"},
-							Resources:   []string{"hostedclusters"},
-							Scope:       &scope,
-						},
-					},
-				},
-				ClientConfig: admissionregistrationv1.WebhookClientConfig{
-					Service: &admissionregistrationv1.ServiceReference{
-						Namespace: "hypershift",
-						Name:      "operator",
-						Path:      &path,
-					},
-				},
-				SideEffects:             &sideEffects,
-				AdmissionReviewVersions: []string{"v1"},
-				TimeoutSeconds:          &timeout,
-			},
-		},
-	}
-	return validatingWebhookConfiguration
 }

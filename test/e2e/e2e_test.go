@@ -7,7 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net/http"
 	"os"
@@ -18,21 +18,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/iam/iamiface"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/go-logr/logr"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	routev1client "github.com/openshift/client-go/route/clientset/versioned"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/cmd/cluster/core"
 	"github.com/openshift/hypershift/cmd/cluster/kubevirt"
+	awsinfra "github.com/openshift/hypershift/cmd/infra/aws"
 	"github.com/openshift/hypershift/cmd/version"
 	"github.com/openshift/hypershift/test/e2e/podtimingcontroller"
 	"github.com/openshift/hypershift/test/e2e/util"
 	e2eutil "github.com/openshift/hypershift/test/e2e/util"
+	"github.com/openshift/library-go/test/library/metrics"
+	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/common/model"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	"github.com/openshift/hypershift/support/certs"
+	"github.com/openshift/hypershift/support/oidc"
 )
 
 var (
@@ -64,6 +77,8 @@ func TestMain(m *testing.M) {
 	flag.StringVar(&globalOpts.configurableClusterOptions.ExternalDNSDomain, "e2e.external-dns-domain", "", "domain that external-dns will use to create DNS records for HCP endpoints")
 	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtContainerDiskImage, "e2e.kubevirt-container-disk-image", "", "DEPRECATED (ignored will be removed soon)")
 	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtNodeMemory, "e2e.kubevirt-node-memory", "4Gi", "the amount of memory to provide to each workload node")
+	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtInfraKubeconfigFile, "e2e.kubevirt-infra-kubeconfig", "", "path to the kubeconfig file of the external infra cluster")
+	flag.StringVar(&globalOpts.configurableClusterOptions.KubeVirtInfraNamespace, "e2e.kubevirt-infra-namespace", "", "the namespace on the infra cluster the workers will be created on")
 	flag.IntVar(&globalOpts.configurableClusterOptions.NodePoolReplicas, "e2e.node-pool-replicas", 2, "the number of replicas for each node pool in the cluster")
 	flag.StringVar(&globalOpts.LatestReleaseImage, "e2e.latest-release-image", "", "The latest OCP release image for use by tests")
 	flag.StringVar(&globalOpts.PreviousReleaseImage, "e2e.previous-release-image", "", "The previous OCP release image relative to the latest")
@@ -80,6 +95,11 @@ func TestMain(m *testing.M) {
 	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSRegion, "e2e.powervs-region", "us-south", "IBM Cloud region. Default is us-south")
 	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSZone, "e2e.powervs-zone", "us-south", "IBM Cloud zone. Default is us-sout")
 	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSVpcRegion, "e2e.powervs-vpc-region", "us-south", "IBM Cloud VPC Region for VPC resources. Default is us-south")
+	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSSysType, "e2e.powervs-sys-type", "s922", "System type used to host the instance(e.g: s922, e980, e880). Default is s922")
+	flag.Var(&globalOpts.configurableClusterOptions.PowerVSProcType, "e2e.powervs-proc-type", "Processor type (dedicated, shared, capped). Default is shared")
+	flag.StringVar(&globalOpts.configurableClusterOptions.PowerVSProcessors, "e2e.powervs-processors", "0.5", "Number of processors allocated. Default is 0.5")
+	flag.IntVar(&globalOpts.configurableClusterOptions.PowerVSMemory, "e2e.powervs-memory", 32, "Amount of memory allocated (in GB). Default is 32")
+	flag.BoolVar(&globalOpts.SkipAPIBudgetVerification, "e2e.skip-api-budget", false, "Bool to avoid send metrics to E2E Server on local test execution.")
 
 	flag.Parse()
 
@@ -123,10 +143,161 @@ func main(m *testing.M) int {
 		go e2eObserverControllers(testContext, log, globalOpts.ArtifactDir)
 		defer dumpTestMetrics(log, globalOpts.ArtifactDir)
 	}
+	defer alertSLOs(testContext)
+
+	if globalOpts.Platform == hyperv1.AWSPlatform {
+		oidcBucketName := "hypershift-ci-oidc"
+		iamClient := e2eutil.GetIAMClient(globalOpts.configurableClusterOptions.AWSCredentialsFile, globalOpts.configurableClusterOptions.Region)
+		s3Client := e2eutil.GetS3Client(globalOpts.configurableClusterOptions.AWSCredentialsFile, globalOpts.configurableClusterOptions.Region)
+		if err := setupSharedOIDCProvider(oidcBucketName, iamClient, s3Client); err != nil {
+			log.Error(err, "failed to setup shared OIDC provider")
+			return -1
+		}
+		defer e2eutil.DestroyOIDCProvider(log, iamClient, globalOpts.IssuerURL)
+		defer e2eutil.CleanupOIDCBucketObjects(log, s3Client, oidcBucketName, globalOpts.IssuerURL)
+	}
 
 	// Everything's okay to run tests
 	log.Info("executing e2e tests", "options", globalOpts)
 	return m.Run()
+}
+
+// setup a shared OIDC provider to be used by all HostedClusters
+func setupSharedOIDCProvider(oidcBucketName string, iamClient iamiface.IAMAPI, s3Client *s3.S3) error {
+	providerID := e2eutil.SimpleNameGenerator.GenerateName("e2e-oidc-provider-")
+	issuerURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", oidcBucketName, globalOpts.configurableClusterOptions.Region, providerID)
+
+	iamOptions := awsinfra.CreateIAMOptions{
+		IssuerURL:      issuerURL,
+		AdditionalTags: globalOpts.additionalTags,
+	}
+
+	if _, err := iamOptions.CreateOIDCProvider(iamClient); err != nil {
+		return fmt.Errorf("failed to create OIDC provider: %w", err)
+	}
+
+	key, err := certs.PrivateKey()
+	if err != nil {
+		return fmt.Errorf("failed generating a private key: %w", err)
+	}
+
+	keyBytes := certs.PrivateKeyToPem(key)
+	publicKeyBytes, err := certs.PublicKeyToPem(&key.PublicKey)
+	if err != nil {
+		return fmt.Errorf("failed to generate public key from private key: %w", err)
+	}
+
+	// create openid configuration
+	params := oidc.ODICGeneratorParams{
+		IssuerURL: issuerURL,
+		PubKey:    publicKeyBytes,
+	}
+
+	oidcGenerators := map[string]oidc.OIDCDocumentGeneratorFunc{
+		"/.well-known/openid-configuration": oidc.GenerateConfigurationDocument,
+		oidc.JWKSURI:                        oidc.GenerateJWKSDocument,
+	}
+
+	for path, generator := range oidcGenerators {
+		bodyReader, err := generator(params)
+		if err != nil {
+			return fmt.Errorf("failed to generate OIDC document %s: %w", path, err)
+		}
+		_, err = s3Client.PutObject(&s3.PutObjectInput{
+			ACL:    aws.String("public-read"),
+			Body:   bodyReader,
+			Bucket: aws.String(oidcBucketName),
+			Key:    aws.String(providerID + path),
+		})
+		if err != nil {
+			wrapped := fmt.Errorf("failed to upload %s to the %s s3 bucket", path, oidcBucketName)
+			if awsErr, ok := err.(awserr.Error); ok {
+				// Generally, the underlying message from AWS has unique per-request
+				// info not suitable for publishing as condition messages, so just
+				// return the code.
+				wrapped = fmt.Errorf("%w: aws returned an error: %s", wrapped, awsErr.Code())
+			}
+			return wrapped
+		}
+	}
+
+	globalOpts.IssuerURL = issuerURL
+	globalOpts.ServiceAccountSigningKey = keyBytes
+
+	return nil
+}
+
+// alertSLOs creates alert for our SLO/SLIs and log when firing.
+// TODO(alberto): have a global t.Run which runs all tests first then TestAlertSLOs.
+func alertSLOs(ctx context.Context) error {
+	// Query fairing for SLOs.
+	firingAlertQuery := `
+sort_desc(
+count_over_time(ALERTS{alertstate="firing",severity="slo",alertname!~"HypershiftSLO"}[10000s:1s])
+) > 0
+`
+	prometheusClient, err := NewPrometheusClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	result, err := RunQueryAtTime(ctx, prometheusClient, firingAlertQuery, time.Now())
+	if err != nil {
+		return err
+	}
+	for _, series := range result.Data.Result {
+		log.Info(fmt.Sprintf("alert %s fired for %s second", series.Metric["alertname"], series.Value))
+	}
+
+	return nil
+}
+
+func NewPrometheusClient(ctx context.Context) (prometheusv1.API, error) {
+	config, err := e2eutil.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err)
+	}
+	routeClient, err := routev1client.NewForConfig(config)
+	if err != nil {
+		panic(err)
+	}
+	prometheusClient, err := metrics.NewPrometheusClient(ctx, kubeClient, routeClient)
+	if err != nil {
+		panic(err)
+	}
+	return prometheusClient, nil
+}
+
+// PrometheusResponse is used to contain prometheus query results
+type PrometheusResponse struct {
+	Data prometheusResponseData `json:"data"`
+}
+
+type prometheusResponseData struct {
+	Result model.Vector `json:"result"`
+}
+
+func RunQueryAtTime(ctx context.Context, prometheusClient prometheusv1.API, query string, evaluationTime time.Time) (*PrometheusResponse, error) {
+	result, warnings, err := prometheusClient.Query(ctx, query, evaluationTime)
+	if err != nil {
+		return nil, err
+	}
+	if len(warnings) > 0 {
+		log.Info(fmt.Sprintf("#### warnings \n\t%v\n", strings.Join(warnings, "\n\t")))
+	}
+	if result.Type() != model.ValVector {
+		return nil, fmt.Errorf("result type is not the vector: %v", result.Type())
+	}
+	return &PrometheusResponse{
+		Data: prometheusResponseData{
+			Result: result.(model.Vector),
+		},
+	}, nil
 }
 
 func e2eObserverControllers(ctx context.Context, log logr.Logger, artifactDir string) {
@@ -176,7 +347,7 @@ func dumpTestMetrics(log logr.Logger, artifactDir string) {
 		return
 	}
 
-	body, err := ioutil.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		log.Error(err, "failed to read response body from metrics endpoint")
 		return
@@ -207,39 +378,56 @@ type options struct {
 
 	configurableClusterOptions configurableClusterOptions
 	additionalTags             stringSliceVar
+
+	IssuerURL                string
+	ServiceAccountSigningKey []byte
+
+	// SkipAPIBudgetVerification implies that you are executing the e2e tests
+	// from local to verify that them works fine before push
+	SkipAPIBudgetVerification bool
 }
 
 type configurableClusterOptions struct {
-	AWSCredentialsFile         string
-	AzureCredentialsFile       string
-	AzureLocation              string
-	Region                     string
-	Zone                       stringSliceVar
-	PullSecretFile             string
-	BaseDomain                 string
-	ControlPlaneOperatorImage  string
-	AWSEndpointAccess          string
-	ExternalDNSDomain          string
-	KubeVirtContainerDiskImage string
-	KubeVirtNodeMemory         string
-	NodePoolReplicas           int
-	SSHKeyFile                 string
-	NetworkType                string
-	PowerVSResourceGroup       string
-	PowerVSRegion              string
-	PowerVSZone                string
-	PowerVSVpcRegion           string
+	AWSCredentialsFile          string
+	AzureCredentialsFile        string
+	AzureLocation               string
+	Region                      string
+	Zone                        stringSliceVar
+	PullSecretFile              string
+	BaseDomain                  string
+	ControlPlaneOperatorImage   string
+	AWSEndpointAccess           string
+	ExternalDNSDomain           string
+	KubeVirtContainerDiskImage  string
+	KubeVirtNodeMemory          string
+	KubeVirtInfraKubeconfigFile string
+	KubeVirtInfraNamespace      string
+	NodePoolReplicas            int
+	SSHKeyFile                  string
+	NetworkType                 string
+	PowerVSResourceGroup        string
+	PowerVSRegion               string
+	PowerVSZone                 string
+	PowerVSVpcRegion            string
+	PowerVSSysType              string
+	PowerVSProcType             hyperv1.PowerVSNodePoolProcType
+	PowerVSProcessors           string
+	PowerVSMemory               int
 }
+
+var nextAWSZoneIndex = 0
 
 func (o *options) DefaultClusterOptions(t *testing.T) core.CreateOptions {
 	createOption := core.CreateOptions{
-		ReleaseImage:              o.LatestReleaseImage,
-		NodePoolReplicas:          int32(o.configurableClusterOptions.NodePoolReplicas),
-		NetworkType:               string(o.configurableClusterOptions.NetworkType),
-		BaseDomain:                o.configurableClusterOptions.BaseDomain,
-		PullSecretFile:            o.configurableClusterOptions.PullSecretFile,
-		ControlPlaneOperatorImage: o.configurableClusterOptions.ControlPlaneOperatorImage,
-		ExternalDNSDomain:         o.configurableClusterOptions.ExternalDNSDomain,
+		ReleaseImage:                     o.LatestReleaseImage,
+		NodePoolReplicas:                 2,
+		ControlPlaneAvailabilityPolicy:   string(hyperv1.SingleReplica),
+		InfrastructureAvailabilityPolicy: string(hyperv1.SingleReplica),
+		NetworkType:                      string(o.configurableClusterOptions.NetworkType),
+		BaseDomain:                       o.configurableClusterOptions.BaseDomain,
+		PullSecretFile:                   o.configurableClusterOptions.PullSecretFile,
+		ControlPlaneOperatorImage:        o.configurableClusterOptions.ControlPlaneOperatorImage,
+		ExternalDNSDomain:                o.configurableClusterOptions.ExternalDNSDomain,
 		AWSPlatform: core.AWSPlatformOptions{
 			InstanceType:       "m5.large",
 			RootVolumeSize:     64,
@@ -247,11 +435,14 @@ func (o *options) DefaultClusterOptions(t *testing.T) core.CreateOptions {
 			AWSCredentialsFile: o.configurableClusterOptions.AWSCredentialsFile,
 			Region:             o.configurableClusterOptions.Region,
 			EndpointAccess:     o.configurableClusterOptions.AWSEndpointAccess,
+			IssuerURL:          o.IssuerURL,
 		},
 		KubevirtPlatform: core.KubevirtPlatformCreateOptions{
 			ServicePublishingStrategy: kubevirt.IngressServicePublishingStrategy,
 			Cores:                     2,
 			Memory:                    o.configurableClusterOptions.KubeVirtNodeMemory,
+			InfraKubeConfigFile:       o.configurableClusterOptions.KubeVirtInfraKubeconfigFile,
+			InfraNamespace:            o.configurableClusterOptions.KubeVirtInfraNamespace,
 		},
 		AzurePlatform: core.AzurePlatformOptions{
 			CredentialsFile: o.configurableClusterOptions.AzureCredentialsFile,
@@ -263,11 +454,11 @@ func (o *options) DefaultClusterOptions(t *testing.T) core.CreateOptions {
 			ResourceGroup: o.configurableClusterOptions.PowerVSResourceGroup,
 			Region:        o.configurableClusterOptions.PowerVSRegion,
 			Zone:          o.configurableClusterOptions.PowerVSZone,
-			VpcRegion:     o.configurableClusterOptions.PowerVSVpcRegion,
-			SysType:       "s922",
-			ProcType:      "shared",
-			Processors:    "0.5",
-			Memory:        32,
+			VPCRegion:     o.configurableClusterOptions.PowerVSVpcRegion,
+			SysType:       o.configurableClusterOptions.PowerVSSysType,
+			ProcType:      o.configurableClusterOptions.PowerVSProcType,
+			Processors:    o.configurableClusterOptions.PowerVSProcessors,
+			Memory:        int32(o.configurableClusterOptions.PowerVSMemory),
 		},
 		ServiceCIDR: "172.31.0.0/16",
 		ClusterCIDR: "10.132.0.0/14",
@@ -276,14 +467,25 @@ func (o *options) DefaultClusterOptions(t *testing.T) core.CreateOptions {
 		Annotations: []string{
 			fmt.Sprintf("%s=true", hyperv1.CleanupCloudResourcesAnnotation),
 		},
+		SkipAPIBudgetVerification: o.SkipAPIBudgetVerification,
 	}
 	createOption.AWSPlatform.AdditionalTags = append(createOption.AWSPlatform.AdditionalTags, o.additionalTags...)
 	if len(o.configurableClusterOptions.Zone) == 0 {
 		// align with default for e2e.aws-region flag
 		createOption.AWSPlatform.Zones = []string{"us-east-1a"}
 	} else {
-		createOption.AWSPlatform.Zones = strings.Split(o.configurableClusterOptions.Zone.String(), ",")
-		createOption.AzurePlatform.AvailabilityZones = strings.Split(o.configurableClusterOptions.Zone.String(), ",")
+		// For AWS, select a single zone for InfrastructureAvailabilityPolicy: SingleReplica guest cluster.
+		// This option is currently not configurable through flags and not set manually
+		// in any test, so we know InfrastructureAvailabilityPolicy is SingleReplica.
+		// If any test changes this in the future, we need to add logic here to make the
+		// guest cluster multi-zone in that case.
+		zones := strings.Split(o.configurableClusterOptions.Zone.String(), ",")
+		awsGuestZone := zones[nextAWSZoneIndex]
+		nextAWSZoneIndex = (nextAWSZoneIndex + 1) % len(zones)
+		createOption.AWSPlatform.Zones = []string{awsGuestZone}
+
+		// Assign all Azure zones to guest cluster
+		createOption.AzurePlatform.AvailabilityZones = zones
 	}
 
 	if o.configurableClusterOptions.SSHKeyFile == "" {
@@ -320,7 +522,7 @@ func (o *options) Complete() error {
 		if len(o.ArtifactDir) == 0 {
 			o.ArtifactDir = os.Getenv("ARTIFACT_DIR")
 		}
-		if len(o.configurableClusterOptions.BaseDomain) == 0 {
+		if len(o.configurableClusterOptions.BaseDomain) == 0 && o.Platform != hyperv1.KubevirtPlatform {
 			// TODO: make this an envvar with change to openshift/release, then change here
 			o.configurableClusterOptions.BaseDomain = "origin-ci-int-aws.dev.rhcloud.com"
 		}
@@ -341,7 +543,7 @@ func (o *options) Validate() error {
 	if len(o.configurableClusterOptions.BaseDomain) == 0 {
 		// The KubeVirt e2e tests don't require a base domain right now.
 		//
-		// For KubeVirt, the e2e tests generate a base domain within the *apps domain
+		// For KubeVirt, the e2e tests generate a base domain within the *.apps domain
 		// of the ocp cluster. So, the guest cluster's base domain is a
 		// subdomain of the hypershift infra/mgmt cluster's base domain.
 		//
@@ -349,11 +551,11 @@ func (o *options) Validate() error {
 		//   Infra/Mgmt cluster's DNS
 		//     Base: example.com
 		//     Cluster: mgmt-cluster.example.com
-		//     Apps:    *apps.mgmt-cluster.example.com
+		//     Apps:    *.apps.mgmt-cluster.example.com
 		//   KubeVirt Guest cluster's DNS
 		//     Base: apps.mgmt-cluster.example.com
 		//     Cluster: guest.apps.mgmt-cluster.example.com
-		//     Apps: *apps.guest.apps.mgmt-cluster.example.com
+		//     Apps: *.apps.guest.apps.mgmt-cluster.example.com
 		//
 		// This is possible using OCP wildcard routes
 		if o.Platform != hyperv1.KubevirtPlatform {

@@ -74,6 +74,10 @@ const (
 	// a HostedControlPlane.
 	ClusterAPIAzureProviderImage = "hypershift.openshift.io/capi-provider-azure-image"
 
+	// ClusterAPIPowerVSProviderImage overrides the CAPI PowerVS provider image to use for
+	// a HostedControlPlane.
+	ClusterAPIPowerVSProviderImage = "hypershift.openshift.io/capi-provider-powervs-image"
+
 	// AESCBCKeySecretKey defines the Kubernetes secret key name that contains the aescbc encryption key
 	// in the AESCBC secret encryption strategy
 	AESCBCKeySecretKey = "key"
@@ -114,6 +118,13 @@ const (
 	// removed when deleting the corresponding HostedCluster. If set to "true", resources created on the cloud provider during the life
 	// of the cluster will be removed, including image registry storage, ingress dns records, load balancers, and persistent storage.
 	CleanupCloudResourcesAnnotation = "hypershift.openshift.io/cleanup-cloud-resources"
+
+	// ResourceRequestOverrideAnnotationPrefix is a prefix for an annotation to override resource requests for a particular deployment/container
+	// in a hosted control plane. The format of the annotation is:
+	// resource-request-override.hypershift.openshift.io/[deployment-name].[container-name]: [resource-type-1]=[value1],[resource-type-2]=[value2],...
+	// For example, to override the memory and cpu request for the Kubernetes APIServer:
+	// resource-request-override.hypershift.openshift.io/kube-apiserver.kube-apiserver: memory=3Gi,cpu=2000m
+	ResourceRequestOverrideAnnotationPrefix = "resource-request-override.hypershift.openshift.io"
 )
 
 // HostedClusterSpec is the desired behavior of a HostedCluster.
@@ -137,6 +148,13 @@ type HostedClusterSpec struct {
 	// +kubebuilder:validation:Pattern:="[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"
 	// +optional
 	ClusterID string `json:"clusterID,omitempty"`
+
+	// channel is an identifier for explicitly requesting that a non-default
+	// set of updates be applied to this cluster. The default channel will be
+	// contain stable updates that are appropriate for production clusters.
+	//
+	// +optional
+	Channel string `json:"channel,omitempty"`
 
 	// InfraID is a globally unique identifier for the cluster. This identifier
 	// will be used to associate various cloud resources with the HostedCluster
@@ -251,8 +269,6 @@ type HostedClusterSpec struct {
 	// secret because if the endpoint has mTLS the kubeconfig will contain client
 	// keys. The kubeconfig needs to be stored in the secret with a secret key
 	// name that corresponds to the constant AuditWebhookKubeconfigKey.
-	//
-	// This field is currently only supported on the IBMCloud platform.
 	//
 	// +optional
 	// +immutable
@@ -442,6 +458,13 @@ type DNSSpec struct {
 	// +immutable
 	BaseDomain string `json:"baseDomain"`
 
+	// BaseDomainPrefix is the base domain prefix of the cluster.
+	// defaults to clusterName if not set
+	//
+	// +optional
+	// +immutable
+	BaseDomainPrefix *string `json:"baseDomainPrefix,omitempty"`
+
 	// PublicZoneID is the Hosted Zone ID where all the DNS records that are
 	// publicly accessible to the internet exist.
 	//
@@ -544,7 +567,7 @@ type ServiceNetworkEntry struct {
 	CIDR ipnet.IPNet `json:"cidr"`
 }
 
-//+kubebuilder:validation:Pattern:=`^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(3[0-2]|[1-2][0-9]|[0-9]))$`
+// +kubebuilder:validation:Pattern:=`^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(3[0-2]|[1-2][0-9]|[0-9]))$`
 type CIDRBlock string
 
 // APIServerNetworking specifies how the APIServer is exposed inside a cluster
@@ -646,6 +669,77 @@ type PlatformSpec struct {
 	// +optional
 	// +immutable
 	PowerVS *PowerVSPlatformSpec `json:"powervs,omitempty"`
+
+	// KubeVirt defines KubeVirt specific settings for cluster components.
+	//
+	// +optional
+	// +immutable
+	Kubevirt *KubevirtPlatformSpec `json:"kubevirt,omitempty"`
+}
+
+type KubevirtPlatformCredentials struct {
+	// InfraKubeConfigSecret is a reference to a secret that contains the kubeconfig for the external infra cluster
+	// that will be used to host the KubeVirt virtual machines for this cluster.
+	//
+	// +immutable
+	// +kubebuilder:validation:Required
+	// +required
+	InfraKubeConfigSecret *KubeconfigSecretRef `json:"infraKubeConfigSecret,omitempty"`
+
+	// InfraNamespace defines the namespace on the external infra cluster that is used to host the KubeVirt
+	// virtual machines. This namespace must already exist before creating the HostedCluster and the kubeconfig
+	// referenced in the InfraKubeConfigSecret must have access to manage the required resources within this
+	// namespace.
+	//
+	// +immutable
+	// +kubebuilder:validation:Required
+	// +required
+	InfraNamespace string `json:"infraNamespace"`
+}
+
+// KubevirtPlatformSpec specifies configuration for kubevirt guest cluster installations
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.generateID) || has(self.generateID)", message="Kubevirt GenerateID is required once set"
+type KubevirtPlatformSpec struct {
+	// BaseDomainPassthrough toggles whether or not an automatically
+	// generated base domain for the guest cluster should be used that
+	// is a subdomain of the management cluster's *.apps DNS.
+	//
+	// For the KubeVirt platform, the basedomain can be autogenerated using
+	// the *.apps domain of the management/infra hosting cluster
+	// This makes the guest cluster's base domain a subdomain of the
+	// hypershift infra/mgmt cluster's base domain.
+	//
+	// Example:
+	//   Infra/Mgmt cluster's DNS
+	//     Base: example.com
+	//     Cluster: mgmt-cluster.example.com
+	//     Apps:    *.apps.mgmt-cluster.example.com
+	//   KubeVirt Guest cluster's DNS
+	//     Base: apps.mgmt-cluster.example.com
+	//     Cluster: guest.apps.mgmt-cluster.example.com
+	//     Apps: *.apps.guest.apps.mgmt-cluster.example.com
+	//
+	// This is possible using OCP wildcard routes
+	//
+	// +optional
+	// +immutable
+	BaseDomainPassthrough *bool `json:"baseDomainPassthrough,omitempty"`
+
+	// GenerateID is used to uniquely apply a name suffix to resources associated with
+	// kubevirt infrastructure resources
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Kubevirt GenerateID is immutable once set"
+	// +kubebuilder:validation:MaxLength=11
+	// +optional
+	GenerateID string `json:"generateID,omitempty"`
+	// Credentials defines the client credentials used when creating KubeVirt virtual machines.
+	// Defining credentials is only necessary when the KubeVirt virtual machines are being placed
+	// on a cluster separate from the one hosting the Hosted Control Plane components.
+	//
+	// The default behavior when Credentials is not defined is for the KubeVirt VMs to be placed on
+	// the same cluster and namespace as the Hosted Control Plane.
+	// +optional
+	Credentials *KubevirtPlatformCredentials `json:"credentials,omitempty"`
 }
 
 // AgentPlatformSpec specifies configuration for agent-based installations.
@@ -740,20 +834,17 @@ type PowerVSPlatformSpec struct {
 	// +immutable
 	NodePoolManagementCreds corev1.LocalObjectReference `json:"nodePoolManagementCreds"`
 
-	// ControlPlaneOperatorCreds is a reference to a secret containing cloud
-	// credentials with permissions matching the control-plane-operator policy.
-	// This field is immutable. Once set, It can't be changed.
-	//
-	// TODO(dan): document the "control plane operator policy"
-	//
-	// +immutable
-	ControlPlaneOperatorCreds corev1.LocalObjectReference `json:"controlPlaneOperatorCreds"`
-
 	// IngressOperatorCloudCreds is a reference to a secret containing ibm cloud
 	// credentials for ingress operator to get authenticated with ibm cloud.
 	//
 	// +immutable
 	IngressOperatorCloudCreds corev1.LocalObjectReference `json:"ingressOperatorCloudCreds"`
+
+	// StorageOperatorCloudCreds is a reference to a secret containing ibm cloud
+	// credentials for storage operator to get authenticated with ibm cloud.
+	//
+	// +immutable
+	StorageOperatorCloudCreds corev1.LocalObjectReference `json:"storageOperatorCloudCreds"`
 }
 
 // PowerVSVPC specifies IBM Cloud PowerVS LoadBalancer configuration for the control
@@ -904,6 +995,8 @@ type AWSPlatformSpec struct {
 	// for the user.
 	//
 	// +kubebuilder:validation:MaxItems=25
+	// +listType=map
+	// +listMapKey=key
 	// +optional
 	ResourceTags []AWSResourceTag `json:"resourceTags,omitempty"`
 
@@ -914,6 +1007,15 @@ type AWSPlatformSpec struct {
 	// +kubebuilder:default=Public
 	// +optional
 	EndpointAccess AWSEndpointAccessType `json:"endpointAccess,omitempty"`
+
+	// AdditionalAllowedPrincipals specifies a list of additional allowed principal ARNs
+	// to be added to the hosted control plane's VPC Endpoint Service to enable additional
+	// VPC Endpoint connection requests to be automatically accepted.
+	// See https://docs.aws.amazon.com/vpc/latest/privatelink/configure-endpoint-service.html
+	// for more details around VPC Endpoint Service allowed principals.
+	//
+	// +optional
+	AdditionalAllowedPrincipals []string `json:"additionalAllowedPrincipals,omitempty"`
 }
 
 type AWSRoleCredentials struct {
@@ -1245,7 +1347,32 @@ type AWSRolesRef struct {
 	//        "arn:*:iam::*:role/*-worker-role"
 	//      ],
 	//      "Effect": "Allow"
-	//    }
+	//    },
+	// 	  {
+	// 	  	"Effect": "Allow",
+	// 	  	"Action": [
+	// 	  		"kms:Decrypt",
+	// 	  		"kms:Encrypt",
+	// 	  		"kms:GenerateDataKey",
+	// 	  		"kms:GenerateDataKeyWithoutPlainText",
+	// 	  		"kms:DescribeKey"
+	// 	  	],
+	// 	  	"Resource": "*"
+	// 	  },
+	// 	  {
+	// 	  	"Effect": "Allow",
+	// 	  	"Action": [
+	// 	  		"kms:RevokeGrant",
+	// 	  		"kms:CreateGrant",
+	// 	  		"kms:ListGrants"
+	// 	  	],
+	// 	  	"Resource": "*",
+	// 	  	"Condition": {
+	// 	  		"Bool": {
+	// 	  			"kms:GrantIsForAWSResource": true
+	// 	  		}
+	// 	  	}
+	// 	  }
 	//  ]
 	// }
 	//
@@ -1435,7 +1562,7 @@ type ManagedEtcdStorageSpec struct {
 	//
 	// +optional
 	// +immutable
-	RestoreSnapshotURL []string `json:"restoreSnapshotURL"`
+	RestoreSnapshotURL []string `json:"restoreSnapshotURL,omitempty"`
 }
 
 // PersistentVolumeEtcdStorageSpec is the configuration for PersistentVolume
@@ -1613,10 +1740,55 @@ type AWSKMSSpec struct {
 
 // AWSKMSAuthSpec defines metadata about the management of credentials used to interact with AWS KMS
 type AWSKMSAuthSpec struct {
+	// Deprecated
+	// This field is deprecated and will be removed in a future release. Use AWSKMSRoleARN instead.
 	// Credentials contains the name of the secret that holds the aws credentials that can be used
 	// to make the necessary KMS calls. It should at key AWSCredentialsFileSecretKey contain the
 	// aws credentials file that can be used to configure AWS SDKs
 	Credentials corev1.LocalObjectReference `json:"credentials"`
+
+	// The referenced role must have a trust relationship that allows it to be assumed via web identity.
+	// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html.
+	// Example:
+	// {
+	//		"Version": "2012-10-17",
+	//		"Statement": [
+	//			{
+	//				"Effect": "Allow",
+	//				"Principal": {
+	//					"Federated": "{{ .ProviderARN }}"
+	//				},
+	//					"Action": "sts:AssumeRoleWithWebIdentity",
+	//				"Condition": {
+	//					"StringEquals": {
+	//						"{{ .ProviderName }}:sub": {{ .ServiceAccounts }}
+	//					}
+	//				}
+	//			}
+	//		]
+	//	}
+	//
+	// AWSKMSARN is an ARN value referencing a role appropriate for managing the auth via the AWS KMS key.
+	//
+	// The following is an example of a valid policy document:
+	//
+	// {
+	//	"Version": "2012-10-17",
+	//	"Statement": [
+	//    	{
+	//			"Effect": "Allow",
+	//			"Action": [
+	//				"kms:Encrypt",
+	//				"kms:Decrypt",
+	//				"kms:ReEncrypt*",
+	//				"kms:GenerateDataKey*",
+	//				"kms:DescribeKey"
+	//			],
+	//			"Resource": %q
+	//		}
+	//	]
+	// }
+	AWSKMSRoleARN string `json:"awsKms"`
 }
 
 // AWSKMSKeyEntry defines metadata to locate the encryption key in AWS
@@ -1635,110 +1807,6 @@ type AESCBCSpec struct {
 	// +optional
 	BackupKey *corev1.LocalObjectReference `json:"backupKey,omitempty"`
 }
-
-const (
-	// HostedClusterAvailable indicates whether the HostedCluster has a healthy
-	// control plane.
-	HostedClusterAvailable ConditionType = "Available"
-
-	// HostedClusterProgressing indicates whether the HostedCluster is attempting
-	// an initial deployment or upgrade.
-	HostedClusterProgressing ConditionType = "Progressing"
-
-	// HostedClusterDegraded indicates whether the HostedCluster is encountering
-	// an error that may require user intervention to resolve.
-	HostedClusterDegraded ConditionType = "Degraded"
-
-	// IgnitionEndpointAvailable indicates whether the ignition server for the
-	// HostedCluster is available to handle ignition requests.
-	IgnitionEndpointAvailable ConditionType = "IgnitionEndpointAvailable"
-
-	// UnmanagedEtcdAvailable indicates whether a user-managed etcd cluster is
-	// healthy.
-	UnmanagedEtcdAvailable ConditionType = "UnmanagedEtcdAvailable"
-
-	// ValidHostedClusterConfiguration indicates (if status is true) that the
-	// ClusterConfiguration specified for the HostedCluster is valid.
-	ValidHostedClusterConfiguration ConditionType = "ValidConfiguration"
-
-	// SupportedHostedCluster indicates whether a HostedCluster is supported by
-	// the current configuration of the hypershift-operator.
-	// e.g. If HostedCluster requests endpointAcess Private but the hypershift-operator
-	// is running on a management cluster outside AWS or is not configured with AWS
-	// credentials, the HostedCluster is not supported.
-	SupportedHostedCluster ConditionType = "SupportedHostedCluster"
-
-	// ClusterVersionSucceeding indicates the current status of the desired release
-	// version of the HostedCluster as indicated by the Failing condition in the
-	// underlying cluster's ClusterVersion.
-	ClusterVersionSucceeding ConditionType = "ClusterVersionSucceeding"
-
-	// ClusterVersionUpgradeable indicates the Upgradeable condition in the
-	// underlying cluster's ClusterVersion.
-	ClusterVersionUpgradeable ConditionType = "ClusterVersionUpgradeable"
-
-	// ReconciliationActive indicates if reconciliation of the hostedcluster is
-	// active or paused.
-	ReconciliationActive ConditionType = "ReconciliationActive"
-
-	// ReconciliationSucceeded indicates if the hostedcluster reconciliation
-	// succeeded.
-	ReconciliationSucceeded ConditionType = "ReconciliationSucceeded"
-
-	// ValidOIDCConfiguration indicates if an AWS cluster's OIDC condition is
-	// detected as invalid.
-	ValidOIDCConfiguration ConditionType = "ValidOIDCConfiguration"
-
-	// ValidReleaseImage indicates if the release image set in the spec is valid
-	// for the HostedCluster. For example, this can be set false if the
-	// HostedCluster itself attempts an unsupported version before 4.9 or an
-	// unsupported upgrade e.g y-stream upgrade before 4.11.
-	ValidReleaseImage ConditionType = "ValidReleaseImage"
-
-	// PlatformCredentialsFound indicates that credentials required for the
-	// desired platform are valid.
-	PlatformCredentialsFound ConditionType = "PlatformCredentialsFound"
-)
-
-const (
-	IgnitionServerDeploymentAsExpectedReason    = "IgnitionServerDeploymentAsExpected"
-	IgnitionServerDeploymentStatusUnknownReason = "IgnitionServerDeploymentStatusUnknown"
-	IgnitionServerDeploymentNotFoundReason      = "IgnitionServerDeploymentNotFound"
-	IgnitionServerDeploymentUnavailableReason   = "IgnitionServerDeploymentUnavailable"
-
-	HostedClusterAsExpectedReason          = "HostedClusterAsExpected"
-	HostedClusterWaitingForAvailableReason = "HostedClusterWaitingForAvailable"
-	InvalidConfigurationReason             = "InvalidConfiguration"
-
-	DeploymentNotFoundReason            = "DeploymentNotFound"
-	DeploymentStatusUnknownReason       = "DeploymentStatusUnknown"
-	DeploymentWaitingForAvailableReason = "DeploymentWaitingForAvailable"
-
-	HostedControlPlaneComponentsUnavailableReason = "ComponentsUnavailable"
-	KubeconfigWaitingForCreateReason              = "KubeconfigWaitingForCreate"
-	ClusterVersionStatusUnknownReason             = "ClusterVersionStatusUnknown"
-
-	StatusUnknownReason = "StatusUnknown"
-	AsExpectedReason    = "AsExpected"
-
-	EtcdQuorumAvailableReason     = "QuorumAvailable"
-	EtcdWaitingForQuorumReason    = "EtcdWaitingForQuorum"
-	EtcdStatusUnknownReason       = "EtcdStatusUnknown"
-	EtcdStatefulSetNotFoundReason = "StatefulSetNotFound"
-
-	UnsupportedHostedClusterReason = "UnsupportedHostedCluster"
-
-	UnmanagedEtcdStatusUnknownReason = "UnmanagedEtcdStatusUnknown"
-	UnmanagedEtcdMisconfiguredReason = "UnmanagedEtcdMisconfigured"
-	UnmanagedEtcdAsExpected          = "UnmanagedEtcdAsExpected"
-
-	InsufficientClusterCapabilitiesReason = "InsufficientClusterCapabilities"
-
-	OIDCConfigurationInvalidReason    = "OIDCConfigurationInvalid"
-	PlatformCredentialsNotFoundReason = "PlatformCredentialsNotFound"
-
-	InvalidImageReason = "InvalidImage"
-)
 
 // HostedClusterStatus is the latest observed status of a HostedCluster.
 type HostedClusterStatus struct {
@@ -1762,6 +1830,12 @@ type HostedClusterStatus struct {
 	// +optional
 	IgnitionEndpoint string `json:"ignitionEndpoint,omitempty"`
 
+	// ControlPlaneEndpoint contains the endpoint information by which
+	// external clients can access the control plane. This is populated
+	// after the infrastructure is ready.
+	// +kubebuilder:validation:Optional
+	ControlPlaneEndpoint APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+
 	// OAuthCallbackURLTemplate contains a template for the URL to use as a callback
 	// for identity providers. The [identity-provider-name] placeholder must be replaced
 	// with the name of an identity provider defined on the HostedCluster.
@@ -1771,7 +1845,27 @@ type HostedClusterStatus struct {
 
 	// Conditions represents the latest available observations of a control
 	// plane's current state.
-	Conditions []metav1.Condition `json:"conditions"`
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Platform contains platform-specific status of the HostedCluster
+	// +optional
+	Platform *PlatformStatus `json:"platform,omitempty"`
+}
+
+// PlatformStatus contains platform-specific status
+type PlatformStatus struct {
+	// +optional
+	AWS *AWSPlatformStatus `json:"aws,omitempty"`
+}
+
+// AWSPlatformStatus contains status specific to the AWS platform
+type AWSPlatformStatus struct {
+	// DefaultWorkerSecurityGroupID is the ID of a security group created by
+	// the control plane operator. It is used for NodePools that don't specify a
+	// security group.
+	// +optional
+	DefaultWorkerSecurityGroupID string `json:"defaultWorkerSecurityGroupID,omitempty"`
 }
 
 // ClusterVersionStatus reports the status of the cluster versioning,
@@ -1784,7 +1878,7 @@ type ClusterVersionStatus struct {
 	// desired is the version that the cluster is reconciling towards.
 	// If the cluster is not yet fully initialized desired will be set
 	// with the information available, which may be an image or a tag.
-	Desired Release `json:"desired"`
+	Desired configv1.Release `json:"desired"`
 
 	// history contains a list of the most recent versions applied to the cluster.
 	// This value may be empty during cluster startup, and then will be updated
@@ -1801,6 +1895,27 @@ type ClusterVersionStatus struct {
 	// If this value is not equal to metadata.generation, then the desired
 	// and conditions fields may represent a previous version.
 	ObservedGeneration int64 `json:"observedGeneration"`
+
+	// availableUpdates contains updates recommended for this
+	// cluster. Updates which appear in conditionalUpdates but not in
+	// availableUpdates may expose this cluster to known issues. This list
+	// may be empty if no updates are recommended, if the update service
+	// is unavailable, or if an invalid channel has been specified.
+	// +nullable
+	// +kubebuilder:validation:Required
+	// +required
+	AvailableUpdates []configv1.Release `json:"availableUpdates"`
+
+	// conditionalUpdates contains the list of updates that may be
+	// recommended for this cluster if it meets specific required
+	// conditions. Consumers interested in the set of updates that are
+	// actually recommended for this cluster should use
+	// availableUpdates. This list may be empty if no updates are
+	// recommended, if the update service is unavailable, or if an empty
+	// or invalid channel has been specified.
+	// +listType=atomic
+	// +optional
+	ConditionalUpdates []configv1.ConditionalUpdate `json:"conditionalUpdates,omitempty"`
 }
 
 // ClusterConfiguration specifies configuration for individual OCP components in the
@@ -1902,8 +2017,8 @@ type ClusterConfiguration struct {
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=hostedclusters,shortName=hc;hcs,scope=Namespaced
-// +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:deprecatedversion:warning="v1alpha1 is a deprecated version for HostedCluster"
 // +kubebuilder:printcolumn:name="Version",type="string",JSONPath=".status.version.history[?(@.state==\"Completed\")].version",description="Version"
 // +kubebuilder:printcolumn:name="KubeConfig",type="string",JSONPath=".status.kubeconfig.name",description="KubeConfig Secret"
 // +kubebuilder:printcolumn:name="Progress",type="string",JSONPath=".status.version.history[?(@.state!=\"\")].state",description="Progress"

@@ -5,13 +5,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 
 	"github.com/openshift/hypershift/support/config"
 )
 
 type EtcdParams struct {
 	EtcdImage string
+	CPOImage  string
 
 	OwnerRef         config.OwnerRef `json:"ownerRef"`
 	DeploymentConfig config.DeploymentConfig
@@ -30,6 +31,7 @@ func etcdPodSelector() map[string]string {
 func NewEtcdParams(hcp *hyperv1.HostedControlPlane, images map[string]string) *EtcdParams {
 	p := &EtcdParams{
 		EtcdImage:    images["etcd"],
+		CPOImage:     images["controlplane-operator"],
 		OwnerRef:     config.OwnerRefFrom(hcp),
 		Availability: hcp.Spec.ControllerAvailabilityPolicy,
 	}

@@ -2,21 +2,20 @@ package controllers
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/rand"
 	"net/http"
 	"text/template"
 	"time"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/releaseinfo"
+	"github.com/openshift/hypershift/support/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -45,7 +44,7 @@ type MCSIgnitionProvider struct {
 	Namespace       string
 }
 
-func (p *MCSIgnitionProvider) GetPayload(ctx context.Context, releaseImage string, config string) (payload []byte, err error) {
+func (p *MCSIgnitionProvider) GetPayload(ctx context.Context, releaseImage string, config string, pullSecretHash string) (payload []byte, err error) {
 	pullSecret := &corev1.Secret{}
 	if err := p.Client.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: pullSecretName}, pullSecret); err != nil {
 		return nil, fmt.Errorf("failed to get pull secret: %w", err)
@@ -64,17 +63,16 @@ func (p *MCSIgnitionProvider) GetPayload(ctx context.Context, releaseImage strin
 		return nil, fmt.Errorf("failed to look up release image metadata: %w", err)
 	}
 
-	compressedConfig, err := compress([]byte(config))
-	if err != nil {
-		return nil, fmt.Errorf("failed to compress config: %w", err)
-	}
-
 	// The ConfigMap requires data stored to be a string.
 	// By base64ing the compressed data we ensure all bytes are decodable back.
-	// Otherwise if we'd just string() the bytes, some might not be a valid UTF-8 sequence
+	// Otherwise, if we'd just string() the bytes, some might not be a valid UTF-8 sequence,
 	// and we might lose data.
-	base64CompressedConfig := base64.StdEncoding.EncodeToString(compressedConfig)
-	mcsConfigConfigMap := machineConfigServerConfigConfigMap(p.Namespace, base64CompressedConfig)
+	compressedAndEncodedConfig, err := util.CompressAndEncode([]byte(config))
+	if err != nil {
+		return nil, fmt.Errorf("failed to compress and encode config: %w", err)
+	}
+
+	mcsConfigConfigMap := machineConfigServerConfigConfigMap(p.Namespace, compressedAndEncodedConfig.String())
 	mcsPod := machineConfigServerPod(p.Namespace, img, mcsConfigConfigMap, p.CloudProvider)
 
 	// Launch the pod and ensure we clean up regardless of outcome
@@ -163,7 +161,7 @@ func (p *MCSIgnitionProvider) GetPayload(ctx context.Context, releaseImage strin
 		}
 
 		defer res.Body.Close()
-		payload, err = ioutil.ReadAll(res.Body)
+		payload, err = io.ReadAll(res.Body)
 		if err != nil {
 			return false, fmt.Errorf("error reading http request body for machine config server pod: %w", err)
 		}
@@ -195,7 +193,7 @@ $(sed 's/^/    /g' /etc/cloudconfig/cloud.conf)
 EOF
 machine-config-operator bootstrap \
 --root-ca=/assets/manifests/root-ca.crt \
---kube-ca=/assets/manifests/combined-ca.crt \
+--kube-ca=/assets/manifests/root-ca.crt \
 --machine-config-operator-image={{ .mcoImage }} \
 --machine-config-oscontent-image={{ .osContentImage }} \
 --infra-image={{ .podImage }} \
@@ -279,8 +277,8 @@ cat /tmp/custom-config/base64CompressedConfig | base64 -d | gunzip --force --std
 			},
 		},
 		Spec: corev1.PodSpec{
-			TerminationGracePeriodSeconds: k8sutilspointer.Int64Ptr(10),
-			EnableServiceLinks:            k8sutilspointer.BoolPtr(true),
+			TerminationGracePeriodSeconds: k8sutilspointer.Int64(10),
+			EnableServiceLinks:            k8sutilspointer.Bool(true),
 			Subdomain:                     mcsPodSubdomain,
 			Hostname:                      podName,
 			Tolerations: []corev1.Toleration{
@@ -409,7 +407,8 @@ cat /tmp/custom-config/base64CompressedConfig | base64 -d | gunzip --force --std
 					Name: "kubeconfig",
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
-							SecretName: "bootstrap-kubeconfig",
+							DefaultMode: k8sutilspointer.Int32(0640),
+							SecretName:  "bootstrap-kubeconfig",
 						},
 					},
 				},
@@ -417,7 +416,8 @@ cat /tmp/custom-config/base64CompressedConfig | base64 -d | gunzip --force --std
 					Name: "mcs-tls",
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
-							SecretName: "mcs-crt",
+							DefaultMode: k8sutilspointer.Int32(0640),
+							SecretName:  "mcs-crt",
 						},
 					},
 				},
@@ -475,24 +475,9 @@ func machineConfigServerConfigConfigMap(namespace, config string) *corev1.Config
 			Namespace:    namespace,
 			GenerateName: resourceGenerateName,
 		},
-		Immutable: k8sutilspointer.BoolPtr(true),
+		Immutable: k8sutilspointer.Bool(true),
 		Data: map[string]string{
 			TokenSecretConfigKey: config,
 		},
 	}
-}
-
-func compress(content []byte) ([]byte, error) {
-	if len(content) == 0 {
-		return nil, nil
-	}
-	var b bytes.Buffer
-	gz := gzip.NewWriter(&b)
-	if _, err := gz.Write(content); err != nil {
-		return nil, fmt.Errorf("failed to compress content: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		return nil, fmt.Errorf("compress closure failure %w", err)
-	}
-	return b.Bytes(), nil
 }

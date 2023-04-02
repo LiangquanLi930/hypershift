@@ -5,12 +5,14 @@ import (
 
 	. "github.com/onsi/gomega"
 	operatorv1 "github.com/openshift/api/operator/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 )
 
 func TestReconcileDefaultIngressController(t *testing.T) {
 	vxlanPort := kubevirtDefaultVXLANPort
 	genevePort := kubevirtDefaultGenevePort
+	v4InternalSubnet := kubevirtDefaultV4InternalSubnet
+
 	fakePort := uint32(11111)
 	testsCases := []struct {
 		name              string
@@ -32,7 +34,8 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 					},
 					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
 						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
-							GenevePort: &genevePort,
+							GenevePort:       &genevePort,
+							V4InternalSubnet: v4InternalSubnet,
 						},
 					},
 				},
@@ -98,7 +101,8 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 					},
 					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
 						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
-							GenevePort: &fakePort,
+							GenevePort:       &fakePort,
+							V4InternalSubnet: kubevirtDefaultV4InternalSubnet,
 						},
 					},
 				},
@@ -113,12 +117,47 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 					},
 					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
 						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
-							GenevePort: &fakePort,
+							GenevePort:       &fakePort,
+							V4InternalSubnet: kubevirtDefaultV4InternalSubnet,
 						},
 					},
 				},
 			},
 		},
+		{
+			name: "KubeVirt with OVNKubernetes when v4InternalSubnet already exists",
+			inputNetwork: &operatorv1.Network{
+				ObjectMeta: NetworkOperator().ObjectMeta,
+				Spec: operatorv1.NetworkSpec{
+					OperatorSpec: operatorv1.OperatorSpec{
+						ManagementState: "Managed",
+					},
+					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
+						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
+							V4InternalSubnet: "100.66.0.0/16",
+							GenevePort:       &genevePort,
+						},
+					},
+				},
+			},
+			inputNetworkType:  hyperv1.OVNKubernetes,
+			inputPlatformType: hyperv1.KubevirtPlatform,
+			expectedNetwork: &operatorv1.Network{
+				ObjectMeta: NetworkOperator().ObjectMeta,
+				Spec: operatorv1.NetworkSpec{
+					OperatorSpec: operatorv1.OperatorSpec{
+						ManagementState: "Managed",
+					},
+					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
+						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
+							V4InternalSubnet: "100.66.0.0/16",
+							GenevePort:       &genevePort,
+						},
+					},
+				},
+			},
+		},
+
 		{
 			name:              "KubeVirt with non SDN network does not set unique vxlan port",
 			inputNetwork:      NetworkOperator(),

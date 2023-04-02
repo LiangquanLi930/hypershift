@@ -12,8 +12,10 @@ import (
 	"github.com/openshift/api/image/docker10"
 	imagev1 "github.com/openshift/api/image/v1"
 	api "github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
+	ignserver "github.com/openshift/hypershift/ignition-server/controllers"
 	"github.com/openshift/hypershift/support/releaseinfo"
 	"github.com/openshift/hypershift/support/thirdparty/library-go/pkg/image/dockerv1client"
 	"github.com/openshift/hypershift/support/upsert"
@@ -21,9 +23,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8sutilspointer "k8s.io/utils/pointer"
-	capiaws "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capiaws "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -427,7 +430,7 @@ spec:
         overwrite: true
         path: /etc/kubernetes/apiserver-proxy-config/haproxy.cfg
       - contents:
-          source: data:text/plain;charset=utf-8;base64,YXBpVmVyc2lvbjogdjEKa2luZDogUG9kCm1ldGFkYXRhOgogIGNyZWF0aW9uVGltZXN0YW1wOiBudWxsCiAgbGFiZWxzOgogICAgaHlwZXJzaGlmdC5vcGVuc2hpZnQuaW8vY29udHJvbC1wbGFuZS1jb21wb25lbnQ6IGt1YmUtYXBpc2VydmVyLXByb3h5CiAgICBrOHMtYXBwOiBrdWJlLWFwaXNlcnZlci1wcm94eQogIG5hbWU6IGt1YmUtYXBpc2VydmVyLXByb3h5CiAgbmFtZXNwYWNlOiBrdWJlLXN5c3RlbQpzcGVjOgogIGNvbnRhaW5lcnM6CiAgLSBjb21tYW5kOgogICAgLSBoYXByb3h5CiAgICAtIC1mCiAgICAtIC91c3IvbG9jYWwvZXRjL2hhcHJveHkKICAgIGxpdmVuZXNzUHJvYmU6CiAgICAgIGZhaWx1cmVUaHJlc2hvbGQ6IDMKICAgICAgaHR0cEdldDoKICAgICAgICBob3N0OiAxNzIuMjAuMC4xCiAgICAgICAgcGF0aDogL3ZlcnNpb24KICAgICAgICBwb3J0OiA2NDQzCiAgICAgICAgc2NoZW1lOiBIVFRQUwogICAgICBpbml0aWFsRGVsYXlTZWNvbmRzOiAxMjAKICAgICAgcGVyaW9kU2Vjb25kczogMTIwCiAgICAgIHN1Y2Nlc3NUaHJlc2hvbGQ6IDEKICAgIG5hbWU6IGhhcHJveHkKICAgIHBvcnRzOgogICAgLSBjb250YWluZXJQb3J0OiA2NDQzCiAgICAgIGhvc3RQb3J0OiA2NDQzCiAgICAgIG5hbWU6IGFwaXNlcnZlcgogICAgICBwcm90b2NvbDogVENQCiAgICByZXNvdXJjZXM6CiAgICAgIHJlcXVlc3RzOgogICAgICAgIGNwdTogMTNtCiAgICAgICAgbWVtb3J5OiAxNk1pCiAgICBzZWN1cml0eUNvbnRleHQ6CiAgICAgIHJ1bkFzVXNlcjogMTAwMQogICAgdm9sdW1lTW91bnRzOgogICAgLSBtb3VudFBhdGg6IC91c3IvbG9jYWwvZXRjL2hhcHJveHkKICAgICAgbmFtZTogY29uZmlnCiAgaG9zdE5ldHdvcms6IHRydWUKICBwcmlvcml0eUNsYXNzTmFtZTogc3lzdGVtLW5vZGUtY3JpdGljYWwKICB2b2x1bWVzOgogIC0gaG9zdFBhdGg6CiAgICAgIHBhdGg6IC9ldGMva3ViZXJuZXRlcy9hcGlzZXJ2ZXItcHJveHktY29uZmlnCiAgICBuYW1lOiBjb25maWcKc3RhdHVzOiB7fQo=
+          source: data:text/plain;charset=utf-8;base64,YXBpVmVyc2lvbjogdjEKa2luZDogUG9kCm1ldGFkYXRhOgogIGNyZWF0aW9uVGltZXN0YW1wOiBudWxsCiAgbGFiZWxzOgogICAgazhzLWFwcDoga3ViZS1hcGlzZXJ2ZXItcHJveHkKICBuYW1lOiBrdWJlLWFwaXNlcnZlci1wcm94eQogIG5hbWVzcGFjZToga3ViZS1zeXN0ZW0Kc3BlYzoKICBjb250YWluZXJzOgogIC0gY29tbWFuZDoKICAgIC0gaGFwcm94eQogICAgLSAtZgogICAgLSAvdXNyL2xvY2FsL2V0Yy9oYXByb3h5CiAgICBsaXZlbmVzc1Byb2JlOgogICAgICBmYWlsdXJlVGhyZXNob2xkOiAzCiAgICAgIGh0dHBHZXQ6CiAgICAgICAgaG9zdDogMTcyLjIwLjAuMQogICAgICAgIHBhdGg6IC92ZXJzaW9uCiAgICAgICAgcG9ydDogNjQ0MwogICAgICAgIHNjaGVtZTogSFRUUFMKICAgICAgaW5pdGlhbERlbGF5U2Vjb25kczogMTIwCiAgICAgIHBlcmlvZFNlY29uZHM6IDEyMAogICAgICBzdWNjZXNzVGhyZXNob2xkOiAxCiAgICBuYW1lOiBoYXByb3h5CiAgICBwb3J0czoKICAgIC0gY29udGFpbmVyUG9ydDogNjQ0MwogICAgICBob3N0UG9ydDogNjQ0MwogICAgICBuYW1lOiBhcGlzZXJ2ZXIKICAgICAgcHJvdG9jb2w6IFRDUAogICAgcmVzb3VyY2VzOgogICAgICByZXF1ZXN0czoKICAgICAgICBjcHU6IDEzbQogICAgICAgIG1lbW9yeTogMTZNaQogICAgc2VjdXJpdHlDb250ZXh0OgogICAgICBydW5Bc1VzZXI6IDEwMDEKICAgIHZvbHVtZU1vdW50czoKICAgIC0gbW91bnRQYXRoOiAvdXNyL2xvY2FsL2V0Yy9oYXByb3h5CiAgICAgIG5hbWU6IGNvbmZpZwogIGhvc3ROZXR3b3JrOiB0cnVlCiAgcHJpb3JpdHlDbGFzc05hbWU6IHN5c3RlbS1ub2RlLWNyaXRpY2FsCiAgdm9sdW1lczoKICAtIGhvc3RQYXRoOgogICAgICBwYXRoOiAvZXRjL2t1YmVybmV0ZXMvYXBpc2VydmVyLXByb3h5LWNvbmZpZwogICAgbmFtZTogY29uZmlnCnN0YXR1czoge30K
         mode: 420
         overwrite: true
         path: /etc/kubernetes/manifests/kube-apiserver-proxy.yaml
@@ -806,6 +809,227 @@ kind: Config`)},
 	}
 }
 
+func TestGetTuningConfig(t *testing.T) {
+	tuned1 := `
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: tuned-1
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Custom OpenShift profile
+      include=openshift-node
+
+      [sysctl]
+      vm.dirty_ratio="55"
+    name: tuned-1-profile
+  recommend:
+  - match:
+    - label: tuned-1-node-label
+    priority: 20
+    profile: tuned-1-profile
+`
+	tuned1Defaulted := `apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  creationTimestamp: null
+  name: tuned-1
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Custom OpenShift profile
+      include=openshift-node
+
+      [sysctl]
+      vm.dirty_ratio="55"
+    name: tuned-1-profile
+  recommend:
+  - match:
+    - label: tuned-1-node-label
+    operand:
+      tunedConfig:
+        reapply_sysctl: null
+    priority: 20
+    profile: tuned-1-profile
+status: {}
+`
+	tuned2 := `
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: tuned-2
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Custom OpenShift profile
+      include=openshift-node
+
+      [sysctl]
+      vm.dirty_background_ratio="25"
+    name: tuned-2-profile
+  recommend:
+  - match:
+    - label: tuned-2-node-label
+    priority: 10
+    profile: tuned-2-profile
+`
+	tuned2Defaulted := `apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  creationTimestamp: null
+  name: tuned-2
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Custom OpenShift profile
+      include=openshift-node
+
+      [sysctl]
+      vm.dirty_background_ratio="25"
+    name: tuned-2-profile
+  recommend:
+  - match:
+    - label: tuned-2-node-label
+    operand:
+      tunedConfig:
+        reapply_sysctl: null
+    priority: 10
+    profile: tuned-2-profile
+status: {}
+`
+
+	namespace := "test"
+	testCases := []struct {
+		name         string
+		nodePool     *hyperv1.NodePool
+		tuningConfig []client.Object
+		expect       string
+		error        bool
+	}{
+		{
+			name: "gets a single valid TuningConfig",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+				},
+				Spec: hyperv1.NodePoolSpec{
+					TuningConfig: []corev1.LocalObjectReference{
+						{
+							Name: "tuned-1",
+						},
+					},
+				},
+				Status: hyperv1.NodePoolStatus{},
+			},
+			tuningConfig: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tuned-1",
+						Namespace: namespace,
+					},
+					Data: map[string]string{
+						tuningConfigKey: tuned1,
+					},
+					BinaryData: nil,
+				},
+			},
+			expect: tuned1Defaulted,
+			error:  false,
+		},
+		{
+			name: "gets two valid TuningConfigs",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+				},
+				Spec: hyperv1.NodePoolSpec{
+					TuningConfig: []corev1.LocalObjectReference{
+						{
+							Name: "tuned-1",
+						},
+						{
+							Name: "tuned-2",
+						},
+					},
+				},
+				Status: hyperv1.NodePoolStatus{},
+			},
+			tuningConfig: []client.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tuned-1",
+						Namespace: namespace,
+					},
+					Data: map[string]string{
+						tuningConfigKey: tuned1,
+					},
+				},
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tuned-2",
+						Namespace: namespace,
+					},
+					Data: map[string]string{
+						tuningConfigKey: tuned2,
+					},
+				},
+			},
+			expect: tuned1Defaulted + "\n---\n" + tuned2Defaulted,
+			error:  false,
+		},
+		{
+			name: "fails if a non existent TuningConfig is referenced",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+				},
+				Spec: hyperv1.NodePoolSpec{
+					TuningConfig: []corev1.LocalObjectReference{
+						{
+							Name: "does-not-exist",
+						},
+					},
+				},
+				Status: hyperv1.NodePoolStatus{},
+			},
+			tuningConfig: []client.Object{},
+			expect:       "",
+			error:        true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			r := NodePoolReconciler{
+				Client: fake.NewClientBuilder().WithObjects(tc.tuningConfig...).Build(),
+			}
+
+			got, err := r.getTuningConfig(context.Background(), tc.nodePool)
+
+			if tc.error {
+				g.Expect(err).To(HaveOccurred())
+				return
+			}
+			g.Expect(err).ToNot(HaveOccurred())
+			if diff := cmp.Diff(got, tc.expect); diff != "" {
+				t.Errorf("actual config differs from expected: %s", diff)
+				t.Logf("got: %s \n, expected: \n %s", got, tc.expect)
+			}
+		})
+	}
+}
+
 func TestSetMachineDeploymentReplicas(t *testing.T) {
 	testCases := []struct {
 		name                        string
@@ -926,6 +1150,84 @@ func TestSetMachineDeploymentReplicas(t *testing.T) {
 			expectReplicas: 1,
 			expectAutoscalerAnnotations: map[string]string{
 				autoscalerMinAnnotation: "1",
+				autoscalerMaxAnnotation: "5",
+			},
+		},
+		{
+			name: "it does not set current replicas but set annotations when autoscaling is enabled" +
+				" and the MachineDeployment has nil replicas",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: hyperv1.NodePoolSpec{
+					AutoScaling: &hyperv1.NodePoolAutoScaling{
+						Min: 2,
+						Max: 5,
+					},
+				},
+			},
+			machineDeployment: &capiv1.MachineDeployment{
+				ObjectMeta: metav1.ObjectMeta{
+					CreationTimestamp: metav1.Now(),
+				},
+				Spec: capiv1.MachineDeploymentSpec{
+					Replicas: nil,
+				},
+			},
+			expectReplicas: 2,
+			expectAutoscalerAnnotations: map[string]string{
+				autoscalerMinAnnotation: "2",
+				autoscalerMaxAnnotation: "5",
+			},
+		},
+		{
+			name: "it sets current replicas to autoScaling.min and set annotations when autoscaling is enabled" +
+				" and the MachineDeployment has replicas < autoScaling.min",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: hyperv1.NodePoolSpec{
+					AutoScaling: &hyperv1.NodePoolAutoScaling{
+						Min: 2,
+						Max: 5,
+					},
+				},
+			},
+			machineDeployment: &capiv1.MachineDeployment{
+				ObjectMeta: metav1.ObjectMeta{
+					CreationTimestamp: metav1.Now(),
+				},
+				Spec: capiv1.MachineDeploymentSpec{
+					Replicas: k8sutilspointer.Int32Ptr(1),
+				},
+			},
+			expectReplicas: 2,
+			expectAutoscalerAnnotations: map[string]string{
+				autoscalerMinAnnotation: "2",
+				autoscalerMaxAnnotation: "5",
+			},
+		},
+		{
+			name: "it sets current replicas to autoScaling.max and set annotations when autoscaling is enabled" +
+				" and the MachineDeployment has replicas > autoScaling.max",
+			nodePool: &hyperv1.NodePool{
+				ObjectMeta: metav1.ObjectMeta{},
+				Spec: hyperv1.NodePoolSpec{
+					AutoScaling: &hyperv1.NodePoolAutoScaling{
+						Min: 2,
+						Max: 5,
+					},
+				},
+			},
+			machineDeployment: &capiv1.MachineDeployment{
+				ObjectMeta: metav1.ObjectMeta{
+					CreationTimestamp: metav1.Now(),
+				},
+				Spec: capiv1.MachineDeploymentSpec{
+					Replicas: k8sutilspointer.Int32Ptr(10),
+				},
+			},
+			expectReplicas: 5,
+			expectAutoscalerAnnotations: map[string]string{
+				autoscalerMinAnnotation: "2",
 				autoscalerMaxAnnotation: "5",
 			},
 		},
@@ -1085,7 +1387,13 @@ func RunTestMachineTemplateBuilders(t *testing.T, preCreateMachineTemplate bool)
 				},
 			},
 		},
-		Status: hyperv1.HostedClusterStatus{},
+		Status: hyperv1.HostedClusterStatus{
+			Platform: &hyperv1.PlatformStatus{
+				AWS: &hyperv1.AWSPlatformStatus{
+					DefaultWorkerSecurityGroupID: "default-sg",
+				},
+			},
+		},
 	}
 	nodePool := &hyperv1.NodePool{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1157,6 +1465,11 @@ func RunTestMachineTemplateBuilders(t *testing.T, preCreateMachineTemplate bool)
 					AdditionalTags: capiaws.Tags{
 						awsClusterCloudProviderTagKey(infraID): infraLifecycleOwned,
 					},
+					AdditionalSecurityGroups: []capiaws.AWSResourceReference{
+						{
+							ID: k8sutilspointer.String("default-sg"),
+						},
+					},
 					RootVolume: &capiaws.Volume{
 						Size: 16,
 						Type: "io1",
@@ -1169,7 +1482,7 @@ func RunTestMachineTemplateBuilders(t *testing.T, preCreateMachineTemplate bool)
 	expectedMachineTemplateSpecJSON, err := json.Marshal(expectedMachineTemplate.Spec)
 	g.Expect(err).ToNot(HaveOccurred())
 
-	template, mutateTemplate, machineTemplateSpecJSON, err := machineTemplateBuilders(hcluster, nodePool, infraID, ami, "", "")
+	template, mutateTemplate, machineTemplateSpecJSON, err := machineTemplateBuilders(hcluster, nodePool, infraID, ami, "", "", true)
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(machineTemplateSpecJSON).To(BeIdenticalTo(string(expectedMachineTemplateSpecJSON)))
 
@@ -1296,6 +1609,85 @@ func TestGetName(t *testing.T) {
 	g.Expect(alphaNumeric.MatchString(string(name[0]))).To(BeTrue())
 }
 
+func TestGetNodePoolNamespacedName(t *testing.T) {
+	testControlPlaneNamespace := "control-plane-ns"
+	testNodePoolNamespace := "clusters"
+	testNodePoolName := "nodepool-1"
+	testCases := []struct {
+		name                  string
+		nodePoolName          string
+		controlPlaneNamespace string
+		hostedControlPlane    *hyperv1.HostedControlPlane
+		expect                string
+		error                 bool
+	}{
+		{
+			name:                  "gets correct NodePool namespaced name",
+			nodePoolName:          testNodePoolName,
+			controlPlaneNamespace: testControlPlaneNamespace,
+			hostedControlPlane: &hyperv1.HostedControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: testControlPlaneNamespace,
+					Annotations: map[string]string{
+						hostedcluster.HostedClusterAnnotation: types.NamespacedName{Name: "hosted-cluster-1", Namespace: testNodePoolNamespace}.String(),
+					},
+				},
+			},
+			expect: types.NamespacedName{Name: testNodePoolName, Namespace: testNodePoolNamespace}.String(),
+			error:  false,
+		},
+		{
+			name:                  "fails if HostedControlPlane missing HostedClusterAnnotation",
+			nodePoolName:          testNodePoolName,
+			controlPlaneNamespace: testControlPlaneNamespace,
+			hostedControlPlane: &hyperv1.HostedControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: testControlPlaneNamespace,
+				},
+			},
+			expect: "",
+			error:  true,
+		},
+		{
+			name:                  "fails if HostedControlPlane does not exist",
+			nodePoolName:          testNodePoolName,
+			controlPlaneNamespace: testControlPlaneNamespace,
+			hostedControlPlane:    nil,
+			expect:                "",
+			error:                 true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			var r NodePoolReconciler
+			if tc.hostedControlPlane == nil {
+				r = NodePoolReconciler{
+					Client: fake.NewClientBuilder().WithObjects().Build(),
+				}
+			} else {
+				r = NodePoolReconciler{
+					Client: fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(tc.hostedControlPlane).Build(),
+				}
+			}
+
+			got, err := r.getNodePoolNamespacedName(testNodePoolName, testControlPlaneNamespace)
+
+			if tc.error {
+				g.Expect(err).To(HaveOccurred())
+				return
+			}
+			g.Expect(err).ToNot(HaveOccurred())
+			if diff := cmp.Diff(got.String(), tc.expect); diff != "" {
+				t.Errorf("actual NodePool namespaced name differs from expected: %s", diff)
+				t.Logf("got: %s \n, expected: \n %s", got, tc.expect)
+			}
+		})
+	}
+}
+
 func TestSetExpirationTimestampOnToken(t *testing.T) {
 	fakeName := "test-token"
 	fakeNamespace := "master-cluster1"
@@ -1367,5 +1759,236 @@ func TestNodepoolDeletionDoesntRequireHCluster(t *testing.T) {
 
 	if err := c.Get(ctx, client.ObjectKeyFromObject(nodePool), nodePool); !apierrors.IsNotFound(err) {
 		t.Errorf("expected to get NotFound after deleted nodePool was reconciled, got %v", err)
+	}
+}
+
+func TestInPlaceUpgradeMaxUnavailable(t *testing.T) {
+	intPointer1 := intstr.FromInt(1)
+	intPointer2 := intstr.FromInt(2)
+	strPointer10 := intstr.FromString("10%")
+	strPointer75 := intstr.FromString("75%")
+	testCases := []struct {
+		name     string
+		nodePool *hyperv1.NodePool
+		expect   int
+	}{
+		{
+			name: "defaults to 1 when no maxUnavailable specified",
+			nodePool: &hyperv1.NodePool{
+				Spec: hyperv1.NodePoolSpec{
+					Management: hyperv1.NodePoolManagement{
+						InPlace: &hyperv1.InPlaceUpgrade{},
+					},
+					Replicas: k8sutilspointer.Int32Ptr(4),
+				},
+			},
+			expect: 1,
+		},
+		{
+			name: "can handle default value of 1",
+			nodePool: &hyperv1.NodePool{
+				Spec: hyperv1.NodePoolSpec{
+					Management: hyperv1.NodePoolManagement{
+						InPlace: &hyperv1.InPlaceUpgrade{
+							MaxUnavailable: &intPointer1,
+						},
+					},
+					Replicas: k8sutilspointer.Int32Ptr(4),
+				},
+			},
+			expect: 1,
+		},
+		{
+			name: "can handle other values",
+			nodePool: &hyperv1.NodePool{
+				Spec: hyperv1.NodePoolSpec{
+					Management: hyperv1.NodePoolManagement{
+						InPlace: &hyperv1.InPlaceUpgrade{
+							MaxUnavailable: &intPointer2,
+						},
+					},
+					Replicas: k8sutilspointer.Int32Ptr(4),
+				},
+			},
+			expect: 2,
+		},
+		{
+			name: "can handle percent values",
+			nodePool: &hyperv1.NodePool{
+				Spec: hyperv1.NodePoolSpec{
+					Management: hyperv1.NodePoolManagement{
+						InPlace: &hyperv1.InPlaceUpgrade{
+							MaxUnavailable: &strPointer75,
+						},
+					},
+					Replicas: k8sutilspointer.Int32Ptr(4),
+				},
+			},
+			expect: 3,
+		},
+		{
+			name: "can handle roundable values",
+			nodePool: &hyperv1.NodePool{
+				Spec: hyperv1.NodePoolSpec{
+					Management: hyperv1.NodePoolManagement{
+						InPlace: &hyperv1.InPlaceUpgrade{
+							MaxUnavailable: &strPointer10,
+						},
+					},
+					Replicas: k8sutilspointer.Int32Ptr(4),
+				},
+			},
+			expect: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			maxUnavailable, err := getInPlaceMaxUnavailable(tc.nodePool)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(maxUnavailable).To(Equal(tc.expect))
+		})
+	}
+}
+
+func TestCreateValidGeneratedPayloadCondition(t *testing.T) {
+	testCases := []struct {
+		name                    string
+		tokenSecret             *corev1.Secret
+		tokenSecretDoesNotExist bool
+		expectedCondition       *hyperv1.NodePoolCondition
+	}{
+		{
+			name: "when token secret is not found it should report it in the condition",
+			tokenSecret: &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "test",
+				},
+			},
+			tokenSecretDoesNotExist: true,
+			expectedCondition: &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+				Status:             corev1.ConditionFalse,
+				Severity:           "",
+				LastTransitionTime: metav1.Time{},
+				Reason:             hyperv1.NodePoolNotFoundReason,
+				Message:            "secrets \"test\" not found",
+				ObservedGeneration: 1,
+			},
+		},
+		{
+			name: "when token secret has data it should report it in the condition",
+			tokenSecret: &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "test",
+				},
+				Data: map[string][]byte{
+					ignserver.TokenSecretReasonKey:  []byte(hyperv1.AsExpectedReason),
+					ignserver.TokenSecretMessageKey: []byte("Payload generated successfully"),
+				},
+			},
+			expectedCondition: &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+				Status:             corev1.ConditionTrue,
+				Severity:           "",
+				LastTransitionTime: metav1.Time{},
+				Reason:             hyperv1.AsExpectedReason,
+				Message:            "Payload generated successfully",
+				ObservedGeneration: 1,
+			},
+		},
+		{
+			name: "when token secret has no data it should report unknown in the condition",
+			tokenSecret: &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "test",
+				},
+				Data: map[string][]byte{},
+			},
+			expectedCondition: &hyperv1.NodePoolCondition{
+				Type:               hyperv1.NodePoolValidGeneratedPayloadConditionType,
+				Status:             corev1.ConditionUnknown,
+				Severity:           "",
+				Reason:             "",
+				Message:            "Unable to get status data from token secret",
+				LastTransitionTime: metav1.Time{},
+				ObservedGeneration: 1,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			var client client.Client
+			if tc.tokenSecretDoesNotExist {
+				client = fake.NewClientBuilder().WithObjects().Build()
+			} else {
+				client = fake.NewClientBuilder().WithObjects(tc.tokenSecret).Build()
+			}
+
+			r := NodePoolReconciler{
+				Client: client,
+			}
+
+			got, err := r.createValidGeneratedPayloadCondition(context.Background(), tc.tokenSecret, 1)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(got).To(BeEquivalentTo(tc.expectedCondition))
+		})
+	}
+}
+
+func TestTaintsToJSON(t *testing.T) {
+	testCases := []struct {
+		name     string
+		taints   []hyperv1.Taint
+		expected string
+	}{
+		{
+			name:     "",
+			taints:   []hyperv1.Taint{},
+			expected: "[]",
+		},
+		{
+			name: "",
+			taints: []hyperv1.Taint{
+				{
+					Key:    "foo",
+					Value:  "bar",
+					Effect: "any",
+				},
+				{
+					Key:    "foo2",
+					Value:  "bar2",
+					Effect: "any",
+				},
+			},
+			expected: `[{"key":"foo","value":"bar","effect":"any"},{"key":"foo2","value":"bar2","effect":"any"}]`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			taints, err := taintsToJSON(tc.taints)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(taints).To(BeEquivalentTo(tc.expected))
+
+			// validate decoding.
+			var coreTaints []corev1.Taint
+			err = json.Unmarshal([]byte(taints), &coreTaints)
+			g.Expect(err).ToNot(HaveOccurred())
+			node := &corev1.Node{}
+			node.Spec.Taints = append(node.Spec.Taints, coreTaints...)
+			g.Expect(node.Spec.Taints).To(ContainElements(coreTaints))
+		})
 	}
 }

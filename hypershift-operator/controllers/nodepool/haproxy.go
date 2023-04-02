@@ -13,7 +13,7 @@ import (
 	"github.com/clarketm/json"
 	ignitionapi "github.com/coreos/ignition/v2/config/v3_2/types"
 	api "github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/ignition"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
@@ -64,7 +64,7 @@ func (r *NodePoolReconciler) reconcileHAProxyIgnitionConfig(ctx context.Context,
 	var apiServerExternalPort int32
 	if util.IsPrivateHC(hcluster) {
 		apiServerExternalAddress = fmt.Sprintf("api.%s.hypershift.local", hcluster.Name)
-		apiServerExternalPort = util.APIPortWithDefaultFromHostedCluster(hcluster, config.DefaultAPIServerPort)
+		apiServerExternalPort = util.InternalAPIPortFromHostedClusterWithDefault(hcluster, config.DefaultAPIServerPort)
 	} else {
 		if hcluster.Status.KubeConfig == nil {
 			return "", true, nil
@@ -98,16 +98,16 @@ func (r *NodePoolReconciler) reconcileHAProxyIgnitionConfig(ctx context.Context,
 	}
 
 	apiServerInternalAddress := config.DefaultAdvertiseAddress
-	apiServerInternalPort := int32(config.DefaultAPIServerPort)
+	//TODO: in order to prevent periodic kube-apiserver network blimps in the LoadBalancer
+	//publish strategy this should change.
+	//However: will need API changes for service publishing strategy. Best function to call:
+	//apiServerInternalPort := util.BindAPIPortWithDefaultFromHostedCluster(hcluster, config.DefaultAPIServerPort)
+	apiServerInternalPort := haproxyFrontendListenAddress(hcluster, config.DefaultAPIServerPort)
 	if hcluster.Spec.Networking.APIServer != nil {
 		if hcluster.Spec.Networking.APIServer.AdvertiseAddress != nil {
 			apiServerInternalAddress = *hcluster.Spec.Networking.APIServer.AdvertiseAddress
 		}
-		if hcluster.Spec.Networking.APIServer.Port != nil {
-			apiServerInternalPort = *hcluster.Spec.Networking.APIServer.Port
-		}
 	}
-
 	var apiserverProxy string
 	if hcluster.Spec.Configuration != nil && hcluster.Spec.Configuration.Proxy != nil && hcluster.Spec.Configuration.Proxy.HTTPSProxy != "" && util.ConnectsThroughInternetToControlplane(hcluster.Spec.Platform) {
 		apiserverProxy = hcluster.Spec.Configuration.Proxy.HTTPSProxy
@@ -129,6 +129,14 @@ func (r *NodePoolReconciler) reconcileHAProxyIgnitionConfig(ctx context.Context,
 	}
 
 	return buf.String(), false, nil
+}
+
+// TODO: this function can be removed when proper update to service Publish API for load balancer done
+func haproxyFrontendListenAddress(hc *hyperv1.HostedCluster, defaultValue int32) int32 {
+	if hc.Spec.Networking.APIServer != nil && hc.Spec.Networking.APIServer.Port != nil {
+		return *hc.Spec.Networking.APIServer.Port
+	}
+	return defaultValue
 }
 
 func urlPort(u *url.URL) (int32, error) {
@@ -256,7 +264,6 @@ func generateHAProxyStaticPod(image, internalAPIAddress string, internalAPIPort 
 		pod.Namespace = "kube-system"
 		pod.Labels = map[string]string{
 			"k8s-app": "kube-apiserver-proxy",
-			"hypershift.openshift.io/control-plane-component": "kube-apiserver-proxy",
 		}
 		pod.Spec.HostNetwork = true
 		pod.Spec.PriorityClassName = "system-node-critical"
@@ -338,7 +345,6 @@ func generateKubernetesDefaultProxyPod(image string, listenAddr string, proxyAdd
 				Namespace: "kube-system",
 				Labels: map[string]string{
 					"k8s-app": "kube-apiserver-proxy",
-					"hypershift.openshift.io/control-plane-component": "kube-apiserver-proxy",
 				},
 			},
 			Spec: corev1.PodSpec{

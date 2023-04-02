@@ -2,16 +2,12 @@ package certs
 
 import (
 	"bytes"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
@@ -34,9 +30,17 @@ const (
 	ValidityOneYear  = 365 * ValidityOneDay
 	ValidityTenYears = 10 * ValidityOneYear
 
-	CAHashAnnotation   = "hypershiftlite.openshift.io/ca-hash"
+	CAHashAnnotation = "hypershiftlite.openshift.io/ca-hash"
+	// CASignerCertMapKey is the key value in a CA cert utilized by the control plane operator.
 	CASignerCertMapKey = "ca.crt"
-	CASignerKeyMapKey  = "ca.key"
+	// CASignerKeyMapKey is the key for the private key field in a CA cert utilized by the control plane operator.
+	CASignerKeyMapKey = "ca.key"
+	// TLSSignerCertMapKey is the key value the default k8s cert-manager looks for in a TLS certificate in a TLS secret.
+	//TLSSignerCertMapKey is programmatically enforced to have the same data as CASignerCertMapKey.
+	TLSSignerCertMapKey = "tls.crt"
+	// TLSSignerKeyMapKey is the key the default k8s cert-manager looks for in a private key field in a TLS secret.
+	// TLSSignerKeyMapKey is programmatically enforced to have the same data as CASignerKeyMapKey.
+	TLSSignerKeyMapKey = "tls.key"
 )
 
 // CertCfg contains all needed fields to configure a new certificate
@@ -48,12 +52,6 @@ type CertCfg struct {
 	Subject      pkix.Name
 	Validity     time.Duration
 	IsCA         bool
-}
-
-// rsaPublicKey reflects the ASN.1 structure of a PKCS#1 public key.
-type rsaPublicKey struct {
-	N *big.Int
-	E int
 }
 
 // GenerateSelfSignedCertificate generates a key/cert pair defined by CertCfg.
@@ -109,7 +107,7 @@ func PrivateKey() (*rsa.PrivateKey, error) {
 	return rsaKey, nil
 }
 
-// SelfSignedCertificate creates a self signed certificate
+// SelfSignedCertificate creates a self-signed certificate
 func SelfSignedCertificate(cfg *CertCfg, key *rsa.PrivateKey) (*x509.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).SetInt64(math.MaxInt64))
 	if err != nil {
@@ -126,13 +124,14 @@ func SelfSignedCertificate(cfg *CertCfg, key *rsa.PrivateKey) (*x509.Certificate
 	}
 	// verifies that the CN and/or OU for the cert is set
 	if len(cfg.Subject.CommonName) == 0 || len(cfg.Subject.OrganizationalUnit) == 0 {
-		return nil, errors.Errorf("certification's subject is not set, or invalid")
+		return nil, errors.Errorf("certificate subject is not set, or invalid")
 	}
-	pub := key.Public()
-	cert.SubjectKeyId, err = generateSubjectKeyID(pub)
+
+	cert.SubjectKeyId, err = rsaPubKeySHA1Hash(&key.PublicKey)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to set subject key identifier")
 	}
+
 	certBytes, err := x509.CreateCertificate(rand.Reader, &cert, &cert, key.Public(), key)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create certificate")
@@ -166,11 +165,12 @@ func signedCertificate(
 		Version:               3,
 		BasicConstraintsValid: true,
 	}
-	pub := caCert.PublicKey.(*rsa.PublicKey)
-	certTmpl.SubjectKeyId, err = generateSubjectKeyID(pub)
+
+	certTmpl.SubjectKeyId, err = rsaPubKeySHA1Hash(&key.PublicKey)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to set subject key identifier")
 	}
+
 	certBytes, err := x509.CreateCertificate(rand.Reader, &certTmpl, caCert, key.Public(), caKey)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create x509 certificate")
@@ -178,28 +178,15 @@ func signedCertificate(
 	return x509.ParseCertificate(certBytes)
 }
 
-// generateSubjectKeyID generates a SHA-1 hash of the subject public key.
-func generateSubjectKeyID(pub crypto.PublicKey) ([]byte, error) {
-	var publicKeyBytes []byte
-	var err error
-
-	switch pub := pub.(type) {
-	case *rsa.PublicKey:
-		publicKeyBytes, err = asn1.Marshal(rsaPublicKey{N: pub.N, E: pub.E})
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to Marshal ans1 public key")
-		}
-	case *ecdsa.PublicKey:
-		publicKeyBytes = elliptic.Marshal(pub.Curve, pub.X, pub.Y)
-	default:
-		return nil, errors.New("only RSA and ECDSA public keys supported")
+func rsaPubKeySHA1Hash(pub *rsa.PublicKey) ([]byte, error) {
+	hash := sha1.New()
+	if _, err := hash.Write(pub.N.Bytes()); err != nil {
+		return nil, err
 	}
-
-	hash := sha1.Sum(publicKeyBytes)
-	return hash[:], nil
+	return hash.Sum(nil), nil
 }
 
-// PrivateKeyToPem converts an rsa.PrivateKey object to pem string
+// PrivateKeyToPem converts a rsa.PrivateKey object to pem string
 func PrivateKeyToPem(key *rsa.PrivateKey) []byte {
 	keyInBytes := x509.MarshalPKCS1PrivateKey(key)
 	keyinPem := pem.EncodeToMemory(
@@ -222,18 +209,7 @@ func CertToPem(cert *x509.Certificate) []byte {
 	return certInPem
 }
 
-// CSRToPem converts an x509.CertificateRequest to a pem string
-func CSRToPem(cert *x509.CertificateRequest) []byte {
-	certInPem := pem.EncodeToMemory(
-		&pem.Block{
-			Type:  "CERTIFICATE REQUEST",
-			Bytes: cert.Raw,
-		},
-	)
-	return certInPem
-}
-
-// PublicKeyToPem converts an rsa.PublicKey object to pem string
+// PublicKeyToPem converts a rsa.PublicKey object to pem string
 func PublicKeyToPem(key *rsa.PublicKey) ([]byte, error) {
 	keyInBytes, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {
@@ -440,7 +416,9 @@ func ReconcileSelfSignedCA(secret *corev1.Secret, cn, ou string, o ...func(*CAOp
 		secret.Data = map[string][]byte{}
 	}
 	secret.Data[opts.CASignerCertMapKey] = CertToPem(crt)
+	secret.Data[TLSSignerCertMapKey] = secret.Data[opts.CASignerCertMapKey]
 	secret.Data[opts.CASignerKeyMapKey] = PrivateKeyToPem(key)
+	secret.Data[TLSSignerKeyMapKey] = secret.Data[opts.CASignerKeyMapKey]
 	return nil
 }
 

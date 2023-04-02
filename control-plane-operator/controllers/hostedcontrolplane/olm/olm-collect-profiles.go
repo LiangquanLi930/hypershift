@@ -1,18 +1,21 @@
 package olm
 
 import (
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
+	"github.com/openshift/hypershift/support/assets"
 	"github.com/openshift/hypershift/support/config"
+	"github.com/openshift/hypershift/support/util"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
 var (
-	olmCollectProfilesConfigMap   = MustConfigMap("assets/olm-collect-profiles.configmap.yaml")
-	olmCollectProfilesCronJob     = MustCronJob("assets/olm-collect-profiles.cronjob.yaml")
-	olmCollectProfilesRole        = MustRole("assets/olm-collect-profiles.role.yaml")
-	olmCollectProfilesRoleBinding = MustRoleBinding("assets/olm-collect-profiles.rolebinding.yaml")
-	olmCollectProfilesSecret      = MustSecret("assets/olm-collect-profiles.secret.yaml")
+	olmCollectProfilesConfigMap   = assets.MustConfigMap(content.ReadFile, "assets/olm-collect-profiles.configmap.yaml")
+	olmCollectProfilesCronJob     = assets.MustCronJob(content.ReadFile, "assets/olm-collect-profiles.cronjob.yaml")
+	olmCollectProfilesRole        = assets.MustRole(content.ReadFile, "assets/olm-collect-profiles.role.yaml")
+	olmCollectProfilesRoleBinding = assets.MustRoleBinding(content.ReadFile, "assets/olm-collect-profiles.rolebinding.yaml")
+	olmCollectProfilesSecret      = assets.MustSecret(content.ReadFile, "assets/olm-collect-profiles.secret.yaml")
 )
 
 func ReconcileCollectProfilesCronJob(cronJob *batchv1.CronJob, ownerRef config.OwnerRef, olmImage, namespace string) {
@@ -51,4 +54,5 @@ func ReconcileCollectProfilesSecret(secret *corev1.Secret, ownerRef config.Owner
 
 func ReconcileCollectProfilesServiceAccount(serviceAccount *corev1.ServiceAccount, ownerRef config.OwnerRef) {
 	ownerRef.ApplyTo(serviceAccount)
+	util.EnsurePullSecret(serviceAccount, common.PullSecret("").Name)
 }

@@ -3,11 +3,13 @@ package inplaceupgrader
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/manifests"
 	"github.com/openshift/hypershift/support/releaseinfo"
 	"github.com/openshift/hypershift/support/upsert"
+	"github.com/openshift/hypershift/support/util"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,6 +48,7 @@ const (
 	nodePoolAnnotationCurrentConfigVersion   = "hypershift.openshift.io/nodePoolCurrentConfigVersion"
 	nodePoolAnnotationUpgradeInProgressTrue  = "hypershift.openshift.io/nodePoolUpgradeInProgressTrue"
 	nodePoolAnnotationUpgradeInProgressFalse = "hypershift.openshift.io/nodePoolUpgradeInProgressFalse"
+	nodePoolAnnotationMaxUnavailable         = "hypershift.openshift.io/nodePoolMaxUnavailable"
 
 	TokenSecretPayloadKey = "payload"
 	TokenSecretReleaseKey = "release"
@@ -208,7 +211,7 @@ func (r *Reconciler) reconcileInPlaceUpgrade(ctx context.Context, nodePoolUpgrad
 	// Signal in-place upgrade progress.
 	result, err := r.CreateOrUpdate(ctx, r.client, machineSet, func() error {
 		delete(machineSet.Annotations, nodePoolAnnotationUpgradeInProgressFalse)
-		machineSet.Annotations[nodePoolAnnotationUpgradeInProgressTrue] = fmt.Sprintf("Updating version in progress. Target version: %q. Total Nodes: %d. Upgraded: %d", *machineSet.Spec.Template.Spec.Version, len(nodes), len(nodes)-nodeNeedUpgradeCount)
+		machineSet.Annotations[nodePoolAnnotationUpgradeInProgressTrue] = fmt.Sprintf("Nodepool update in progress. Target Config version: %s. Total Nodes: %d. Upgraded: %d", targetConfigVersionHash, len(nodes), len(nodes)-nodeNeedUpgradeCount)
 		return nil
 	})
 	if err != nil {
@@ -223,70 +226,94 @@ func (r *Reconciler) reconcileInPlaceUpgrade(ctx context.Context, nodePoolUpgrad
 		return fmt.Errorf("failed to create upgrade manifests in hosted cluster: %w", err)
 	}
 
-	// Check the nodes to see if any need our help to progress drain
-	// TODO (jerzhang): actually implement drain logic, likely as separate goroutines to monitor success
-	// TODO (jerzhang): consider what happens if the desiredConfig has changed since the node last upgraded
-	for idx := range nodes {
-		if _, err := r.CreateOrUpdate(ctx, r.guestClusterClient, nodes[idx], func() error {
-			// TODO (jerzhang): delete the pod after we uncordon
-			// desiredVerb := strings.Split(desiredState, "-")[0]
-			// if desiredVerb == DrainerStateUncordon {
-			// }
-
-			// TODO (jerzhang): actually implement the node draining. For now, just set the singal and pretend we drained.
-			if nodes[idx].Annotations == nil {
-				nodes[idx].Annotations = map[string]string{}
-			}
-			nodes[idx].Annotations[LastAppliedDrainerAnnotationKey] = nodes[idx].Annotations[DesiredDrainerAnnotationKey]
-			return nil
-		}); err != nil {
-			return fmt.Errorf("failed to create upgrade manifests in hosted cluster: %w", err)
-		}
-		// TODO (jerzhang): in the future, consider exiting here and let future syncs handle post-drain functions
-	}
-
 	// Find nodes that can be upgraded
-	// TODO (jerzhang): add logic to honor maxUnavailable/maxSurge
-	nodesToUpgrade := getNodesToUpgrade(nodes, targetConfigVersionHash, 1)
-	err = r.performNodesUpgrade(ctx, r.guestClusterClient, nodePoolUpgradeAPI.spec.poolRef.GetName(), nodesToUpgrade, targetConfigVersionHash, mcoImage)
+	maxUnavail := 1
+	if maxUnavailAnno, ok := machineSet.Annotations[nodePoolAnnotationMaxUnavailable]; ok {
+		maxUnavail, err = strconv.Atoi(maxUnavailAnno)
+		if err != nil {
+			return fmt.Errorf("error getting max unavailable count from MachineSet annotation: %w", err)
+		}
+	}
+	nodesToUpgrade := getNodesToUpgrade(nodes, targetConfigVersionHash, maxUnavail)
+	err = r.setNodesDesiredConfig(ctx, r.guestClusterClient, nodePoolUpgradeAPI.spec.poolRef.GetName(), nodesToUpgrade, targetConfigVersionHash)
 	if err != nil {
 		return fmt.Errorf("failed to set hosted nodes for inplace upgrade: %w", err)
 	}
 
+	err = r.reconcileUpgradePods(ctx, r.guestClusterClient, nodes, nodePoolUpgradeAPI.spec.poolRef.GetName(), mcoImage)
+	if err != nil {
+		return fmt.Errorf("failed to delete idle upgrade pods: %w", err)
+	}
 	return nil
 }
 
-func (r *Reconciler) performNodesUpgrade(ctx context.Context, hostedClusterClient client.Client, poolName string, nodes []*corev1.Node, targetConfigVersionHash, mcoImage string) error {
+func (r *Reconciler) setNodesDesiredConfig(ctx context.Context, hostedClusterClient client.Client, poolName string, nodes []*corev1.Node, targetConfigVersionHash string) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	for idx, node := range nodes {
+	for _, node := range nodes {
+		if result, err := r.CreateOrUpdate(ctx, hostedClusterClient, node, func() error {
+			// Set the actual annotation
+			node.Annotations[DesiredMachineConfigAnnotationKey] = targetConfigVersionHash
+			return nil
+		}); err != nil {
+			return fmt.Errorf("failed to reconcile node desired config annotations: %w", err)
+		} else {
+			log.Info("Reconciled Node desired config annotations", "result", result)
+		}
+	}
+	return nil
+}
+
+// reconcileUpgradePods checks if any Machine Config Daemon pods are running on nodes that are not currently performing an update
+func (r *Reconciler) reconcileUpgradePods(ctx context.Context, hostedClusterClient client.Client, nodes []*corev1.Node, poolName, mcoImage string) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	for _, node := range nodes {
 		// Set the upgrade pod
 		// TODO (jerzhang): maybe this can be a daemonset instead, since we are using a state machine MCD now
 		// There are also considerations on how to properly handle multiple upgrades, or to force upgrades
 		// on degraded nodes, etc.
 		namespace := inPlaceUpgradeNamespace(poolName)
 		pod := inPlaceUpgradePod(namespace.Name, node.Name)
-		if result, err := r.CreateOrUpdate(ctx, hostedClusterClient, pod, func() error {
-			return r.reconcileUpgradePod(
-				pod,
-				node.Name,
-				poolName,
-				mcoImage,
-			)
-		}); err != nil {
-			return fmt.Errorf("failed to reconcile upgrade pod for node %s: %w", node.Name, err)
-		} else {
-			log.Info("Reconciled upgrade pod", "result", result)
-		}
 
-		if result, err := r.CreateOrUpdate(ctx, hostedClusterClient, nodes[idx], func() error {
-			// Set the actual annotation
-			nodes[idx].Annotations[DesiredMachineConfigAnnotationKey] = targetConfigVersionHash
-			return nil
-		}); err != nil {
-			return fmt.Errorf("failed to reconcile node drain annotations: %w", err)
+		if node.Annotations[CurrentMachineConfigAnnotationKey] == node.Annotations[DesiredMachineConfigAnnotationKey] &&
+			node.Annotations[DesiredDrainerAnnotationKey] == node.Annotations[LastAppliedDrainerAnnotationKey] {
+			// the node is updated and does not require a MCD running
+			if err := hostedClusterClient.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return fmt.Errorf("error getting upgrade MCD pod: %w", err)
+			}
+			if pod.DeletionTimestamp != nil {
+				continue
+			}
+			if err := hostedClusterClient.Delete(ctx, pod); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return fmt.Errorf("error deleting upgrade MCD pod: %w", err)
+			}
+			log.Info("Deleted idle upgrade pod")
 		} else {
-			log.Info("Reconciled Node drain annotations", "result", result)
+			if err := hostedClusterClient.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}, pod); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return fmt.Errorf("failed to get upgrade pod for node %s: %w", node.Name, err)
+				}
+				pod := inPlaceUpgradePod(namespace.Name, node.Name)
+				if result, err := r.CreateOrUpdate(ctx, hostedClusterClient, pod, func() error {
+					return r.createUpgradePod(
+						pod,
+						node.Name,
+						poolName,
+						mcoImage,
+					)
+				}); err != nil {
+					return fmt.Errorf("failed to create upgrade pod for node %s: %w", node.Name, err)
+				} else {
+					log.Info("create upgrade pod", "result", result)
+				}
+			}
 		}
 	}
 	return nil
@@ -316,7 +343,7 @@ func (r *Reconciler) getPayloadImage(ctx context.Context, imageName string) (str
 	return image, nil
 }
 
-func (r *Reconciler) reconcileUpgradePod(pod *corev1.Pod, nodeName, poolName, mcoImage string) error {
+func (r *Reconciler) createUpgradePod(pod *corev1.Pod, nodeName, poolName, mcoImage string) error {
 	configmap := inPlaceUpgradeConfigMap(poolName, pod.Namespace)
 	pod.Spec.Containers = []corev1.Container{
 		{
@@ -410,7 +437,18 @@ func deleteUpgradeManifests(ctx context.Context, hostedClusterClient client.Clie
 }
 
 func getNodesToUpgrade(nodes []*corev1.Node, targetConfig string, maxUnavailable int) []*corev1.Node {
-	// get unavailable machines
+	// First, get nodes depending on how much capacity we have for additional updates
+	capacity := getCapacity(nodes, targetConfig, maxUnavailable)
+	availableCandidates := getAvailableCandidates(nodes, targetConfig, capacity)
+
+	// Next, we get the currently updating candidates, that aren't targetting the latest config
+	alreadyUnavailableNodes := getAlreadyUnavailableCandidates(nodes, targetConfig)
+
+	return append(availableCandidates, alreadyUnavailableNodes...)
+}
+
+func getCapacity(nodes []*corev1.Node, targetConfig string, maxUnavailable int) int {
+	// get how many machines we can update based on maxUnavailable
 	// In the MCO logic, unavailable is defined as any of:
 	// - config does not match
 	// - MCD is failing
@@ -426,16 +464,38 @@ func getNodesToUpgrade(nodes []*corev1.Node, targetConfig string, maxUnavailable
 			numUnavailable++
 		}
 	}
+	return maxUnavailable - numUnavailable
+}
 
-	capacity := maxUnavailable - numUnavailable
-	// If we're at capacity, there's nothing to do.
+// getAlreadyUnavailableCandidates returns nodes that are updating, but don't have the latest config.
+// Compared to self-driving OCP, there is an additional scenario to consider here.
+// Since the ConfigMap contents are synced separately, those will change on the fly in the pod.
+// Meaning that we could have a scenario where there are multiple queue'ed updates, in which case
+// the MCD will just jump straight to the latest version.
+// This will cause the MCD to softlock, so let's make sure for those unavailable nodes, we are also
+// update their desired configuration. The MCD should be able to reconcile these changes on the fly.
+func getAlreadyUnavailableCandidates(nodes []*corev1.Node, targetConfig string) []*corev1.Node {
+	var candidateNodes []*corev1.Node
+	for _, node := range nodes {
+		if node.Annotations[CurrentMachineConfigAnnotationKey] != node.Annotations[DesiredMachineConfigAnnotationKey] &&
+			node.Annotations[DesiredMachineConfigAnnotationKey] != targetConfig {
+			candidateNodes = append(candidateNodes, node)
+		}
+	}
+	return candidateNodes
+}
+
+func getAvailableCandidates(nodes []*corev1.Node, targetConfig string, capacity int) []*corev1.Node {
 	if capacity < 1 {
 		return nil
 	}
-	// We only look at nodes which aren't already targeting our desired config
+
+	// We only look at nodes which aren't already targeting our desired config,
+	// and do not have an ongoing update
 	var candidateNodes []*corev1.Node
 	for _, node := range nodes {
-		if node.Annotations[DesiredMachineConfigAnnotationKey] != targetConfig {
+		if node.Annotations[DesiredMachineConfigAnnotationKey] != targetConfig &&
+			node.Annotations[CurrentMachineConfigAnnotationKey] == node.Annotations[DesiredMachineConfigAnnotationKey] {
 			candidateNodes = append(candidateNodes, node)
 		}
 	}
@@ -444,7 +504,7 @@ func getNodesToUpgrade(nodes []*corev1.Node, targetConfig string, maxUnavailable
 		return nil
 	}
 
-	// Not sure if we need to order this
+	// TODO(jerzhang): do some ordering here
 	return candidateNodes[:capacity]
 }
 
@@ -453,6 +513,13 @@ func (r *Reconciler) reconcileInPlaceUpgradeManifests(ctx context.Context, hoste
 
 	namespace := inPlaceUpgradeNamespace(poolName)
 	if result, err := r.CreateOrUpdate(ctx, hostedClusterClient, namespace, func() error {
+		if namespace.Labels == nil {
+			namespace.Labels = map[string]string{}
+		}
+		namespace.Labels["security.openshift.io/scc.podSecurityLabelSync"] = "false"
+		namespace.Labels["pod-security.kubernetes.io/enforce"] = "privileged"
+		namespace.Labels["pod-security.kubernetes.io/audit"] = "privileged"
+		namespace.Labels["pod-security.kubernetes.io/warn"] = "privileged"
 		return nil
 	}); err != nil {
 		return fmt.Errorf("failed to reconcile upgrade Namespace for hash %s: %w", targetConfigVersionHash, err)
@@ -476,9 +543,14 @@ func (r *Reconciler) reconcileInPlaceUpgradeManifests(ctx context.Context, hoste
 func (r *Reconciler) reconcileUpgradeConfigmap(ctx context.Context, configmap *corev1.ConfigMap, targetConfigVersionHash string, payload []byte) error {
 	log := ctrl.LoggerFrom(ctx)
 
-	// TODO (jerzhang): should probably parse the data here to reduce size/compress
+	// Base64-encode and gzip the payload to allow larger overall payload sizes.
+	compressedPayload, err := util.CompressAndEncode(payload)
+	if err != nil {
+		return fmt.Errorf("could not compress payload: %w", err)
+	}
+
 	configmap.Data = map[string]string{
-		"config": string(payload),
+		"config": compressedPayload.String(),
 		"hash":   targetConfigVersionHash,
 	}
 
@@ -515,6 +587,9 @@ func (r *Reconciler) nodeToMachineSet(o client.Object) []reconcile.Request {
 	}
 
 	machineOwner := metav1.GetControllerOf(machine)
+	if machineOwner == nil {
+		return nil
+	}
 	if machineOwner.Kind != "MachineSet" {
 		return nil
 	}

@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"time"
@@ -25,14 +24,14 @@ import (
 	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	apifixtures "github.com/openshift/hypershift/api/fixtures"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/cmd/util"
 	"github.com/openshift/hypershift/cmd/version"
 	hyperapi "github.com/openshift/hypershift/support/api"
 	"github.com/openshift/hypershift/support/releaseinfo"
 )
 
-// ApplyPlatformSpecifics can be used to create platform specific values as well as enriching the fixure with additional values
+// ApplyPlatformSpecifics can be used to create platform specific values as well as enriching the fixture with additional values
 type ApplyPlatformSpecifics = func(ctx context.Context, fixture *apifixtures.ExampleOptions, options *CreateOptions) error
 
 type CreateOptions struct {
@@ -51,8 +50,10 @@ type CreateOptions struct {
 	Name                             string
 	Namespace                        string
 	BaseDomain                       string
+	BaseDomainPrefix                 string
 	NetworkType                      string
 	NodePoolReplicas                 int32
+	NodeDrainTimeout                 time.Duration
 	PullSecretFile                   string
 	ReleaseImage                     string
 	Render                           bool
@@ -60,6 +61,7 @@ type CreateOptions struct {
 	ServiceCIDR                      string
 	ClusterCIDR                      string
 	ExternalDNSDomain                string
+	NodeSelector                     map[string]string
 	NonePlatform                     NonePlatformCreateOptions
 	KubevirtPlatform                 KubevirtPlatformCreateOptions
 	AWSPlatform                      AWSPlatformOptions
@@ -69,6 +71,8 @@ type CreateOptions struct {
 	Wait                             bool
 	Timeout                          time.Duration
 	Log                              logr.Logger
+	SkipAPIBudgetVerification        bool
+	CredentialSecretName             string
 
 	// BeforeApply is called immediately before resources are applied to the
 	// server, giving the user an opportunity to inspect or mutate the resources.
@@ -77,19 +81,20 @@ type CreateOptions struct {
 }
 
 type PowerVSPlatformOptions struct {
-	APIKey          string
 	ResourceGroup   string
 	Region          string
 	Zone            string
 	CloudInstanceID string
 	CloudConnection string
-	VpcRegion       string
-	Vpc             string
-	VpcSubnet       string
+	VPCRegion       string
+	VPC             string
+	VPCSubnet       string
+	Debug           bool
+	RecreateSecrets bool
 
 	// nodepool related options
 	SysType    string
-	ProcType   string
+	ProcType   hyperv1.PowerVSNodePoolProcType
 	Processors string
 	Memory     int32
 }
@@ -113,24 +118,27 @@ type KubevirtPlatformCreateOptions struct {
 	RootVolumeSize            uint32
 	RootVolumeStorageClass    string
 	RootVolumeAccessModes     string
+	InfraKubeConfigFile       string
+	InfraNamespace            string
 }
 
 type AWSPlatformOptions struct {
-	AWSCredentialsFile string
-	AdditionalTags     []string
-	IAMJSON            string
-	InstanceType       string
-	IssuerURL          string
-	PrivateZoneID      string
-	PublicZoneID       string
-	Region             string
-	RootVolumeIOPS     int64
-	RootVolumeSize     int64
-	RootVolumeType     string
-	EndpointAccess     string
-	Zones              []string
-	EtcdKMSKeyARN      string
-	EnableProxy        bool
+	AWSCredentialsFile      string
+	AdditionalTags          []string
+	IAMJSON                 string
+	InstanceType            string
+	IssuerURL               string
+	PrivateZoneID           string
+	PublicZoneID            string
+	Region                  string
+	RootVolumeIOPS          int64
+	RootVolumeSize          int64
+	RootVolumeType          string
+	RootVolumeEncryptionKey string
+	EndpointAccess          string
+	Zones                   []string
+	EtcdKMSKeyARN           string
+	EnableProxy             bool
 }
 
 type AzurePlatformOptions struct {
@@ -149,7 +157,7 @@ func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures
 		}
 		opts.ReleaseImage = defaultVersion.PullSpec
 	}
-	if err := defaultNetworkType(ctx, opts, &releaseinfo.RegistryClientProvider{}, ioutil.ReadFile); err != nil {
+	if err := defaultNetworkType(ctx, opts, &releaseinfo.RegistryClientProvider{}, os.ReadFile); err != nil {
 		return nil, fmt.Errorf("failed to default network: %w", err)
 	}
 
@@ -167,16 +175,43 @@ func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures
 		annotations[hyperv1.ControlPlaneOperatorImageAnnotation] = opts.ControlPlaneOperatorImage
 	}
 
-	pullSecret, err := ioutil.ReadFile(opts.PullSecretFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read pull secret file: %w", err)
+	var pullSecret []byte
+	var err error
+	if len(opts.CredentialSecretName) > 0 {
+		pullSecret, err = util.GetPullSecret(opts.CredentialSecretName, opts.Namespace)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// overrides if pullSecretFile is set
+	if len(opts.PullSecretFile) > 0 {
+		pullSecret, err = os.ReadFile(opts.PullSecretFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read pull secret file: %w", err)
+		}
 	}
 	var sshKey, sshPrivateKey []byte
+	if len(opts.CredentialSecretName) > 0 {
+		var secret *corev1.Secret
+		secret, err = util.GetSecret(opts.CredentialSecretName, opts.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		sshKey = secret.Data["ssh-publickey"]
+		if len(sshKey) == 0 {
+			return nil, fmt.Errorf("the ssh-publickey is invalid {namespace: %s, secret: %s}", opts.Namespace, opts.CredentialSecretName)
+		}
+		sshPrivateKey = secret.Data["ssh-privatekey"]
+		if len(sshPrivateKey) == 0 {
+			return nil, fmt.Errorf("the ssh-privatekey is invalid {namespace: %s, secret: %s}", opts.Namespace, opts.CredentialSecretName)
+		}
+	}
+	// overrides secret if SSHKeyFile is set
 	if len(opts.SSHKeyFile) > 0 {
 		if opts.GenerateSSH {
 			return nil, fmt.Errorf("--generate-ssh and --ssh-key cannot be specified together")
 		}
-		key, err := ioutil.ReadFile(opts.SSHKeyFile)
+		key, err := os.ReadFile(opts.SSHKeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read ssh key file: %w", err)
 		}
@@ -190,7 +225,7 @@ func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures
 
 	var userCABundle []byte
 	if len(opts.AdditionalTrustBundle) > 0 {
-		userCABundle, err = ioutil.ReadFile(opts.AdditionalTrustBundle)
+		userCABundle, err = os.ReadFile(opts.AdditionalTrustBundle)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read additional trust bundle file: %w", err)
 		}
@@ -198,7 +233,7 @@ func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures
 
 	var imageContentSources []hyperv1.ImageContentSource
 	if len(opts.ImageContentSources) > 0 {
-		icspFileBytes, err := ioutil.ReadFile(opts.ImageContentSources)
+		icspFileBytes, err := os.ReadFile(opts.ImageContentSources)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read image content sources file: %w", err)
 		}
@@ -223,6 +258,7 @@ func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures
 		Name:                             opts.Name,
 		NetworkType:                      hyperv1.NetworkType(opts.NetworkType),
 		NodePoolReplicas:                 opts.NodePoolReplicas,
+		NodeDrainTimeout:                 opts.NodeDrainTimeout,
 		PullSecret:                       pullSecret,
 		ReleaseImage:                     opts.ReleaseImage,
 		SSHPrivateKey:                    sshPrivateKey,
@@ -230,6 +266,7 @@ func createCommonFixture(ctx context.Context, opts *CreateOptions) (*apifixtures
 		EtcdStorageClass:                 opts.EtcdStorageClass,
 		ServiceCIDR:                      opts.ServiceCIDR,
 		ClusterCIDR:                      opts.ClusterCIDR,
+		NodeSelector:                     opts.NodeSelector,
 	}, nil
 }
 
@@ -291,7 +328,7 @@ func apply(ctx context.Context, l logr.Logger, exampleOptions *apifixtures.Examp
 			if err := client.Get(ctx, crclient.ObjectKeyFromObject(hostedCluster), hostedCluster); err != nil {
 				return false, fmt.Errorf("failed to get hostedcluster %s: %w", crclient.ObjectKeyFromObject(hostedCluster), err)
 			}
-			rolledOut := len(hostedCluster.Status.Version.History) > 0 && hostedCluster.Status.Version.History[0].CompletionTime != nil
+			rolledOut := hostedCluster.Status.Version != nil && len(hostedCluster.Status.Version.History) > 0 && hostedCluster.Status.Version.History[0].CompletionTime != nil
 			if !rolledOut {
 				l.Info("Cluster rollout not finished yet, checking again in 30 seconds...")
 			}
@@ -409,10 +446,23 @@ func defaultNetworkType(ctx context.Context, opts *CreateOptions, releaseProvide
 }
 
 func getReleaseSemanticVersion(ctx context.Context, opts *CreateOptions, provider releaseinfo.Provider, readFile func(string) ([]byte, error)) (*semver.Version, error) {
-	pullSecretBytes, err := readFile(opts.PullSecretFile)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read pull secret file %s: %w", opts.PullSecretFile, err)
+	var pullSecretBytes []byte
+	var err error
+	if len(opts.CredentialSecretName) > 0 {
+		pullSecretBytes, err = util.GetPullSecret(opts.CredentialSecretName, opts.Namespace)
+		if err != nil {
+			return nil, err
+		}
 	}
+	// overrides secret if set
+	if len(opts.PullSecretFile) > 0 {
+		pullSecretBytes, err = readFile(opts.PullSecretFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read pull secret file %s: %w", opts.PullSecretFile, err)
+		}
+
+	}
+
 	releaseImage, err := provider.Lookup(ctx, opts.ReleaseImage, pullSecretBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get version information from %s: %w", opts.ReleaseImage, err)

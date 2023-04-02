@@ -16,7 +16,7 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	operatorv1 "github.com/openshift/api/operator/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	cpomanifests "github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/api"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/manifests"
@@ -56,6 +56,8 @@ var initialObjects = []client.Object{
 		},
 	},
 	manifests.NodeTuningClusterOperator(),
+	manifests.NamespaceKubeSystem(),
+	&configv1.ClusterVersion{ObjectMeta: metav1.ObjectMeta{Name: "version"}},
 }
 
 func shouldNotError(key client.ObjectKey) bool {
@@ -81,15 +83,31 @@ var cpObjects = []client.Object{
 	fakeHCP(),
 	fakeIngressCert(),
 	fakePullSecret(),
+	fakeControlPlaneKonnectivityCAConfigMap(),
 	fakeKonnectivityAgentSecret(),
 	fakeRootCASecret(),
 	fakeOpenShiftAPIServerService(),
 	fakeOpenShiftOAuthAPIServerService(),
 	fakeKubeadminPasswordSecret(),
-	fakeOAuthServingCert(),
+	fakeOAuthMasterCABundle(),
 	fakePackageServerService(),
 }
 
+// TestReconcileErrorHandling verifies that the reconcile loop proceeds when
+// errors occur.  The test uses a fake  client with a specific list of initial
+// objects in order to establish a baseline number of expected client create
+// calls.  Then, the test runs the reconcile loop another 100 times starting
+// with the same list of initial objects each time but with the test client
+// configured to inject random errors in response to client get calls; to pass
+// the test, the reconcile loop must make a number of client create calls equal
+// to the baseline plus the number of injected errors, the assumption being that
+// each client get corresponds to a client create and that a failed get will
+// prevent the corresponding client create call from being made.
+//
+// To prevent false positives in this test, any object for which the reconcile
+// loop makes a client get call without a corresponding client create call must
+// be included in the list of initial objects.  Error injection is suppressed
+// for the initial objects.
 func TestReconcileErrorHandling(t *testing.T) {
 
 	// get initial number of creates with no get errors
@@ -98,9 +116,11 @@ func TestReconcileErrorHandling(t *testing.T) {
 		fakeClient := &testClient{
 			Client: fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(initialObjects...).Build(),
 		}
+		uncachedClient := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects().Build()
 
 		r := &reconciler{
 			client:                 fakeClient,
+			uncachedClient:         uncachedClient,
 			CreateOrUpdateProvider: &simpleCreateOrUpdater{},
 			platformType:           hyperv1.NonePlatform,
 			clusterSignerCA:        "foobar",
@@ -169,6 +189,14 @@ func fakePullSecret() *corev1.Secret {
 	return s
 }
 
+func fakeControlPlaneKonnectivityCAConfigMap() *corev1.ConfigMap {
+	cm := manifests.KonnectivityControlPlaneCAConfigMap("bar")
+	cm.Data = map[string]string{
+		"ca.crt": "tehca",
+	}
+	return cm
+}
+
 func fakeKonnectivityAgentSecret() *corev1.Secret {
 	s := manifests.KonnectivityControlPlaneAgentSecret("bar")
 	s.Data = map[string][]byte{
@@ -205,9 +233,9 @@ func fakeKubeadminPasswordSecret() *corev1.Secret {
 	return s
 }
 
-func fakeOAuthServingCert() *corev1.Secret {
-	s := cpomanifests.OpenShiftOAuthServerCert("bar")
-	s.Data = map[string][]byte{"tls.crt": []byte("test")}
+func fakeOAuthMasterCABundle() *corev1.ConfigMap {
+	s := cpomanifests.OpenShiftOAuthMasterCABundle("bar")
+	s.Data = map[string]string{"ca.crt": "test"}
 	return s
 }
 
@@ -370,12 +398,23 @@ func TestReconcileUserCertCABundle(t *testing.T) {
 var _ manifestReconciler = manifestAndReconcile[*rbacv1.ClusterRole]{}
 
 func TestDestroyCloudResources(t *testing.T) {
-
+	originalConditionTime := time.Now().Add(-1 * time.Hour)
 	fakeHostedControlPlane := func() *hyperv1.HostedControlPlane {
 		return &hyperv1.HostedControlPlane{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-hcp",
 				Namespace: "test-namespace",
+			},
+			Status: hyperv1.HostedControlPlaneStatus{
+				Conditions: []metav1.Condition{
+					{
+						Type:               string(hyperv1.CloudResourcesDestroyed),
+						Status:             metav1.ConditionFalse,
+						LastTransitionTime: metav1.Time{Time: originalConditionTime},
+						Message:            "Not Done",
+						Reason:             "NotDone",
+					},
+				},
 			},
 		}
 	}
@@ -518,6 +557,16 @@ func TestDestroyCloudResources(t *testing.T) {
 		g.Expect(cond).ToNot(BeNil())
 	}
 
+	verifyNotDoneCond := func(g *WithT, c client.Client) {
+		hcp := fakeHostedControlPlane()
+		err := c.Get(context.Background(), client.ObjectKeyFromObject(hcp), hcp)
+		g.Expect(err).ToNot(HaveOccurred())
+		cond := meta.FindStatusCondition(hcp.Status.Conditions, string(hyperv1.CloudResourcesDestroyed))
+		g.Expect(cond).ToNot(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.LastTransitionTime.Time.After(originalConditionTime)).To(BeTrue())
+	}
+
 	tests := []struct {
 		name             string
 		existing         []client.Object
@@ -608,7 +657,7 @@ func TestDestroyCloudResources(t *testing.T) {
 				cpClient:               cpClient,
 				CreateOrUpdateProvider: &simpleCreateOrUpdater{},
 			}
-			err := r.destroyCloudResources(context.Background(), fakeHCP)
+			_, err := r.destroyCloudResources(context.Background(), fakeHCP)
 			g.Expect(err).ToNot(HaveOccurred())
 			verifyCleanupWebhook(g, guestClient)
 			if test.verify != nil {
@@ -616,6 +665,8 @@ func TestDestroyCloudResources(t *testing.T) {
 			}
 			if test.verifyDoneCond {
 				verifyDoneCond(g, cpClient)
+			} else {
+				verifyNotDoneCond(g, cpClient)
 			}
 		})
 	}

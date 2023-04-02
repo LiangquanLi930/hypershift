@@ -3,17 +3,17 @@ package fixtures
 import (
 	"crypto/rand"
 	"fmt"
+	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 
 	"github.com/openshift/hypershift/api/util/ipnet"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 
 	configv1 "github.com/openshift/api/config/v1"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,12 +58,15 @@ type ExampleOptions struct {
 	SSHPublicKey                     []byte
 	SSHPrivateKey                    []byte
 	NodePoolReplicas                 int32
+	NodeDrainTimeout                 time.Duration
 	ImageContentSources              []hyperv1.ImageContentSource
 	InfraID                          string
 	MachineCIDR                      string
 	ServiceCIDR                      string
 	ClusterCIDR                      string
+	NodeSelector                     map[string]string
 	BaseDomain                       string
+	BaseDomainPrefix                 string
 	PublicZoneID                     string
 	PrivateZoneID                    string
 	Annotations                      map[string]string
@@ -133,38 +136,11 @@ func (o ExampleOptions) Resources() *ExampleResources {
 	var resources []crclient.Object
 	var services []hyperv1.ServicePublishingStrategyMapping
 	var secretEncryption *hyperv1.SecretEncryptionSpec
-	var globalOpts []runtime.RawExtension
+	var proxyConfig *configv1.ProxySpec
 
 	switch {
 	case o.AWS != nil:
-		buildAWSCreds := func(name, arn string) *corev1.Secret {
-			return &corev1.Secret{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "Secret",
-					APIVersion: corev1.SchemeGroupVersion.String(),
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: namespace.Name,
-					Name:      name,
-				},
-				Data: map[string][]byte{
-					"credentials": []byte(fmt.Sprintf(`[default]
-role_arn = %s
-web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
-`, arn)),
-				},
-			}
-		}
-
-		var kmsCredsSecret *corev1.Secret
-		if len(o.AWS.KMSProviderRoleARN) > 0 {
-			kmsCredsSecret = buildAWSCreds(o.Name+"-kms-creds", o.AWS.KMSProviderRoleARN)
-		}
-		awsResources := &ExampleAWSResources{
-			kmsCredsSecret,
-		}
 		endpointAccess := hyperv1.AWSEndpointAccessType(o.AWS.EndpointAccess)
-		resources = awsResources.AsObjects()
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.AWSPlatform,
 			AWS: &hyperv1.AWSPlatformSpec{
@@ -183,19 +159,13 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		}
 
 		if o.AWS.ProxyAddress != "" {
-			globalOpts = append(globalOpts, runtime.RawExtension{Object: &configv1.Proxy{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: configv1.GroupVersion.String(),
-					Kind:       "Proxy",
-				},
-				Spec: configv1.ProxySpec{
-					HTTPProxy:  o.AWS.ProxyAddress,
-					HTTPSProxy: o.AWS.ProxyAddress,
-				},
-			}})
+			proxyConfig = &configv1.ProxySpec{
+				HTTPProxy:  o.AWS.ProxyAddress,
+				HTTPSProxy: o.AWS.ProxyAddress,
+			}
 		}
 
-		if kmsCredsSecret != nil {
+		if len(o.AWS.KMSProviderRoleARN) > 0 {
 			secretEncryption = &hyperv1.SecretEncryptionSpec{
 				Type: hyperv1.KMS,
 				KMS: &hyperv1.KMSSpec{
@@ -206,9 +176,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 							ARN: o.AWS.KMSKeyARN,
 						},
 						Auth: hyperv1.AWSKMSAuthSpec{
-							Credentials: corev1.LocalObjectReference{
-								Name: awsResources.KMSProviderAWSCreds.Name,
-							},
+							AWSKMSRoleARN: o.AWS.KMSProviderRoleARN,
 						},
 					},
 				},
@@ -219,17 +187,13 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 			for i, svc := range services {
 				switch svc.Service {
 				case hyperv1.APIServer:
-					if endpointAccess != hyperv1.Private {
-						services[i].Route = &hyperv1.RoutePublishingStrategy{
-							Hostname: fmt.Sprintf("api-%s.%s", o.Name, o.ExternalDNSDomain),
-						}
+					services[i].Route = &hyperv1.RoutePublishingStrategy{
+						Hostname: fmt.Sprintf("api-%s.%s", o.Name, o.ExternalDNSDomain),
 					}
 
 				case hyperv1.OAuthServer:
-					if endpointAccess != hyperv1.Private {
-						services[i].Route = &hyperv1.RoutePublishingStrategy{
-							Hostname: fmt.Sprintf("oauth-%s.%s", o.Name, o.ExternalDNSDomain),
-						}
+					services[i].Route = &hyperv1.RoutePublishingStrategy{
+						Hostname: fmt.Sprintf("oauth-%s.%s", o.Name, o.ExternalDNSDomain),
 					}
 
 				case hyperv1.Konnectivity:
@@ -294,7 +258,8 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		services = getServicePublishingStrategyMappingByAPIServerAddress(o.Agent.APIServerAddress, o.NetworkType)
 	case o.Kubevirt != nil:
 		platformSpec = hyperv1.PlatformSpec{
-			Type: hyperv1.KubevirtPlatform,
+			Type:     hyperv1.KubevirtPlatform,
+			Kubevirt: &hyperv1.KubevirtPlatformSpec{},
 		}
 		switch o.Kubevirt.ServicePublishingStrategy {
 		case "NodePort":
@@ -304,6 +269,40 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		default:
 			panic(fmt.Sprintf("service publishing type %s is not supported", o.Kubevirt.ServicePublishingStrategy))
 		}
+
+		if o.Kubevirt.InfraKubeConfig != nil {
+			infraKubeConfigSecret := &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Secret",
+					APIVersion: corev1.SchemeGroupVersion.String(),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      o.Name + "-infra-credentials",
+					Namespace: o.Namespace,
+				},
+				Data: map[string][]byte{
+					"kubeconfig": o.Kubevirt.InfraKubeConfig,
+				},
+				Type: corev1.SecretTypeOpaque,
+			}
+			resources = append(resources, infraKubeConfigSecret)
+			platformSpec.Kubevirt = &hyperv1.KubevirtPlatformSpec{
+				Credentials: &hyperv1.KubevirtPlatformCredentials{
+					InfraKubeConfigSecret: &hyperv1.KubeconfigSecretRef{
+						Name: infraKubeConfigSecret.Name,
+						Key:  "kubeconfig",
+					},
+				},
+			}
+		}
+		if o.Kubevirt.InfraNamespace != "" {
+			platformSpec.Kubevirt.Credentials.InfraNamespace = o.Kubevirt.InfraNamespace
+		}
+
+		if o.Kubevirt.BaseDomainPassthrough {
+			platformSpec.Kubevirt.BaseDomainPassthrough = &o.Kubevirt.BaseDomainPassthrough
+		}
+
 	case o.Azure != nil:
 		credentialSecret := &corev1.Secret{
 			TypeMeta: metav1.TypeMeta{
@@ -340,36 +339,8 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
 
 	case o.PowerVS != nil:
-		buildIBMCloudCreds := func(name, apikey string) *corev1.Secret {
-			data := map[string][]byte{
-				"ibm-credentials.env": []byte(fmt.Sprintf(`IBMCLOUD_AUTH_TYPE=iam
- IBMCLOUD_APIKEY=%s
- IBMCLOUD_AUTH_URL=https://iam.cloud.ibm.com
- `, apikey)),
-				"ibmcloud_api_key": []byte(apikey),
-			}
+		resources = o.PowerVS.Resources.AsObjects()
 
-			return &corev1.Secret{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "Secret",
-					APIVersion: corev1.SchemeGroupVersion.String(),
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: namespace.Name,
-					Name:      name,
-				},
-				Data: data,
-			}
-		}
-
-		// TODO(dharaneeshvrd): Need exploration to use granular permissions
-		powerVSResources := &ExamplePowerVSResources{
-			buildIBMCloudCreds(o.Name+"-cloud-ctrl-creds", o.PowerVS.ApiKey),
-			buildIBMCloudCreds(o.Name+"-node-mgmt-creds", o.PowerVS.ApiKey),
-			buildIBMCloudCreds(o.Name+"-cpo-creds", o.PowerVS.ApiKey),
-			buildIBMCloudCreds(o.Name+"-ingress-creds", o.PowerVS.ApiKey),
-		}
-		resources = powerVSResources.AsObjects()
 		platformSpec = hyperv1.PlatformSpec{
 			Type: hyperv1.PowerVSPlatform,
 			PowerVS: &hyperv1.PowerVSPlatformSpec{
@@ -384,14 +355,14 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 					ID:   &o.PowerVS.SubnetID,
 				},
 				VPC: &hyperv1.PowerVSVPC{
-					Name:   o.PowerVS.Vpc,
-					Region: o.PowerVS.VpcRegion,
-					Subnet: o.PowerVS.VpcSubnet,
+					Name:   o.PowerVS.VPC,
+					Region: o.PowerVS.VPCRegion,
+					Subnet: o.PowerVS.VPCSubnet,
 				},
-				KubeCloudControllerCreds:  corev1.LocalObjectReference{Name: powerVSResources.KubeCloudControllerCreds.Name},
-				NodePoolManagementCreds:   corev1.LocalObjectReference{Name: powerVSResources.NodePoolManagementCreds.Name},
-				ControlPlaneOperatorCreds: corev1.LocalObjectReference{Name: powerVSResources.ControlPlaneOperatorCreds.Name},
-				IngressOperatorCloudCreds: corev1.LocalObjectReference{Name: powerVSResources.IngressOperatorCloudCreds.Name},
+				KubeCloudControllerCreds:  corev1.LocalObjectReference{Name: o.PowerVS.Resources.KubeCloudControllerCreds.Name},
+				NodePoolManagementCreds:   corev1.LocalObjectReference{Name: o.PowerVS.Resources.NodePoolManagementCreds.Name},
+				IngressOperatorCloudCreds: corev1.LocalObjectReference{Name: o.PowerVS.Resources.IngressOperatorCloudCreds.Name},
+				StorageOperatorCloudCreds: corev1.LocalObjectReference{Name: o.PowerVS.Resources.StorageOperatorCloudCreds.Name},
 			},
 		}
 		services = getIngressServicePublishingStrategyMapping(o.NetworkType, o.ExternalDNSDomain != "")
@@ -464,6 +435,13 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		},
 	}
 
+	if o.BaseDomainPrefix == "none" {
+		// set empty prefix explicitly
+		cluster.Spec.DNS.BaseDomainPrefix = pointer.String("")
+	} else if o.BaseDomainPrefix != "" {
+		cluster.Spec.DNS.BaseDomainPrefix = pointer.String(o.BaseDomainPrefix)
+	}
+
 	if o.ClusterCIDR != "" {
 		cluster.Spec.Networking.ClusterNetwork = []hyperv1.ClusterNetworkEntry{{CIDR: *ipnet.MustParseCIDR(o.ClusterCIDR)}}
 	}
@@ -474,8 +452,12 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 		cluster.Spec.Networking.MachineNetwork = []hyperv1.MachineNetworkEntry{{CIDR: *ipnet.MustParseCIDR(o.MachineCIDR)}}
 	}
 
-	if len(globalOpts) > 0 {
-		cluster.Spec.Configuration = &hyperv1.ClusterConfiguration{Items: globalOpts}
+	if proxyConfig != nil {
+		cluster.Spec.Configuration = &hyperv1.ClusterConfiguration{Proxy: proxyConfig}
+	}
+
+	if o.NodeSelector != nil {
+		cluster.Spec.NodeSelector = o.NodeSelector
 	}
 
 	var userCABundleCM *corev1.ConfigMap
@@ -535,6 +517,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 				Platform: hyperv1.NodePoolPlatform{
 					Type: cluster.Spec.Platform.Type,
 				},
+				NodeDrainTimeout: &metav1.Duration{Duration: o.NodeDrainTimeout},
 			},
 		}
 	}
@@ -556,9 +539,10 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 					},
 				},
 				RootVolume: &hyperv1.Volume{
-					Size: o.AWS.RootVolumeSize,
-					Type: o.AWS.RootVolumeType,
-					IOPS: o.AWS.RootVolumeIOPS,
+					Size:          o.AWS.RootVolumeSize,
+					Type:          o.AWS.RootVolumeType,
+					IOPS:          o.AWS.RootVolumeIOPS,
+					EncryptionKey: o.AWS.RootVolumeEncryptionKey,
 				},
 			}
 			nodePools = append(nodePools, nodePool)
@@ -616,7 +600,7 @@ web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
 }
 
 func getIngressServicePublishingStrategyMapping(netType hyperv1.NetworkType, usesExternalDNS bool) []hyperv1.ServicePublishingStrategyMapping {
-
+	// TODO (Alberto): Default KAS to Route if endpointAccess is Private.
 	apiServiceStrategy := hyperv1.LoadBalancer
 	if usesExternalDNS {
 		apiServiceStrategy = hyperv1.Route

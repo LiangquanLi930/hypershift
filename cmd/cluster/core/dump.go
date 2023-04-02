@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +10,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
 	configv1 "github.com/openshift/api/config/v1"
+	imagev1 "github.com/openshift/api/image/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	securityv1 "github.com/openshift/api/security/v1"
 	agentv1 "github.com/openshift/cluster-api-provider-agent/api/v1alpha1"
@@ -19,19 +20,21 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	kubeclient "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
-	capiaws "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capiaws "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	capikubevirt "sigs.k8s.io/cluster-api-provider-kubevirt/api/v1alpha1"
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	hyperapi "github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/cmd/log"
 	"github.com/openshift/hypershift/cmd/util"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests"
@@ -110,7 +113,7 @@ func dumpGuestCluster(ctx context.Context, opts *DumpOptions) error {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(kubeconfigSecret), kubeconfigSecret); err != nil {
 		return fmt.Errorf("failed to get guest cluster kubeconfig secret: %w", err)
 	}
-	kubeconfigFile, err := ioutil.TempFile(os.TempDir(), "kubeconfig-")
+	kubeconfigFile, err := os.CreateTemp(os.TempDir(), "kubeconfig-")
 	if err != nil {
 		return fmt.Errorf("failed to create tempfile for kubeconfig: %w", err)
 	}
@@ -204,6 +207,8 @@ func DumpCluster(ctx context.Context, opts *DumpOptions) error {
 		&capikubevirt.KubevirtMachineTemplate{},
 		&capikubevirt.KubevirtCluster{},
 		&routev1.Route{},
+		&imagev1.ImageStream{},
+		&networkingv1.NetworkPolicy{},
 	}
 	resourceList := strings.Join(resourceTypes(resources), ",")
 	if opts.AgentNamespace != "" {
@@ -236,7 +241,7 @@ func DumpCluster(ctx context.Context, opts *DumpOptions) error {
 		}
 	}
 
-	files, err := ioutil.ReadDir(opts.ArtifactDir)
+	files, err := os.ReadDir(opts.ArtifactDir)
 	if err != nil {
 		return fmt.Errorf("failed to list artifactDir %s: %w", opts.ArtifactDir, err)
 	}
@@ -287,6 +292,7 @@ func DumpGuestCluster(ctx context.Context, log logr.Logger, kubeconfig string, d
 		&corev1.Event{},
 		&corev1.Namespace{},
 		&corev1.Node{},
+		&corev1.PersistentVolume{},
 		&corev1.PersistentVolumeClaim{},
 		&corev1.Pod{},
 		&corev1.ReplicationController{},
@@ -296,6 +302,14 @@ func DumpGuestCluster(ctx context.Context, log logr.Logger, kubeconfig string, d
 		&rbacv1.Role{},
 		&rbacv1.RoleBinding{},
 		&securityv1.SecurityContextConstraints{},
+		&storagev1.CSIDriver{},
+		&storagev1.CSINode{},
+		&storagev1.StorageClass{},
+		&storagev1.VolumeAttachment{},
+		// TODO: Filter out when HostedCluster support capabilities && CSISnapshot capability is disabled in the guest cluster.
+		// https://github.com/openshift/api/blob/2bde012f248a5172dcde2f7104caf0726cf6d93a/config/v1/types_cluster_version.go#L266-L270
+		&snapshotv1.VolumeSnapshotClass{},
+		&snapshotv1.VolumeSnapshotContent{},
 	}
 	resourceList := strings.Join(resourceTypes(resources), ",")
 	cmd.Run(ctx, resourceList)
@@ -397,7 +411,7 @@ func outputLog(ctx context.Context, l logr.Logger, fileName string, req *restcli
 	for _, c := range checker {
 		c(fileName, b)
 	}
-	if err := ioutil.WriteFile(fileName, b, 0644); err != nil {
+	if err := os.WriteFile(fileName, b, 0644); err != nil {
 		l.Error(err, "Failed to write file", "file", fileName)
 	}
 }
@@ -439,7 +453,7 @@ func gatherNetworkLogs(ocCommand, controlPlaneNamespace, artifactDir string, ctx
 				l.Info("Get ovn db status command returned an error", "args", allArgs, "error", err.Error(), "output", string(out))
 			}
 			fileName := filepath.Join(dir, fmt.Sprintf("%s_%s_status", pod.Name, dbName))
-			if err := ioutil.WriteFile(fileName, out, 0644); err != nil {
+			if err := os.WriteFile(fileName, out, 0644); err != nil {
 				l.Error(err, "Failed to write file", "file", fileName)
 			}
 		}

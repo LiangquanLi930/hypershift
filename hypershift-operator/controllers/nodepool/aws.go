@@ -3,9 +3,9 @@ package nodepool
 import (
 	"fmt"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	k8sutilspointer "k8s.io/utils/pointer"
-	capiaws "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capiaws "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 )
 
 const (
@@ -20,11 +20,11 @@ func awsClusterCloudProviderTagKey(id string) string {
 	return fmt.Sprintf("kubernetes.io/cluster/%s", id)
 }
 
-func awsMachineTemplateSpec(infraName, ami string, hostedCluster *hyperv1.HostedCluster, nodePool *hyperv1.NodePool) *capiaws.AWSMachineTemplateSpec {
+func awsMachineTemplateSpec(infraName, ami string, hostedCluster *hyperv1.HostedCluster, nodePool *hyperv1.NodePool, defaultSG bool) (*capiaws.AWSMachineTemplateSpec, error) {
+
 	subnet := &capiaws.AWSResourceReference{}
 	if nodePool.Spec.Platform.AWS.Subnet != nil {
 		subnet.ID = nodePool.Spec.Platform.AWS.Subnet.ID
-		subnet.ARN = nodePool.Spec.Platform.AWS.Subnet.ARN
 		for k := range nodePool.Spec.Platform.AWS.Subnet.Filters {
 			filter := capiaws.Filter{
 				Name:   nodePool.Spec.Platform.AWS.Subnet.Filters[k].Name,
@@ -48,6 +48,9 @@ func awsMachineTemplateSpec(infraName, ami string, hostedCluster *hyperv1.Hosted
 		if nodePool.Spec.Platform.AWS.RootVolume.IOPS > 0 {
 			rootVolume.IOPS = nodePool.Spec.Platform.AWS.RootVolume.IOPS
 		}
+
+		rootVolume.Encrypted = nodePool.Spec.Platform.AWS.RootVolume.Encrypted
+		rootVolume.EncryptionKey = nodePool.Spec.Platform.AWS.RootVolume.EncryptionKey
 	}
 
 	securityGroups := []capiaws.AWSResourceReference{}
@@ -60,9 +63,17 @@ func awsMachineTemplateSpec(infraName, ami string, hostedCluster *hyperv1.Hosted
 			})
 		}
 		securityGroups = append(securityGroups, capiaws.AWSResourceReference{
-			ARN:     sg.ARN,
 			ID:      sg.ID,
 			Filters: filters,
+		})
+	}
+	if len(securityGroups) == 0 && defaultSG {
+		if hostedCluster.Status.Platform == nil || hostedCluster.Status.Platform.AWS == nil || hostedCluster.Status.Platform.AWS.DefaultWorkerSecurityGroupID == "" {
+			return nil, &NotReadyError{fmt.Errorf("the default security group for the HostedCluster has not been created")}
+		}
+		sgID := hostedCluster.Status.Platform.AWS.DefaultWorkerSecurityGroupID
+		securityGroups = append(securityGroups, capiaws.AWSResourceReference{
+			ID: &sgID,
 		})
 	}
 
@@ -106,5 +117,5 @@ func awsMachineTemplateSpec(infraName, ami string, hostedCluster *hyperv1.Hosted
 		},
 	}
 
-	return awsMachineTemplateSpec
+	return awsMachineTemplateSpec, nil
 }

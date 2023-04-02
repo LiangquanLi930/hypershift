@@ -7,6 +7,9 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	prometheusoperatorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -17,7 +20,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/sets"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"k8s.io/utils/pointer"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,8 +36,11 @@ import (
 	configv1 "github.com/openshift/api/config/v1"
 	imageregistryv1 "github.com/openshift/api/imageregistry/v1"
 	operatorv1 "github.com/openshift/api/operator/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/azure"
+	kubevirtcsi "github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/csi/kubevirt"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cvo"
 	cpomanifests "github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	alerts "github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/alerts"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/crd"
@@ -48,6 +56,7 @@ import (
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/olm"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/rbac"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/registry"
+	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/storage"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/operator"
 	"github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/globalconfig"
@@ -63,6 +72,14 @@ const (
 	observedConfigKey    = "config"
 )
 
+var (
+	// deleteDNSOperatorDeploymentOnce ensures that the reconciler tries
+	// to delete any existing DNS operator deployment on the hosted cluster
+	// only once.
+	deleteDNSOperatorDeploymentOnce sync.Once
+	deleteCVORemovedResourcesOnce   sync.Once
+)
+
 type reconciler struct {
 	client         client.Client
 	uncachedClient client.Client
@@ -71,6 +88,7 @@ type reconciler struct {
 	rootCA                    string
 	clusterSignerCA           string
 	cpClient                  client.Client
+	kubevirtInfraClient       client.Client
 	hcpName                   string
 	hcpNamespace              string
 	releaseProvider           releaseinfo.Provider
@@ -120,6 +138,18 @@ func Setup(opts *operator.HostedClusterConfigOperatorConfig) error {
 		return fmt.Errorf("failed to create uncached client: %w", err)
 	}
 
+	// if kubevirt infra config is not used, it is being set the same as the mgmt config
+	kubevirtInfraClient, err := client.New(opts.KubevirtInfraConfig, client.Options{
+		Scheme: opts.Manager.GetScheme(),
+		Mapper: opts.Manager.GetRESTMapper(),
+		Opts: client.WarningHandlerOptions{
+			SuppressWarnings: true,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create kubevirt infra uncached client: %w", err)
+	}
+
 	c, err := controller.New(ControllerName, opts.Manager, controller.Options{Reconciler: &reconciler{
 		client:                    opts.Manager.GetClient(),
 		uncachedClient:            uncachedClient,
@@ -128,6 +158,7 @@ func Setup(opts *operator.HostedClusterConfigOperatorConfig) error {
 		rootCA:                    opts.InitialCA,
 		clusterSignerCA:           opts.ClusterSignerCA,
 		cpClient:                  opts.CPCluster.GetClient(),
+		kubevirtInfraClient:       kubevirtInfraClient,
 		hcpName:                   opts.HCPName,
 		hcpNamespace:              opts.Namespace,
 		releaseProvider:           opts.ReleaseProvider,
@@ -195,10 +226,7 @@ func (r *reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	if !hcp.DeletionTimestamp.IsZero() {
 		if shouldCleanupCloudResources(hcp) {
 			log.Info("Cleaning up hosted cluster cloud resources")
-			err := r.destroyCloudResources(ctx, hcp)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
+			return r.destroyCloudResources(ctx, hcp)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -240,6 +268,11 @@ func (r *reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		errs = append(errs, fmt.Errorf("failed to reconcile kubernetes.default endpoints: %w", err))
 	}
 
+	log.Info("reconciling install configmap")
+	if err := r.reconcileInstallConfigMap(ctx, releaseImage); err != nil {
+		errs = append(errs, fmt.Errorf("failed to reconcile install configmap: %w", err))
+	}
+
 	log.Info("reconciling guest cluster alert rules")
 	if err := r.reconcileGuestClusterAlertRules(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("failed to reconcile guest cluster alert rules: %w", err))
@@ -272,15 +305,11 @@ func (r *reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 
 	log.Info("reconciling registry config")
 	registryConfig := manifests.Registry()
-	// IBM Cloud platform allows managed service automation to initialize the registry config and then afterwards
-	// the client is in full control of the updates
-	if r.platformType != hyperv1.IBMCloudPlatform {
-		if _, err := r.CreateOrUpdate(ctx, r.client, registryConfig, func() error {
-			registry.ReconcileRegistryConfig(registryConfig, r.platformType, hcp.Spec.InfrastructureAvailabilityPolicy)
-			return nil
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("failed to reconcile imageregistry config: %w", err))
-		}
+	if _, err := r.CreateOrUpdate(ctx, r.client, registryConfig, func() error {
+		registry.ReconcileRegistryConfig(registryConfig, r.platformType, hcp.Spec.InfrastructureAvailabilityPolicy)
+		return nil
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("failed to reconcile imageregistry config: %w", err))
 	}
 
 	log.Info("reconciling ingress controller")
@@ -394,7 +423,7 @@ func (r *reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	}
 
 	log.Info("reconciling oauth serving cert ca bundle")
-	if err := r.reconcileOAuthServingCertCABundle(ctx, hcp); err != nil {
+	if err := r.reconcileOAuthServingCertCABundle(ctx, hcp, r.oauthAddress); err != nil {
 		errs = append(errs, fmt.Errorf("failed to reconcile oauth serving cert CA bundle: %w", err))
 	}
 
@@ -457,18 +486,51 @@ func (r *reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	log.Info("reconciling olm resources")
 	errs = append(errs, r.reconcileOLM(ctx, hcp, releaseImage)...)
 
+	if hostedcontrolplane.IsStorageAndCSIManaged(hcp) {
+		log.Info("reconciling storage resources")
+		errs = append(errs, r.reconcileStorage(ctx, hcp, releaseImage)...)
+
+		log.Info("reconciling node level csi configuration")
+		if err := r.reconcileCSIDriver(ctx, hcp, releaseImage); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	recyclerServiceAccount := manifests.RecyclerServiceAccount()
+	if _, err := r.CreateOrUpdate(ctx, r.client, recyclerServiceAccount, func() error {
+		return nil
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("failed to reconcile pv recycler service account: %w", err))
+	}
+
 	log.Info("reconciling observed configuration")
 	errs = append(errs, r.reconcileObservedConfiguration(ctx, hcp)...)
 
-	// The node tuning cluster operator resource cannot be removed with an annotation in the CVO
-	// like other resources. The CVO treats cluster operator resources differently and attempts to
-	// pre-create them regardless of the annotations. By removing the manifest from the payload, the
-	// CVO should no longer try to sync the node tuning cluster operator. However, we still need to
-	// remove it if upgrading a cluster that had it before.
-	nodeTuningCO := manifests.NodeTuningClusterOperator()
-	if err = r.client.Get(ctx, client.ObjectKeyFromObject(nodeTuningCO), nodeTuningCO); err == nil {
-		log.Info("removing existing node tuning cluster operator")
-		errs = append(errs, r.client.Delete(ctx, nodeTuningCO))
+	// Delete the DNS operator deployment in the hosted cluster, if it is
+	// present there.  A separate DNS operator deployment runs as part of
+	// the hosted control-plane, but an upgraded cluster might still have
+	// an old DNS operator deployment in the hosted cluster.  The caching
+	// client has a label selector that doesn't match the deployment,
+	// so we must use the uncached client for this delete call.  To avoid
+	// excessive API calls using the uncached client, the delete call is
+	// guarded using a sync.Once.
+	if r.isClusterVersionUpdated(ctx, releaseImage.Version()) {
+		deleteDNSOperatorDeploymentOnce.Do(func() {
+			dnsOperatorDeployment := manifests.DNSOperatorDeployment()
+			log.Info("removing any existing DNS operator deployment")
+			if err := r.uncachedClient.Delete(ctx, dnsOperatorDeployment); err != nil && !apierrors.IsNotFound(err) {
+				errs = append(errs, err)
+			}
+		})
+		deleteCVORemovedResourcesOnce.Do(func() {
+			resources := cvo.ResourcesToRemove(hcp.Spec.Platform.Type)
+			for _, resource := range resources {
+				log.Info("removing existing resources", "resource", resource)
+				if err := r.uncachedClient.Delete(ctx, resource); err != nil && !apierrors.IsNotFound(err) {
+					errs = append(errs, err)
+				}
+			}
+		})
 	}
 
 	if hcp.Spec.Platform.Type == hyperv1.AWSPlatform {
@@ -476,6 +538,20 @@ func (r *reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	}
 
 	return ctrl.Result{}, errors.NewAggregate(errs)
+}
+
+func (r *reconciler) reconcileCSIDriver(ctx context.Context, hcp *hyperv1.HostedControlPlane, releaseImage *releaseinfo.ReleaseImage) error {
+	switch hcp.Spec.Platform.Type {
+	case hyperv1.KubevirtPlatform:
+		// Most csi drivers should be laid down by the Cluster Storage Operator (CSO) instead of
+		// the hcco operator. Only KubeVirt is unique at the moment.
+		err := kubevirtcsi.ReconcileTenant(r.client, hcp, ctx, r.CreateOrUpdate, releaseImage.ComponentImages())
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (r *reconciler) reconcileCRDs(ctx context.Context) error {
@@ -577,6 +653,8 @@ func (r *reconciler) reconcileNamespaces(ctx context.Context) error {
 		reconcile func(*corev1.Namespace) error
 	}{
 		{manifest: manifests.NamespaceOpenShiftAPIServer},
+		{manifest: manifests.NamespaceOpenShiftInfra, reconcile: namespaces.ReconcileOpenShiftInfraNamespace},
+		{manifest: manifests.NamespaceOpenshiftCloudControllerManager},
 		{manifest: manifests.NamespaceOpenShiftControllerManager},
 		{manifest: manifests.NamespaceKubeAPIServer, reconcile: namespaces.ReconcileKubeAPIServerNamespace},
 		{manifest: manifests.NamespaceKubeControllerManager},
@@ -639,8 +717,21 @@ func (r *reconciler) reconcileRBAC(ctx context.Context) error {
 		manifestAndReconcile[*rbacv1.ClusterRoleBinding]{manifest: manifests.MetricsClientClusterRoleBinding, reconcile: rbac.ReconcileGenericMetricsClusterRoleBinding("system:serviceaccount:hypershift:prometheus")},
 
 		manifestAndReconcile[*rbacv1.RoleBinding]{manifest: manifests.IngressToRouteControllerRoleBinding, reconcile: rbac.ReconcileIngressToRouteControllerRoleBinding},
-	}
 
+		manifestAndReconcile[*rbacv1.RoleBinding]{manifest: manifests.AuthenticatedReaderForAuthenticatedUserRolebinding, reconcile: rbac.ReconcileAuthenticatedReaderForAuthenticatedUserRolebinding},
+
+		manifestAndReconcile[*rbacv1.Role]{manifest: manifests.KCMLeaderElectionRole, reconcile: rbac.ReconcileKCMLeaderElectionRole},
+		manifestAndReconcile[*rbacv1.RoleBinding]{manifest: manifests.KCMLeaderElectionRoleBinding, reconcile: rbac.ReconcileKCMLeaderElectionRoleBinding},
+
+		manifestAndReconcile[*rbacv1.ClusterRole]{manifest: manifests.ImageTriggerControllerClusterRole, reconcile: rbac.ReconcileImageTriggerControllerClusterRole},
+		manifestAndReconcile[*rbacv1.ClusterRoleBinding]{manifest: manifests.ImageTriggerControllerClusterRoleBinding, reconcile: rbac.ReconcileImageTriggerControllerClusterRoleBinding},
+
+		manifestAndReconcile[*rbacv1.ClusterRole]{manifest: manifests.PodSecurityAdmissionLabelSyncerControllerClusterRole, reconcile: rbac.ReconcilePodSecurityAdmissionLabelSyncerControllerClusterRole},
+		manifestAndReconcile[*rbacv1.ClusterRoleBinding]{manifest: manifests.PodSecurityAdmissionLabelSyncerControllerRoleBinding, reconcile: rbac.ReconcilePodSecurityAdmissionLabelSyncerControllerRoleBinding},
+
+		manifestAndReconcile[*rbacv1.ClusterRole]{manifest: manifests.DeployerClusterRole, reconcile: rbac.ReconcileDeployerClusterRole},
+		manifestAndReconcile[*rbacv1.ClusterRoleBinding]{manifest: manifests.DeployerClusterRoleBinding, reconcile: rbac.ReconcileDeployerClusterRoleBinding},
+	}
 	var errs []error
 	for _, m := range rbac {
 		if err := m.upsert(ctx, r.client, r.CreateOrUpdate); err != nil {
@@ -672,13 +763,99 @@ func (r *reconciler) reconcileIngressController(ctx context.Context, hcp *hyperv
 			errs = append(errs, fmt.Errorf("failed to reconcile default ingress controller cert: %w", err))
 		}
 	}
+
+	// Default Ingress is passed through as a subdomain of the infra/mgmt cluster
+	// for KubeVirt when the base domain passthrough feature is in use.
+	if hcp.Spec.Platform.Type == hyperv1.KubevirtPlatform &&
+		hcp.Spec.Platform.Kubevirt != nil &&
+		hcp.Spec.Platform.Kubevirt.BaseDomainPassthrough != nil &&
+		*hcp.Spec.Platform.Kubevirt.BaseDomainPassthrough {
+
+		// Here we are creating a route and service in the hosted control plane namespace
+		// while in the HCCO (which typically only works on the guest client, not the mgmt client).
+		//
+		// This is being done in the HCCO because we have to get the NodePort's port used by the
+		// default ingress services in the guest cluster in order to create the service in the
+		// mgmt/infra cluster. basically, the mgmt cluster service has to point the backend
+		// "somewhere", and that somewhere is the nodeport's port of the routers in the guest cluster.
+		// The component that can get that information about the nodeport's port is the HCCO, so
+		// that's why we're reconciling a service and route within hosted control plane in the HCCO
+
+		defaultIngressNodePortService := manifests.IngressDefaultIngressNodePortService()
+		err := r.client.Get(ctx, client.ObjectKeyFromObject(defaultIngressNodePortService), defaultIngressNodePortService)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to retrieve guest cluster ingress NodePort: %w", err))
+		}
+
+		var namespace string
+		if hcp.Spec.Platform.Kubevirt.Credentials != nil {
+			namespace = hcp.Spec.Platform.Kubevirt.Credentials.InfraNamespace
+		} else {
+			namespace = hcp.Namespace
+		}
+
+		// Manifests for infra/mgmt cluster passthrough service
+		cpService := manifests.IngressDefaultIngressPassthroughService(namespace)
+
+		cpService.Name = fmt.Sprintf("%s-%s",
+			manifests.IngressDefaultIngressPassthroughServiceName,
+			hcp.Spec.Platform.Kubevirt.GenerateID)
+
+		// Manifests for infra/mgmt cluster passthrough routes
+		cpPassthroughRoute := manifests.IngressDefaultIngressPassthroughRoute(namespace)
+
+		cpPassthroughRoute.Name = fmt.Sprintf("%s-%s",
+			manifests.IngressDefaultIngressPassthroughRouteName,
+			hcp.Spec.Platform.Kubevirt.GenerateID)
+
+		if _, err := r.CreateOrUpdate(ctx, r.kubevirtInfraClient, cpService, func() error {
+			return ingress.ReconcileDefaultIngressPassthroughService(cpService, defaultIngressNodePortService, hcp)
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to reconcile kubevirt ingress passthrough service: %w", err))
+		}
+
+		if _, err := r.CreateOrUpdate(ctx, r.kubevirtInfraClient, cpPassthroughRoute, func() error {
+			return ingress.ReconcileDefaultIngressPassthroughRoute(cpPassthroughRoute, cpService, hcp)
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to reconcile kubevirt ingress passthrough route: %w", err))
+		}
+	}
+
 	return errors.NewAggregate(errs)
 }
 
 func (r *reconciler) reconcileKonnectivityAgent(ctx context.Context, hcp *hyperv1.HostedControlPlane, releaseImage *releaseinfo.ReleaseImage) error {
 	var errs []error
 
+	// Set pod security labels on kube-system to avoid API warnings
+	kubeSystemNamespace := manifests.NamespaceKubeSystem()
+	if _, err := r.CreateOrUpdate(ctx, r.client, kubeSystemNamespace, func() error {
+		if kubeSystemNamespace.Labels == nil {
+			kubeSystemNamespace.Labels = map[string]string{}
+		}
+		kubeSystemNamespace.Labels["security.openshift.io/scc.podSecurityLabelSync"] = "false"
+		kubeSystemNamespace.Labels["pod-security.kubernetes.io/enforce"] = "privileged"
+		kubeSystemNamespace.Labels["pod-security.kubernetes.io/audit"] = "privileged"
+		kubeSystemNamespace.Labels["pod-security.kubernetes.io/warn"] = "privileged"
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to reconcile kube-system namespace: %w", err)
+	}
+
 	p := konnectivity.NewKonnectivityParams(hcp, releaseImage.ComponentImages(), r.konnectivityServerAddress, r.konnectivityServerPort)
+
+	controlPlaneKonnectivityCA := manifests.KonnectivityControlPlaneCAConfigMap(hcp.Namespace)
+	if err := r.cpClient.Get(ctx, client.ObjectKeyFromObject(controlPlaneKonnectivityCA), controlPlaneKonnectivityCA); err != nil {
+		errs = append(errs, fmt.Errorf("failed to get control plane konnectivity agent CA config map: %w", err))
+	} else {
+		hostedKonnectivityCA := manifests.KonnectivityHostedCAConfigMap()
+		if _, err := r.CreateOrUpdate(ctx, r.client, hostedKonnectivityCA, func() error {
+			util.CopyConfigMap(hostedKonnectivityCA, controlPlaneKonnectivityCA)
+			return nil
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to reconcile konnectivity CA config map: %w", err))
+		}
+	}
 
 	controlPlaneAgentSecret := manifests.KonnectivityControlPlaneAgentSecret(hcp.Namespace)
 	if err := r.cpClient.Get(ctx, client.ObjectKeyFromObject(controlPlaneAgentSecret), controlPlaneAgentSecret); err != nil {
@@ -716,7 +893,7 @@ func (r *reconciler) reconcileClusterVersion(ctx context.Context, hcp *hyperv1.H
 		clusterVersion.Spec.ClusterID = configv1.ClusterID(hcp.Spec.ClusterID)
 		clusterVersion.Spec.Capabilities = nil
 		clusterVersion.Spec.Upstream = ""
-		clusterVersion.Spec.Channel = ""
+		clusterVersion.Spec.Channel = hcp.Spec.Channel
 		clusterVersion.Spec.DesiredUpdate = nil
 		return nil
 	}); err != nil {
@@ -826,14 +1003,14 @@ func secretHash(data []byte) string {
 	return fmt.Sprintf("%x", md5.Sum(data))
 }
 
-func (r *reconciler) reconcileOAuthServingCertCABundle(ctx context.Context, hcp *hyperv1.HostedControlPlane) error {
-	oauthServingCert := cpomanifests.OpenShiftOAuthServerCert(hcp.Namespace)
-	if err := r.cpClient.Get(ctx, client.ObjectKeyFromObject(oauthServingCert), oauthServingCert); err != nil {
-		return fmt.Errorf("cannot get oauth serving cert: %w", err)
+func (r *reconciler) reconcileOAuthServingCertCABundle(ctx context.Context, hcp *hyperv1.HostedControlPlane, oauthHost string) error {
+	sourceBundle := cpomanifests.OpenShiftOAuthMasterCABundle(hcp.Namespace)
+	if err := r.cpClient.Get(ctx, client.ObjectKeyFromObject(sourceBundle), sourceBundle); err != nil {
+		return fmt.Errorf("cannot get oauth master ca bundle: %w", err)
 	}
 	caBundle := manifests.OAuthCABundle()
 	if _, err := r.CreateOrUpdate(ctx, r.client, caBundle, func() error {
-		return oauth.ReconcileOAuthServerCertCABundle(caBundle, oauthServingCert)
+		return oauth.ReconcileOAuthServerCertCABundle(caBundle, sourceBundle)
 	}); err != nil {
 		return fmt.Errorf("failed to reconcile oauth server cert ca bundle: %w", err)
 	}
@@ -952,6 +1129,22 @@ func (r *reconciler) reconcileCloudCredentialSecrets(ctx context.Context, hcp *h
 			errs = append(errs, fmt.Errorf("failed to reconcile csi driver secret: %w", err))
 		}
 	case hyperv1.PowerVSPlatform:
+		createPowerVSSecret := func(srcSecret, destSecret *corev1.Secret) error {
+			_, err := r.CreateOrUpdate(ctx, r.client, destSecret, func() error {
+				credData, credHasData := srcSecret.Data["ibmcloud_api_key"]
+				if !credHasData {
+					return fmt.Errorf("secret %q is missing credentials key", destSecret.Name)
+				}
+				destSecret.Type = corev1.SecretTypeOpaque
+				if destSecret.Data == nil {
+					destSecret.Data = map[string][]byte{}
+				}
+				destSecret.Data["ibmcloud_api_key"] = credData
+				return nil
+			})
+			return err
+		}
+
 		var ingressCredentials corev1.Secret
 		err := r.cpClient.Get(ctx, client.ObjectKey{Namespace: hcp.Namespace, Name: hcp.Spec.Platform.PowerVS.IngressOperatorCloudCreds.Name}, &ingressCredentials)
 		if err != nil {
@@ -965,22 +1158,27 @@ func (r *reconciler) reconcileCloudCredentialSecrets(ctx context.Context, hcp *h
 				Name:      "cloud-credentials",
 			},
 		}
-
-		_, err = r.CreateOrUpdate(ctx, r.client, cloudCredentials, func() error {
-			credData, credHasData := ingressCredentials.Data["ibmcloud_api_key"]
-			if !credHasData {
-				return fmt.Errorf("ingress cloud credentials secret %q is missing credentials key", ingressCredentials.Name)
-			}
-			cloudCredentials.Type = corev1.SecretTypeOpaque
-			if cloudCredentials.Data == nil {
-				cloudCredentials.Data = map[string][]byte{}
-			}
-			cloudCredentials.Data["ibmcloud_api_key"] = credData
-			return nil
-		})
-
+		err = createPowerVSSecret(&ingressCredentials, cloudCredentials)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to reconcile powervs cloud credentials secret %w", err))
+			errs = append(errs, fmt.Errorf("failed to reconcile powervs ingress cloud credentials secret %w", err))
+		}
+
+		var storageCredentials corev1.Secret
+		err = r.cpClient.Get(ctx, client.ObjectKey{Namespace: hcp.Namespace, Name: hcp.Spec.Platform.PowerVS.StorageOperatorCloudCreds.Name}, &storageCredentials)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to get storage operator cloud credentials secret %s from hcp namespace : %w", hcp.Spec.Platform.PowerVS.StorageOperatorCloudCreds.Name, err))
+			return errs
+		}
+
+		ibmPowerVSCloudCredentials := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "openshift-cluster-csi-drivers",
+				Name:      "ibm-powervs-cloud-credentials",
+			},
+		}
+		err = createPowerVSSecret(&storageCredentials, ibmPowerVSCloudCredentials)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to reconcile powervs storage cloud credentials secret %w", err))
 		}
 	}
 	return errs
@@ -1215,59 +1413,121 @@ func (r *reconciler) reconcileAWSIdentityWebhook(ctx context.Context) []error {
 	return errs
 }
 
-func (r *reconciler) destroyCloudResources(ctx context.Context, hcp *hyperv1.HostedControlPlane) error {
+func (r *reconciler) destroyCloudResources(ctx context.Context, hcp *hyperv1.HostedControlPlane) (ctrl.Result, error) {
+	remaining, err := r.ensureCloudResourcesDestroyed(ctx, hcp)
+
+	var status metav1.ConditionStatus
+	var reason, message string
+
+	if err != nil {
+		reason = "ErrorOccurred"
+		status = metav1.ConditionFalse
+		message = fmt.Sprintf("Error: %v", err)
+	} else {
+		if remaining.Len() == 0 {
+			reason = "CloudResourcesDestroyed"
+			status = metav1.ConditionTrue
+			message = "All guest resources destroyed"
+		} else {
+			reason = "RemainingCloudResources"
+			status = metav1.ConditionFalse
+			message = fmt.Sprintf("Remaining resources: %s", strings.Join(remaining.List(), ","))
+		}
+	}
+	resourcesDestroyedCond := &metav1.Condition{
+		Type:    string(hyperv1.CloudResourcesDestroyed),
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+		// Here LastTransitionTime is used to indicate the last time the condition was updated by this
+		// controller. This is used by the CPO as a heartbeat to determine whether resource deletion is
+		// still in progress.
+		LastTransitionTime: metav1.Now(),
+	}
+	// Ensure the LastTransitionTime is updated because the hostedcontrolplane controller relies on that
+	// timestamp to use as a heartbeat.
+	setStatusConditionWithTransitionUpdate(&hcp.Status.Conditions, *resourcesDestroyedCond)
+	if err := r.cpClient.Status().Update(ctx, hcp); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to set resources destroyed condition: %w", err)
+	}
+
+	if remaining.Len() > 0 {
+		// If we are still waiting for resources to go away, ensure we are requeued in at most 30 secs
+		// so we can at least update the timestamp on the condition.
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	} else {
+		return ctrl.Result{}, nil
+	}
+}
+
+func setStatusConditionWithTransitionUpdate(conditions *[]metav1.Condition, newCondition metav1.Condition) {
+	if conditions == nil {
+		return
+	}
+	existingCondition := meta.FindStatusCondition(*conditions, newCondition.Type)
+	if existingCondition == nil {
+		if newCondition.LastTransitionTime.IsZero() {
+			newCondition.LastTransitionTime = metav1.NewTime(time.Now())
+		}
+		*conditions = append(*conditions, newCondition)
+		return
+	}
+
+	// Always update the LastTransition time
+	existingCondition.Status = newCondition.Status
+	if !newCondition.LastTransitionTime.IsZero() {
+		existingCondition.LastTransitionTime = newCondition.LastTransitionTime
+	} else {
+		existingCondition.LastTransitionTime = metav1.NewTime(time.Now())
+	}
+
+	existingCondition.Reason = newCondition.Reason
+	existingCondition.Message = newCondition.Message
+	existingCondition.ObservedGeneration = newCondition.ObservedGeneration
+}
+
+func (r *reconciler) ensureCloudResourcesDestroyed(ctx context.Context, hcp *hyperv1.HostedControlPlane) (sets.String, error) {
 	log := ctrl.LoggerFrom(ctx)
+	remaining := sets.NewString()
 	log.Info("Ensuring resource creation is blocked in cluster")
 	if err := r.ensureResourceCreationIsBlocked(ctx); err != nil {
-		return err
+		return remaining, err
 	}
 	var errs []error
-	allRemoved := true
 	log.Info("Ensuring image registry storage is removed")
 	removed, err := r.ensureImageRegistryStorageRemoved(ctx)
 	if err != nil {
 		errs = append(errs, err)
 	}
-	allRemoved = allRemoved && removed
+	if !removed {
+		remaining.Insert("image-registry")
+	}
 	log.Info("Ensuring ingress controllers are removed")
-	removed, err = r.ensureIngressControllersRemoved(ctx)
+	removed, err = r.ensureIngressControllersRemoved(ctx, hcp)
 	if err != nil {
 		errs = append(errs, err)
 	}
-	allRemoved = allRemoved && removed
+	if !removed {
+		remaining.Insert("ingress-controllers")
+	}
 	log.Info("Ensuring load balancers are removed")
 	removed, err = r.ensureServiceLoadBalancersRemoved(ctx)
 	if err != nil {
 		errs = append(errs, err)
 	}
-	allRemoved = allRemoved && removed
+	if !removed {
+		remaining.Insert("loadbalancers")
+	}
 	log.Info("Ensuring persistent volumes are removed")
 	removed, err = r.ensurePersistentVolumesRemoved(ctx)
 	if err != nil {
 		errs = append(errs, err)
 	}
-	allRemoved = allRemoved && removed
-
-	if len(errs) > 0 {
-		return errors.NewAggregate(errs)
+	if !removed {
+		remaining.Insert("persistent-volumes")
 	}
 
-	if !allRemoved {
-		return nil
-	}
-
-	resourcesDestroyedCond := &metav1.Condition{
-		Type:   string(hyperv1.CloudResourcesDestroyed),
-		Status: metav1.ConditionTrue,
-		Reason: "CloudResourcesDestroyed",
-	}
-
-	meta.SetStatusCondition(&hcp.Status.Conditions, *resourcesDestroyedCond)
-	if err := r.cpClient.Status().Update(ctx, hcp); err != nil {
-		return fmt.Errorf("failed to set resources destroyed condition: %w", err)
-	}
-
-	return nil
+	return remaining, errors.NewAggregate(errs)
 }
 
 func (r *reconciler) ensureResourceCreationIsBlocked(ctx context.Context) error {
@@ -1339,7 +1599,7 @@ func reconcileCreationBlockerWebhook(wh *admissionregistrationv1.ValidatingWebho
 	}
 }
 
-func (r *reconciler) ensureIngressControllersRemoved(ctx context.Context) (bool, error) {
+func (r *reconciler) ensureIngressControllersRemoved(ctx context.Context, hcp *hyperv1.HostedControlPlane) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	ingressControllers := &operatorv1.IngressControllerList{}
 	if err := r.client.List(ctx, ingressControllers); err != nil {
@@ -1362,6 +1622,64 @@ func (r *reconciler) ensureIngressControllersRemoved(ctx context.Context) (bool,
 	if len(errs) > 0 {
 		return false, fmt.Errorf("failed to delete ingress controllers: %w", errors.NewAggregate(errs))
 	}
+
+	// Force deleting pods under openshift-ingress to unblock ingress-controller deletion.
+	// Ingress-operator is dependent on these pods deletion on removing the finalizers of ingress-controller.
+	routerPods := &corev1.PodList{}
+	if err := r.uncachedClient.List(ctx, routerPods, &client.ListOptions{Namespace: "openshift-ingress"}); err != nil {
+		return false, fmt.Errorf("failed to list pods under openshift-ingress namespace: %w", err)
+	}
+
+	for i := range routerPods.Items {
+		rp := &routerPods.Items[i]
+		log.Info("Force deleting", "pod", client.ObjectKeyFromObject(rp).String())
+		if err := r.client.Delete(ctx, rp, &client.DeleteOptions{GracePeriodSeconds: pointer.Int64Ptr(0)}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to force delete %s", client.ObjectKeyFromObject(rp).String()))
+		}
+	}
+
+	if len(errs) > 0 {
+		return false, fmt.Errorf("failed to force delete pods under openshift-ingress namespace: %w", errors.NewAggregate(errs))
+	}
+
+	// Remove ingress service and route that were created by HCCO in case of basedomain passthrough feature is enabled
+	if hcp.Spec.Platform.Type == hyperv1.KubevirtPlatform &&
+		hcp.Spec.Platform.Kubevirt != nil &&
+		hcp.Spec.Platform.Kubevirt.BaseDomainPassthrough != nil &&
+		*hcp.Spec.Platform.Kubevirt.BaseDomainPassthrough {
+		{
+			var namespace string
+			if hcp.Spec.Platform.Kubevirt.Credentials != nil {
+				namespace = hcp.Spec.Platform.Kubevirt.Credentials.InfraNamespace
+			} else {
+				namespace = hcp.Namespace
+			}
+			cpService := manifests.IngressDefaultIngressPassthroughService(namespace)
+			cpService.Name = fmt.Sprintf("%s-%s",
+				manifests.IngressDefaultIngressPassthroughServiceName,
+				hcp.Spec.Platform.Kubevirt.GenerateID)
+
+			cpPassthroughRoute := manifests.IngressDefaultIngressPassthroughRoute(namespace)
+			cpPassthroughRoute.Name = fmt.Sprintf("%s-%s",
+				manifests.IngressDefaultIngressPassthroughRouteName,
+				hcp.Spec.Platform.Kubevirt.GenerateID)
+
+			err := r.kubevirtInfraClient.Delete(ctx, cpService)
+			if err != nil && !apierrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("failed to delete %s: %w", client.ObjectKeyFromObject(cpService).String(), err))
+			}
+
+			err = r.kubevirtInfraClient.Delete(ctx, cpPassthroughRoute)
+			if err != nil && !apierrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("failed to delete %s: %w", client.ObjectKeyFromObject(cpPassthroughRoute).String(), err))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return false, fmt.Errorf("failed to delete ingress resources on infra cluster: %w", errors.NewAggregate(errs))
+	}
+
 	return false, nil
 }
 
@@ -1395,7 +1713,7 @@ func (r *reconciler) ensureServiceLoadBalancersRemoved(ctx context.Context) (boo
 	found, err := cleanupResources(ctx, r.client, &corev1.ServiceList{}, func(obj client.Object) bool {
 		svc := obj.(*corev1.Service)
 		return svc.Spec.Type == corev1.ServiceTypeLoadBalancer
-	})
+	}, false)
 	if err != nil {
 		return false, fmt.Errorf("failed to remove load balancer services: %w", err)
 	}
@@ -1412,16 +1730,39 @@ func (r *reconciler) ensurePersistentVolumesRemoved(ctx context.Context) (bool, 
 		log.Info("There are no more persistent volumes. Nothing to cleanup.")
 		return true, nil
 	}
-	if _, err := cleanupResources(ctx, r.client, &corev1.PersistentVolumeClaimList{}, nil); err != nil {
+	if _, err := cleanupResources(ctx, r.client, &corev1.PersistentVolumeClaimList{}, nil, false); err != nil {
 		return false, fmt.Errorf("failed to remove persistent volume claims: %w", err)
 	}
 	if _, err := cleanupResources(ctx, r.uncachedClient, &corev1.PodList{}, func(obj client.Object) bool {
 		pod := obj.(*corev1.Pod)
 		return hasAttachedPVC(pod)
-	}); err != nil {
+	}, true); err != nil {
 		return false, fmt.Errorf("failed to remove pods: %w", err)
 	}
 	return false, nil
+}
+
+func (r *reconciler) reconcileInstallConfigMap(ctx context.Context, releaseImage *releaseinfo.ReleaseImage) error {
+	cm := manifests.InstallConfigMap()
+	if _, err := r.CreateOrUpdate(ctx, r.client, cm, func() error {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data["invoker"] = "hypershift"
+		// Only set 'version' if unset. This is meant to preserve the version with
+		// which the cluster was installed and not followup upgrade versions.
+		if _, hasVersion := cm.Data["version"]; !hasVersion {
+			componentVersions, err := releaseImage.ComponentVersions()
+			if err != nil {
+				return fmt.Errorf("failed to look up component versions: %w", err)
+			}
+			cm.Data["version"] = componentVersions["release"]
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to reconcile install configmap: %w", err)
+	}
+	return nil
 }
 
 func hasAttachedPVC(pod *corev1.Pod) bool {
@@ -1441,7 +1782,7 @@ func shouldCleanupCloudResources(hcp *hyperv1.HostedControlPlane) bool {
 // cleanupResources generically deletes resources of a given type using an optional filter
 // function. The result is a boolean indicating whether resources were found that match
 // the filter and an error if one occurred.
-func cleanupResources(ctx context.Context, c client.Client, list client.ObjectList, filter func(client.Object) bool) (bool, error) {
+func cleanupResources(ctx context.Context, c client.Client, list client.ObjectList, filter func(client.Object) bool, force bool) (bool, error) {
 	log := ctrl.LoggerFrom(ctx)
 	if err := c.List(ctx, list); err != nil {
 		return false, fmt.Errorf("cannot list %T: %w", list, err)
@@ -1456,8 +1797,14 @@ func cleanupResources(ctx context.Context, c client.Client, list client.ObjectLi
 			foundResource = true
 			if obj.GetDeletionTimestamp().IsZero() {
 				log.Info("Deleting resource", "type", fmt.Sprintf("%T", obj), "name", client.ObjectKeyFromObject(obj).String())
-				if err := c.Delete(ctx, obj); err != nil {
-					errs = append(errs, err)
+				var deleteErr error
+				if force {
+					deleteErr = c.Delete(ctx, obj, &client.DeleteOptions{GracePeriodSeconds: pointer.Int64Ptr(0)})
+				} else {
+					deleteErr = c.Delete(ctx, obj)
+				}
+				if deleteErr != nil {
+					errs = append(errs, deleteErr)
 				}
 			}
 		}
@@ -1481,4 +1828,50 @@ func (a *genericListAccessor) len() int {
 
 func (a *genericListAccessor) item(i int) client.Object {
 	return (a.items.Index(i).Addr().Interface()).(client.Object)
+}
+
+func (r *reconciler) isClusterVersionUpdated(ctx context.Context, version string) bool {
+	log := ctrl.LoggerFrom(ctx)
+	var clusterVersion configv1.ClusterVersion
+	err := r.client.Get(ctx, types.NamespacedName{Name: "version"}, &clusterVersion)
+	if err != nil {
+		log.Error(err, "unable to retrieve cluster version resource")
+		return false
+	}
+	if clusterVersion.Status.Desired.Version != version {
+		log.Info(fmt.Sprintf("cluster version not yet updated to %s", version))
+		return false
+	}
+	return true
+}
+
+func (r *reconciler) reconcileStorage(ctx context.Context, hcp *hyperv1.HostedControlPlane, releaseImage *releaseinfo.ReleaseImage) []error {
+	var errs []error
+
+	snapshotController := manifests.CSISnapshotController()
+	if _, err := r.CreateOrUpdate(ctx, r.client, snapshotController, func() error {
+		storage.ReconcileCSISnapshotController(snapshotController)
+		return nil
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("failed to reconcile CSISnapshotController : %w", err))
+	}
+
+	storageCR := manifests.Storage()
+	if _, err := r.CreateOrUpdate(ctx, r.client, storageCR, func() error {
+		storage.ReconcileStorage(storageCR)
+		return nil
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("failed to reconcile Storage : %w", err))
+	}
+
+	if hcp.Spec.Platform.Type == hyperv1.AWSPlatform {
+		driver := manifests.ClusterCSIDriver(operatorv1.AWSEBSCSIDriver)
+		if _, err := r.CreateOrUpdate(ctx, r.client, driver, func() error {
+			storage.ReconcileClusterCSIDriver(driver)
+			return nil
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to reconcile ClusterCSIDriver %s: %w", driver.Name, err))
+		}
+	}
+	return errs
 }

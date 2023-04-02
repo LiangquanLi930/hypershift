@@ -19,16 +19,23 @@ spec:
       volumes:
         - name: srv-cert
           secret:
+            defaultMode: 0640
             secretName: olm-operator-serving-cert
         - name: client-ca
           secret:
+            defaultMode: 0640
             secretName: metrics-client
         - name: kubeconfig
           secret:
+            defaultMode: 0640
             secretName: service-network-admin-kubeconfig
         - name: oas-konnectivity-proxy-cert
           secret:
+            defaultMode: 0640
             secretName: konnectivity-client
+        - name: oas-konnectivity-proxy-ca
+          configMap:
+            name: konnectivity-ca-bundle
       containers:
         - name: olm-operator
           volumeMounts:
@@ -104,8 +111,11 @@ spec:
           ports:
             - containerPort: 8090
           volumeMounts:
-            - mountPath: /etc/konnectivity-proxy-tls
+            - mountPath: /etc/konnectivity/proxy-client
               name: oas-konnectivity-proxy-cert
+              readOnly: true
+            - mountPath: /etc/konnectivity/proxy-ca
+              name: oas-konnectivity-proxy-ca
               readOnly: true
             - mountPath: /etc/openshift/kubeconfig
               name: kubeconfig

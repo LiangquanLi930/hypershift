@@ -3,7 +3,7 @@ package nodepool
 import (
 	"fmt"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	capiv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -56,6 +56,15 @@ func TokenSecret(namespace, name, payloadInputHash string) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 			Name:      fmt.Sprintf("token-%s-%s", name, payloadInputHash),
+		},
+	}
+}
+
+func TuningConfigMap(namespace, name string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      fmt.Sprintf("tuned-%s", name),
 		},
 	}
 }

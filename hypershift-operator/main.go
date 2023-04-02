@@ -23,11 +23,14 @@ import (
 	"strings"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/go-logr/logr"
 	operatorv1 "github.com/openshift/api/operator/v1"
 	hyperapi "github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	awsutil "github.com/openshift/hypershift/cmd/infra/aws/util"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/nodepool"
@@ -65,7 +68,7 @@ func main() {
 		},
 	}
 
-	cmd.Version = version.GetRevision()
+	cmd.Version = version.String()
 
 	cmd.AddCommand(NewStartCommand())
 
@@ -257,6 +260,25 @@ func run(ctx context.Context, opts *StartOptions, log logr.Logger) error {
 		}
 	}
 
+	// Since we dropped the validation webhook server we need to ensure this resource doesn't exist
+	// otherwise it will intercept kas requests and fail.
+	// TODO (alberto): dropped in 4.14.
+	validatingWebhookConfiguration := &admissionregistrationv1.ValidatingWebhookConfiguration{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "ValidatingWebhookConfiguration",
+			APIVersion: admissionregistrationv1.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: opts.Namespace,
+			Name:      hyperv1.GroupVersion.Group,
+		},
+	}
+	if err := mgr.GetClient().Delete(ctx, validatingWebhookConfiguration); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+
 	if err := (&nodepool.NodePoolReconciler{
 		Client: mgr.GetClient(),
 		ReleaseProvider: &releaseinfo.RegistryMirrorProviderDecorator{
@@ -334,14 +356,14 @@ func run(ctx context.Context, opts *StartOptions, log logr.Logger) error {
 				ic.Spec.RouteSelector.MatchExpressions = []metav1.LabelSelectorRequirement{}
 			}
 			for _, requirement := range ic.Spec.RouteSelector.MatchExpressions {
-				if requirement.Key != hyperutil.HypershiftRouteLabel {
+				if requirement.Key != hyperutil.HCPRouteLabel {
 					continue
 				}
 				requirement.Operator = metav1.LabelSelectorOpDoesNotExist
 				return nil
 			}
 			ic.Spec.RouteSelector.MatchExpressions = append(ic.Spec.RouteSelector.MatchExpressions, metav1.LabelSelectorRequirement{
-				Key:      hyperutil.HypershiftRouteLabel,
+				Key:      hyperutil.HCPRouteLabel,
 				Operator: metav1.LabelSelectorOpDoesNotExist,
 			})
 			return nil

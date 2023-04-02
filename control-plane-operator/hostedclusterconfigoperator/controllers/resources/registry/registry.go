@@ -6,7 +6,7 @@ import (
 
 	imageregistryv1 "github.com/openshift/api/imageregistry/v1"
 	operatorv1 "github.com/openshift/api/operator/v1"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 )
 
 func ReconcileRegistryConfig(cfg *imageregistryv1.Config, platform hyperv1.PlatformType, availabilityPolicy hyperv1.AvailabilityPolicy) {
@@ -25,8 +25,22 @@ func ReconcileRegistryConfig(cfg *imageregistryv1.Config, platform hyperv1.Platf
 	if cfg.Spec.HTTPSecret == "" {
 		cfg.Spec.HTTPSecret = generateImageRegistrySecret()
 	}
-	if platform == hyperv1.KubevirtPlatform || platform == hyperv1.NonePlatform {
+	if (platform == hyperv1.KubevirtPlatform || platform == hyperv1.NonePlatform) &&
+		cfg.Spec.Storage.EmptyDir == nil {
+
 		cfg.Spec.Storage = imageregistryv1.ImageRegistryConfigStorage{EmptyDir: &imageregistryv1.ImageRegistryConfigStorageEmptyDir{}}
+	}
+	// IBM Cloud platform allows to initialize the registry config and then afterwards the client is in full control of the updates
+	if platform == hyperv1.IBMCloudPlatform {
+		// Only initialize on creates and bad config
+		// TODO(IBM): Revisit after bug is addressed, https://github.com/openshift/cluster-image-registry-operator/issues/835
+		onCreate := cfg.ResourceVersion == "" && cfg.Generation < 1
+		badConfig := cfg.Spec.Storage.IBMCOS != nil && *cfg.Spec.Storage.IBMCOS == (imageregistryv1.ImageRegistryConfigStorageIBMCOS{})
+		if onCreate || badConfig {
+			cfg.Spec.Replicas = 1
+			cfg.Spec.ManagementState = operatorv1.Removed
+			cfg.Spec.Storage = imageregistryv1.ImageRegistryConfigStorage{EmptyDir: &imageregistryv1.ImageRegistryConfigStorageEmptyDir{}}
+		}
 	}
 }
 

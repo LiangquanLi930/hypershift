@@ -3,10 +3,11 @@ package fixtures
 import (
 	corev1 "k8s.io/api/core/v1"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 )
 
 type ExamplePowerVSOptions struct {
-	ApiKey          string
 	AccountID       string
 	ResourceGroup   string
 	Region          string
@@ -16,13 +17,14 @@ type ExamplePowerVSOptions struct {
 	Subnet          string
 	SubnetID        string
 	CloudConnection string
-	VpcRegion       string
-	Vpc             string
-	VpcSubnet       string
+	VPCRegion       string
+	VPC             string
+	VPCSubnet       string
+	Resources       ExamplePowerVSResources
 
 	// nodepool related options
 	SysType    string
-	ProcType   string
+	ProcType   hyperv1.PowerVSNodePoolProcType
 	Processors string
 	Memory     int32
 }
@@ -30,8 +32,8 @@ type ExamplePowerVSOptions struct {
 type ExamplePowerVSResources struct {
 	KubeCloudControllerCreds  *corev1.Secret
 	NodePoolManagementCreds   *corev1.Secret
-	ControlPlaneOperatorCreds *corev1.Secret
 	IngressOperatorCloudCreds *corev1.Secret
+	StorageOperatorCloudCreds *corev1.Secret
 }
 
 func (o *ExamplePowerVSResources) AsObjects() []crclient.Object {
@@ -42,11 +44,11 @@ func (o *ExamplePowerVSResources) AsObjects() []crclient.Object {
 	if o.NodePoolManagementCreds != nil {
 		objects = append(objects, o.NodePoolManagementCreds)
 	}
-	if o.ControlPlaneOperatorCreds != nil {
-		objects = append(objects, o.ControlPlaneOperatorCreds)
-	}
 	if o.IngressOperatorCloudCreds != nil {
 		objects = append(objects, o.IngressOperatorCloudCreds)
+	}
+	if o.StorageOperatorCloudCreds != nil {
+		objects = append(objects, o.StorageOperatorCloudCreds)
 	}
 	return objects
 }

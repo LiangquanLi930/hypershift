@@ -68,7 +68,6 @@ spec:
           export KUBERNETES_SERVICE_HOST=kube-apiserver
           export KUBERNETES_SERVICE_PORT=$KUBE_APISERVER_SERVICE_PORT
           exec /usr/bin/cluster-image-registry-operator \
-            --files="/var/run/secrets/kubernetes.io/serviceaccount/token" \
             --files="/etc/secrets/tls.crt" \
             --files="/etc/secrets/tls.key"
         command:
@@ -189,12 +188,15 @@ spec:
         name: client-token
       - name: serving-cert
         secret:
+          defaultMode: 416
           secretName: cluster-image-registry-operator
       - name: kubeconfig
         secret:
+          defaultMode: 416
           secretName: service-network-admin-kubeconfig
       - name: ca-bundle
         secret:
+          defaultMode: 416
           secretName: root-ca
       - emptyDir: {}
         name: web-identity-token

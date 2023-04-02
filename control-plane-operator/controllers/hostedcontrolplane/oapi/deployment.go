@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -37,21 +37,28 @@ var (
 			serviceCASignerVolume().Name: "/run/service-ca-signer",
 		},
 		oasContainerMain().Name: {
-			oasVolumeWorkLogs().Name:           "/var/log/openshift-apiserver",
-			oasVolumeConfig().Name:             "/etc/kubernetes/config",
-			oasVolumeAuditConfig().Name:        "/etc/kubernetes/audit-config",
-			oasVolumeAggregatorClientCA().Name: "/etc/kubernetes/certs/aggregator-client-ca",
-			oasVolumeEtcdClientCA().Name:       "/etc/kubernetes/certs/etcd-client-ca",
-			oasVolumeServingCA().Name:          "/etc/kubernetes/certs/serving-ca",
-			oasVolumeKubeconfig().Name:         "/etc/kubernetes/secrets/svc-kubeconfig",
-			oasVolumeServingCert().Name:        "/etc/kubernetes/certs/serving",
-			oasVolumeEtcdClientCert().Name:     "/etc/kubernetes/certs/etcd-client",
-			oasTrustAnchorVolume().Name:        "/etc/pki/ca-trust/extracted/pem",
-			pullSecretVolume().Name:            "/var/lib/kubelet",
+			oasVolumeWorkLogs().Name:          "/var/log/openshift-apiserver",
+			oasVolumeConfig().Name:            "/etc/kubernetes/config",
+			oasVolumeAuditConfig().Name:       "/etc/kubernetes/audit-config",
+			common.VolumeAggregatorCA().Name:  "/etc/kubernetes/certs/aggregator-client-ca",
+			oasVolumeEtcdClientCA().Name:      "/etc/kubernetes/certs/etcd-client-ca",
+			oasVolumeKubeconfig().Name:        "/etc/kubernetes/secrets/svc-kubeconfig",
+			common.VolumeTotalClientCA().Name: "/etc/kubernetes/certs/client-ca",
+			oasVolumeServingCert().Name:       "/etc/kubernetes/certs/serving",
+			oasVolumeEtcdClientCert().Name:    "/etc/kubernetes/certs/etcd-client",
+			oasTrustAnchorVolume().Name:       "/etc/pki/ca-trust/extracted/pem",
+			pullSecretVolume().Name:           "/var/lib/kubelet",
 		},
 		oasSocks5ProxyContainer().Name: {
 			oasVolumeKubeconfig().Name:            "/etc/kubernetes/secrets/kubeconfig",
-			oasVolumeKonnectivityProxyCert().Name: "/etc/konnectivity-proxy-tls",
+			oasVolumeKonnectivityProxyCert().Name: "/etc/konnectivity/proxy-client",
+			oasVolumeKonnectivityProxyCA().Name:   "/etc/konnectivity/proxy-ca",
+		},
+	}
+
+	oasAuditWebhookConfigFileVolumeMount = util.PodVolumeMounts{
+		oasContainerMain().Name: {
+			oasAuditWebhookConfigFileVolume().Name: "/etc/kubernetes/auditwebhook",
 		},
 	}
 )
@@ -63,7 +70,7 @@ func openShiftAPIServerLabels() map[string]string {
 	}
 }
 
-func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef, config *corev1.ConfigMap, deploymentConfig config.DeploymentConfig, image string, socks5ProxyImage string, etcdURL string, availabilityProberImage string, apiPort *int32) error {
+func ReconcileDeployment(deployment *appsv1.Deployment, auditWebhookRef *corev1.LocalObjectReference, ownerRef config.OwnerRef, config *corev1.ConfigMap, deploymentConfig config.DeploymentConfig, image string, socks5ProxyImage string, etcdURL string, availabilityProberImage string, apiPort *int32) error {
 	ownerRef.ApplyTo(deployment)
 
 	// preserve existing resource requirements for main OAS container
@@ -108,30 +115,57 @@ func ReconcileDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef
 		InitContainers:               []corev1.Container{util.BuildContainer(oasTrustAnchorGenerator(), buildOASTrustAnchorGenerator(image))},
 		Containers: []corev1.Container{
 			util.BuildContainer(oasContainerMain(), buildOASContainerMain(image, strings.Split(etcdUrlData.Host, ":")[0], defaultOAPIPort)),
+			{
+				Name:            "audit-logs",
+				Image:           image,
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Command: []string{
+					"/usr/bin/tail",
+					"-c+1",
+					"-F",
+					fmt.Sprintf("%s/%s", volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name), "audit.log"),
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("5m"),
+						corev1.ResourceMemory: resource.MustParse("10Mi"),
+					},
+				},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      oasVolumeWorkLogs().Name,
+					MountPath: volumeMounts.Path(oasContainerMain().Name, oasVolumeWorkLogs().Name),
+				}},
+			},
 			util.BuildContainer(oasSocks5ProxyContainer(), buildOASSocks5ProxyContainer(socks5ProxyImage)),
 		},
 		Volumes: []corev1.Volume{
 			util.BuildVolume(oasVolumeWorkLogs(), buildOASVolumeWorkLogs),
 			util.BuildVolume(oasVolumeConfig(), buildOASVolumeConfig),
 			util.BuildVolume(oasVolumeAuditConfig(), buildOASVolumeAuditConfig),
-			util.BuildVolume(oasVolumeAggregatorClientCA(), buildOASVolumeAggregatorClientCA),
+			util.BuildVolume(common.VolumeAggregatorCA(), common.BuildVolumeAggregatorCA),
 			util.BuildVolume(oasVolumeEtcdClientCA(), buildOASVolumeEtcdClientCA),
-			util.BuildVolume(oasVolumeServingCA(), buildOASVolumeServingCA),
+			util.BuildVolume(common.VolumeTotalClientCA(), common.BuildVolumeTotalClientCA),
 			util.BuildVolume(oasVolumeKubeconfig(), buildOASVolumeKubeconfig),
 			util.BuildVolume(oasVolumeServingCert(), buildOASVolumeServingCert),
 			util.BuildVolume(oasVolumeEtcdClientCert(), buildOASVolumeEtcdClientCert),
 			util.BuildVolume(oasVolumeKonnectivityProxyCert(), buildOASVolumeKonnectivityProxyCert),
+			util.BuildVolume(oasVolumeKonnectivityProxyCA(), buildOASVolumeKonnectivityProxyCA),
 			util.BuildVolume(oasTrustAnchorVolume(), func(v *corev1.Volume) { v.EmptyDir = &corev1.EmptyDirVolumeSource{} }),
 			util.BuildVolume(serviceCASignerVolume(), func(v *corev1.Volume) {
 				v.ConfigMap = &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: manifests.ServiceServingCA(deployment.Namespace).Name}}
 			}),
 			util.BuildVolume(pullSecretVolume(), func(v *corev1.Volume) {
 				v.Secret = &corev1.SecretVolumeSource{
-					SecretName: common.PullSecret(deployment.Namespace).Name,
-					Items:      []corev1.KeyToPath{{Key: ".dockerconfigjson", Path: "config.json"}},
+					DefaultMode: pointer.Int32Ptr(0640),
+					SecretName:  common.PullSecret(deployment.Namespace).Name,
+					Items:       []corev1.KeyToPath{{Key: ".dockerconfigjson", Path: "config.json"}},
 				}
 			}),
 		},
+	}
+
+	if auditWebhookRef != nil {
+		applyOASAuditWebhookConfigFileVolume(&deployment.Spec.Template.Spec, auditWebhookRef)
 	}
 
 	util.AvailabilityProber(kas.InClusterKASReadyURL(deployment.Namespace, apiPort), availabilityProberImage, &deployment.Spec.Template.Spec)
@@ -204,14 +238,15 @@ func buildOASContainerMain(image string, etcdHostname string, port int32) func(c
 			fmt.Sprintf("--config=%s", cpath(oasVolumeConfig().Name, openshiftAPIServerConfigKey)),
 			fmt.Sprintf("--authorization-kubeconfig=%s", cpath(oasVolumeKubeconfig().Name, kas.KubeconfigKey)),
 			fmt.Sprintf("--authentication-kubeconfig=%s", cpath(oasVolumeKubeconfig().Name, kas.KubeconfigKey)),
-			fmt.Sprintf("--requestheader-client-ca-file=%s", cpath(oasVolumeAggregatorClientCA().Name, certs.CASignerCertMapKey)),
+			fmt.Sprintf("--requestheader-client-ca-file=%s", cpath(common.VolumeAggregatorCA().Name, certs.CASignerCertMapKey)),
 			"--requestheader-allowed-names=kube-apiserver-proxy,system:kube-apiserver-proxy,system:openshift-aggregator",
 			"--requestheader-username-headers=X-Remote-User",
 			"--requestheader-group-headers=X-Remote-Group",
 			"--requestheader-extra-headers-prefix=X-Remote-Extra-",
-			"--client-ca-file=/etc/kubernetes/config/serving-ca.crt",
-			fmt.Sprintf("--client-ca-file=%s", cpath(oasVolumeServingCA().Name, certs.CASignerCertMapKey)),
+			fmt.Sprintf("--client-ca-file=%s", cpath(common.VolumeTotalClientCA().Name, certs.CASignerCertMapKey)),
 		}
+		// this list can be gathered from firewall docs: https://docs.openshift.com/container-platform/4.12/installing/install_config/configuring-firewall.html
+		defaultSampleImportContainerRegistries := "quay.io,cdn03.quay.io,cdn02.quay.io,cdn01.quay.io,cdn.quay.io,registry.redhat.io,registry.access.redhat.com,access.redhat.com,sso.redhat.com"
 		c.Env = []corev1.EnvVar{
 			{
 				Name:  "HTTP_PROXY",
@@ -223,7 +258,7 @@ func buildOASContainerMain(image string, etcdHostname string, port int32) func(c
 			},
 			{
 				Name:  "NO_PROXY",
-				Value: fmt.Sprintf("%s,%s", manifests.KubeAPIServerService("").Name, etcdHostname),
+				Value: fmt.Sprintf("%s,%s,%s", manifests.KubeAPIServerService("").Name, etcdHostname, defaultSampleImportContainerRegistries),
 			},
 		}
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
@@ -270,6 +305,35 @@ func buildOASVolumeAuditConfig(v *corev1.Volume) {
 	v.ConfigMap.Name = manifests.OpenShiftAPIServerAuditConfig("").Name
 }
 
+func oasAuditWebhookConfigFileVolume() *corev1.Volume {
+	return &corev1.Volume{
+		Name: "oas-audit-webhook",
+	}
+}
+
+func buildOASAuditWebhookConfigFileVolume(auditWebhookRef *corev1.LocalObjectReference) func(v *corev1.Volume) {
+	return func(v *corev1.Volume) {
+		v.Secret = &corev1.SecretVolumeSource{}
+		v.Secret.SecretName = auditWebhookRef.Name
+	}
+}
+
+func applyOASAuditWebhookConfigFileVolume(podSpec *corev1.PodSpec, auditWebhookRef *corev1.LocalObjectReference) {
+	podSpec.Volumes = append(podSpec.Volumes, util.BuildVolume(oasAuditWebhookConfigFileVolume(), buildOASAuditWebhookConfigFileVolume(auditWebhookRef)))
+	var container *corev1.Container
+	for i, c := range podSpec.Containers {
+		if c.Name == oasContainerMain().Name {
+			container = &podSpec.Containers[i]
+			break
+		}
+	}
+	if container == nil {
+		panic("main openshift apiserver container not found in spec")
+	}
+	container.VolumeMounts = append(container.VolumeMounts,
+		oasAuditWebhookConfigFileVolumeMount.ContainerMounts(oasContainerMain().Name)...)
+}
+
 func oasVolumeKubeconfig() *corev1.Volume {
 	return &corev1.Volume{
 		Name: "kubeconfig",
@@ -279,17 +343,7 @@ func oasVolumeKubeconfig() *corev1.Volume {
 func buildOASVolumeKubeconfig(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.KASServiceKubeconfigSecret("").Name
-}
-
-func oasVolumeAggregatorClientCA() *corev1.Volume {
-	return &corev1.Volume{
-		Name: "aggregator-client-ca",
-	}
-}
-
-func buildOASVolumeAggregatorClientCA(v *corev1.Volume) {
-	v.Secret = &corev1.SecretVolumeSource{}
-	v.Secret.SecretName = manifests.RootCASecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
 }
 
 func oasVolumeEtcdClientCA() *corev1.Volume {
@@ -299,19 +353,8 @@ func oasVolumeEtcdClientCA() *corev1.Volume {
 }
 
 func buildOASVolumeEtcdClientCA(v *corev1.Volume) {
-	v.Secret = &corev1.SecretVolumeSource{}
-	v.Secret.SecretName = manifests.RootCASecret("").Name
-}
-
-func oasVolumeServingCA() *corev1.Volume {
-	return &corev1.Volume{
-		Name: "serving-ca",
-	}
-}
-
-func buildOASVolumeServingCA(v *corev1.Volume) {
-	v.Secret = &corev1.SecretVolumeSource{}
-	v.Secret.SecretName = manifests.RootCASecret("").Name
+	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
+	v.ConfigMap.Name = manifests.EtcdSignerCAConfigMap("").Name
 }
 
 func oasVolumeServingCert() *corev1.Volume {
@@ -323,6 +366,7 @@ func oasVolumeServingCert() *corev1.Volume {
 func buildOASVolumeServingCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.OpenShiftAPIServerCertSecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
 }
 
 func oasVolumeEtcdClientCert() *corev1.Volume {
@@ -334,11 +378,18 @@ func oasVolumeEtcdClientCert() *corev1.Volume {
 func buildOASVolumeEtcdClientCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.EtcdClientSecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
 }
 
 func oasVolumeKonnectivityProxyCert() *corev1.Volume {
 	return &corev1.Volume{
 		Name: "oas-konnectivity-proxy-cert",
+	}
+}
+
+func oasVolumeKonnectivityProxyCA() *corev1.Volume {
+	return &corev1.Volume{
+		Name: "oas-konnectivity-proxy-ca",
 	}
 }
 
@@ -363,4 +414,10 @@ func pullSecretVolume() *corev1.Volume {
 func buildOASVolumeKonnectivityProxyCert(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{}
 	v.Secret.SecretName = manifests.KonnectivityClientSecret("").Name
+	v.Secret.DefaultMode = pointer.Int32Ptr(0640)
+}
+
+func buildOASVolumeKonnectivityProxyCA(v *corev1.Volume) {
+	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
+	v.ConfigMap.Name = manifests.KonnectivityCAConfigMap("").Name
 }

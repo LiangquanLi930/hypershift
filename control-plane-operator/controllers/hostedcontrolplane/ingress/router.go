@@ -13,31 +13,29 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilpointer "k8s.io/utils/pointer"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/common"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/config"
 	"github.com/openshift/hypershift/support/util"
-	crclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	HypershiftRouteLabel = "hypershift.openshift.io/hosted-control-plane"
-	metricsPort          = 1936
-	routerHTTPPort       = 8080
-	routerHTTPSPort      = 8443
+	metricsPort     = 1936
+	routerHTTPPort  = 8080
+	routerHTTPSPort = 8443
 )
 
-func privateRouterLabels() map[string]string {
+func hcpRouterLabels() map[string]string {
 	return map[string]string{
 		"app": "private-router",
 	}
 }
 
-func PrivateRouterConfig(hcp *hyperv1.HostedControlPlane, setDefaultSecurityContext bool) config.DeploymentConfig {
+func HCPRouterConfig(hcp *hyperv1.HostedControlPlane, setDefaultSecurityContext bool) config.DeploymentConfig {
 	cfg := config.DeploymentConfig{
 		Resources: config.ResourcesSpec{
-			privateRouterContainerMain().Name: {
+			hcpRouterContainerMain().Name: {
 				Requests: corev1.ResourceList{
 					corev1.ResourceMemory: resource.MustParse("256Mi"),
 					corev1.ResourceCPU:    resource.MustParse("100m"),
@@ -46,7 +44,7 @@ func PrivateRouterConfig(hcp *hyperv1.HostedControlPlane, setDefaultSecurityCont
 		},
 	}
 	cfg.LivenessProbes = config.LivenessProbes{
-		privateRouterContainerMain().Name: corev1.Probe{
+		hcpRouterContainerMain().Name: corev1.Probe{
 			FailureThreshold: 3,
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -61,7 +59,7 @@ func PrivateRouterConfig(hcp *hyperv1.HostedControlPlane, setDefaultSecurityCont
 		},
 	}
 	cfg.ReadinessProbes = config.ReadinessProbes{
-		privateRouterContainerMain().Name: corev1.Probe{
+		hcpRouterContainerMain().Name: corev1.Probe{
 			FailureThreshold: 3,
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -76,7 +74,7 @@ func PrivateRouterConfig(hcp *hyperv1.HostedControlPlane, setDefaultSecurityCont
 		},
 	}
 	cfg.Scheduling.PriorityClass = config.APICriticalPriorityClass
-	cfg.SetDefaults(hcp, privateRouterLabels(), nil)
+	cfg.SetDefaults(hcp, hcpRouterLabels(), nil)
 	cfg.SetRestartAnnotation(hcp.ObjectMeta)
 	cfg.SetDefaultSecurityContext = setDefaultSecurityContext
 	return cfg
@@ -98,18 +96,18 @@ func ReconcileRouterTemplateConfigmap(cm *corev1.ConfigMap) {
 	cm.Data[routerTemplateConfigMapKey] = string(bytes.Replace(routerTemplate, []byte(`<<namespace>>`), []byte(cm.Namespace), 1))
 }
 
-func ReconcileRouterDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef, deploymentConfig config.DeploymentConfig, image string, canonicalHostname string, exposeAPIServerThroughRouter bool) error {
+func ReconcileRouterDeployment(deployment *appsv1.Deployment, ownerRef config.OwnerRef, deploymentConfig config.DeploymentConfig, image string, canonicalHostname string, exposeAPIServerThroughRouter bool, isPrivateOnly bool) error {
 	deployment.Spec = appsv1.DeploymentSpec{
 		Selector: &metav1.LabelSelector{
-			MatchLabels: privateRouterLabels(),
+			MatchLabels: hcpRouterLabels(),
 		},
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: privateRouterLabels(),
+				Labels: hcpRouterLabels(),
 			},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{
-					util.BuildContainer(privateRouterContainerMain(), buildPrivateRouterContainerMain(image, deployment.Namespace, canonicalHostname, exposeAPIServerThroughRouter)),
+					util.BuildContainer(hcpRouterContainerMain(), buildHCPRouterContainerMain(image, deployment.Namespace, canonicalHostname, exposeAPIServerThroughRouter, isPrivateOnly)),
 				},
 				ServiceAccountName: manifests.RouterServiceAccount("").Name,
 				Volumes:            nil,
@@ -128,15 +126,18 @@ func ReconcileRouterDeployment(deployment *appsv1.Deployment, ownerRef config.Ow
 	return nil
 }
 
-func privateRouterContainerMain() *corev1.Container {
-
+func hcpRouterContainerMain() *corev1.Container {
 	return &corev1.Container{
 		Name: "private-router",
 	}
 }
 
-func buildPrivateRouterContainerMain(image, namespace, canonicalHostname string, exposeAPIServerThroughRouter bool) func(*corev1.Container) {
+func buildHCPRouterContainerMain(image, namespace, canonicalHostname string, exposeAPIServerThroughRouter bool, isPrivateOnly bool) func(*corev1.Container) {
 	const haproxyTemplateMountPath = "/usr/local/haproxy/hypershift-template"
+	routeLabels := fmt.Sprintf("%s=%s", util.HCPRouteLabel, namespace)
+	if isPrivateOnly {
+		routeLabels = fmt.Sprintf("%s,%s=%s", routeLabels, util.InternalRouteLabel, "true")
+	}
 	return func(c *corev1.Container) {
 		c.Env = []corev1.EnvVar{
 			{
@@ -193,7 +194,7 @@ func buildPrivateRouterContainerMain(image, namespace, canonicalHostname string,
 			},
 			{
 				Name:  "ROUTE_LABELS",
-				Value: fmt.Sprintf("%s=%s", HypershiftRouteLabel, namespace),
+				Value: routeLabels,
 			},
 			{
 				Name:  "SSL_MIN_VERSION",
@@ -211,21 +212,21 @@ func buildPrivateRouterContainerMain(image, namespace, canonicalHostname string,
 				Name:  "STATS_PORT",
 				Value: fmt.Sprintf("%d", metricsPort),
 			},
-		}
-
-		if exposeAPIServerThroughRouter {
-			c.Env = append(c.Env, corev1.EnvVar{
+			{
 				Name:  "ROUTER_CANONICAL_HOSTNAME",
 				Value: canonicalHostname,
-			})
+			},
 		}
+
 		c.Image = image
 		c.Args = []string{
 			"--namespace", namespace,
 		}
+
 		if exposeAPIServerThroughRouter {
 			c.Args = append(c.Args, "--template="+haproxyTemplateMountPath+"/"+routerTemplateConfigMapKey)
 		}
+
 		c.StartupProbe = &corev1.Probe{
 			FailureThreshold: 120,
 			ProbeHandler: corev1.ProbeHandler{
@@ -353,7 +354,7 @@ func ReconcileRouterServiceAccount(sa *corev1.ServiceAccount, ownerRef config.Ow
 	return nil
 }
 
-func ReconcileRouterService(svc *corev1.Service, ownerRef config.OwnerRef, kasPort int32, internal bool) error {
+func ReconcileRouterService(svc *corev1.Service, kasPort int32, internal, crossZoneLoadBalancingEnabled bool) error {
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
@@ -361,15 +362,18 @@ func ReconcileRouterService(svc *corev1.Service, ownerRef config.OwnerRef, kasPo
 	if internal {
 		svc.Annotations["service.beta.kubernetes.io/aws-load-balancer-internal"] = "true"
 	}
+	if crossZoneLoadBalancingEnabled {
+		svc.Annotations["service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled"] = "true"
+	}
 
 	if svc.Labels == nil {
 		svc.Labels = map[string]string{}
 	}
-	for k, v := range privateRouterLabels() {
+	for k, v := range hcpRouterLabels() {
 		svc.Labels[k] = v
 	}
 	svc.Spec.Type = corev1.ServiceTypeLoadBalancer
-	svc.Spec.Selector = privateRouterLabels()
+	svc.Spec.Selector = hcpRouterLabels()
 	foundHTTPS := false
 	foundKAS := false
 
@@ -411,12 +415,3 @@ func ReconcileRouterService(svc *corev1.Service, ownerRef config.OwnerRef, kasPo
 
 //go:embed router.template
 var routerTemplate []byte
-
-func AddRouteLabel(target crclient.Object) {
-	labels := target.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	labels[HypershiftRouteLabel] = target.GetNamespace()
-	target.SetLabels(labels)
-}

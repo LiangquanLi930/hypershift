@@ -32,7 +32,9 @@ func NewCreateCommands() *cobra.Command {
 		ExternalDNSDomain:              "",
 		AdditionalTrustBundle:          "",
 		ImageContentSources:            "",
+		NodeSelector:                   nil,
 		Log:                            log.Log,
+		NodeDrainTimeout:               0,
 	}
 	cmd := &cobra.Command{
 		Use:          "cluster",
@@ -43,6 +45,7 @@ func NewCreateCommands() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.Namespace, "namespace", opts.Namespace, "A namespace to contain the generated resources")
 	cmd.PersistentFlags().StringVar(&opts.Name, "name", opts.Name, "A name for the cluster")
 	cmd.PersistentFlags().StringVar(&opts.BaseDomain, "base-domain", opts.BaseDomain, "The ingress base domain for the cluster")
+	cmd.PersistentFlags().StringVar(&opts.BaseDomainPrefix, "base-domain-prefix", opts.BaseDomainPrefix, "The ingress base domain prefix for the cluster, defaults to cluster name. Use 'none' for an empty prefix")
 	cmd.PersistentFlags().StringVar(&opts.ExternalDNSDomain, "external-dns-domain", opts.ExternalDNSDomain, "Sets hostname to opinionated values in the specificed domain for services with publishing type LoadBalancer or Route.")
 	cmd.PersistentFlags().StringVar(&opts.NetworkType, "network-type", opts.NetworkType, "Enum specifying the cluster SDN provider. Supports either Calico, OVNKubernetes, OpenShiftSDN or Other.")
 	cmd.PersistentFlags().StringVar(&opts.ReleaseImage, "release-image", opts.ReleaseImage, "The OCP release image for the cluster")
@@ -54,6 +57,7 @@ func NewCreateCommands() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.AdditionalTrustBundle, "additional-trust-bundle", opts.AdditionalTrustBundle, "Path to a file with user CA bundle")
 	cmd.PersistentFlags().StringVar(&opts.ImageContentSources, "image-content-sources", opts.ImageContentSources, "Path to a file with image content sources")
 	cmd.PersistentFlags().Int32Var(&opts.NodePoolReplicas, "node-pool-replicas", opts.NodePoolReplicas, "If >-1, create a default NodePool with this many replicas")
+	cmd.PersistentFlags().DurationVar(&opts.NodeDrainTimeout, "node-drain-timeout", opts.NodeDrainTimeout, "The NodeDrainTimeout on any created NodePools")
 	cmd.PersistentFlags().StringArrayVar(&opts.Annotations, "annotations", opts.Annotations, "Annotations to apply to the hostedcluster (key=value). Can be specified multiple times.")
 	cmd.PersistentFlags().BoolVar(&opts.FIPS, "fips", opts.FIPS, "Enables FIPS mode for nodes in the cluster")
 	cmd.PersistentFlags().BoolVar(&opts.AutoRepair, "auto-repair", opts.AutoRepair, "Enables machine autorepair with machine health checks")
@@ -64,10 +68,9 @@ func NewCreateCommands() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.InfraID, "infra-id", opts.InfraID, "Infrastructure ID to use for hosted cluster resources.")
 	cmd.PersistentFlags().StringVar(&opts.ServiceCIDR, "service-cidr", opts.ServiceCIDR, "The CIDR of the service network")
 	cmd.PersistentFlags().StringVar(&opts.ClusterCIDR, "cluster-cidr", opts.ClusterCIDR, "The CIDR of the cluster network")
+	cmd.PersistentFlags().StringToStringVar(&opts.NodeSelector, "node-selector", opts.NodeSelector, "A comma separated list of key=value to use as node selector for the Hosted Control Plane pods to stick to. E.g. role=cp,disk=fast")
 	cmd.PersistentFlags().BoolVar(&opts.Wait, "wait", opts.Wait, "If the create command should block until the cluster is up. Requires at least one node.")
 	cmd.PersistentFlags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "If the --wait flag is set, set the optional timeout to limit the waiting duration. The format is duration; e.g. 30s or 1h30m45s; 0 means no timeout; default = 0")
-
-	cmd.MarkPersistentFlagRequired("pull-secret")
 
 	cmd.AddCommand(aws.NewCreateCommand(opts))
 	cmd.AddCommand(none.NewCreateCommand(opts))
@@ -82,10 +85,11 @@ func NewCreateCommands() *cobra.Command {
 func NewDestroyCommands() *cobra.Command {
 
 	opts := &core.DestroyOptions{
-		Namespace:          "clusters",
-		Name:               "",
-		ClusterGracePeriod: 10 * time.Minute,
-		Log:                log.Log,
+		Namespace:             "clusters",
+		Name:                  "",
+		ClusterGracePeriod:    10 * time.Minute,
+		Log:                   log.Log,
+		DestroyCloudResources: true,
 	}
 
 	cmd := &cobra.Command{

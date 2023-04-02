@@ -6,14 +6,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-const (
-	reconciliationActiveConditionReason             = "ReconciliationActive"
-	reconciliationPausedConditionReason             = "ReconciliationPaused"
-	reconciliationInvalidPausedUntilConditionReason = "InvalidPausedUntilValue"
 )
 
 // IsReconciliationPaused checks the pauseUntil field to see if reconciliation on the resource should be
@@ -65,15 +59,15 @@ func GenerateReconciliationActiveCondition(pausedUntilField *string, objectGener
 		return metav1.Condition{
 			Type:               string(hyperv1.ReconciliationActive),
 			Status:             metav1.ConditionFalse,
-			Reason:             reconciliationPausedConditionReason,
+			Reason:             hyperv1.ReconciliationPausedConditionReason,
 			Message:            msgString,
 			ObservedGeneration: objectGeneration,
 		}
 	}
 	msgString = "Reconciliation active on resource"
-	reasonString := reconciliationActiveConditionReason
+	reasonString := hyperv1.AsExpectedReason
 	if err != nil {
-		reasonString = reconciliationInvalidPausedUntilConditionReason
+		reasonString = hyperv1.ReconciliationInvalidPausedUntilConditionReason
 		msgString = "Invalid value provided for PausedUntil field"
 	}
 	return metav1.Condition{

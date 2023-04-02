@@ -50,6 +50,7 @@ update: deps api api-docs app-sre-saas-template
 verify: update staticcheck fmt vet promtool
 	git diff-index --cached --quiet --ignore-submodules HEAD --
 	git diff-files --quiet --ignore-submodules
+	git diff --exit-code HEAD --
 	$(eval STATUS = $(shell git status -s))
 	$(if $(strip $(STATUS)),$(error untracked files detected: ${STATUS}))
 
@@ -61,6 +62,7 @@ $(STATICCHECK): $(TOOLS_DIR)/go.mod # Build staticcheck from tools folder.
 
 $(GENAPIDOCS): $(TOOLS_DIR)/go.mod
 	cd $(TOOLS_DIR); GO111MODULE=on GOFLAGS=-mod=vendor go build -tags=tools -o $(GENAPIDOCS) github.com/ahmetb/gen-crd-api-reference-docs
+
 
 # Build hypershift-operator binary
 .PHONY: hypershift-operator
@@ -96,8 +98,8 @@ cluster-api: $(CONTROLLER_GEN)
 .PHONY: cluster-api-provider-aws
 cluster-api-provider-aws: $(CONTROLLER_GEN)
 	rm -rf cmd/install/assets/cluster-api-provider-aws/*.yaml
-	$(CONTROLLER_GEN) $(CRD_OPTIONS) paths="./vendor/sigs.k8s.io/cluster-api-provider-aws/api/v1beta1" output:crd:artifacts:config=cmd/install/assets/cluster-api-provider-aws
-	$(CONTROLLER_GEN) $(CRD_OPTIONS) paths="./vendor/sigs.k8s.io/cluster-api-provider-aws/exp/api/v1beta1" output:crd:artifacts:config=cmd/install/assets/cluster-api-provider-aws
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) paths="./vendor/sigs.k8s.io/cluster-api-provider-aws/v2/api/..." output:crd:artifacts:config=cmd/install/assets/cluster-api-provider-aws
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) paths="./vendor/sigs.k8s.io/cluster-api-provider-aws/v2/exp/api/..." output:crd:artifacts:config=cmd/install/assets/cluster-api-provider-aws
 
 .PHONY: cluster-api-provider-ibmcloud
 cluster-api-provider-ibmcloud: $(CONTROLLER_GEN)
@@ -123,6 +125,11 @@ cluster-api-provider-azure: $(CONTROLLER_GEN)
 api-docs: $(GENAPIDOCS)
 	hack/gen-api-docs.sh $(GENAPIDOCS) $(DIR)
 
+
+.PHONY: release
+release:
+	go run ./hack/tools/release/notes.go --from=${FROM} --to=${TO}
+
 .PHONY: app-sre-saas-template
 app-sre-saas-template: hypershift
 	bin/hypershift install \
@@ -147,7 +154,7 @@ app-sre-saas-template: hypershift
 # Run tests
 .PHONY: test
 test:
-	$(GO) test -race -count=25 -timeout=20m ./... -coverprofile cover.out
+	$(GO) test -race -count=25 -timeout=30m ./... -coverprofile cover.out
 
 .PHONY: e2e
 e2e:
@@ -167,7 +174,7 @@ vet:
 
 .PHONY: promtool
 promtool:
-	cd $(TOOLS_DIR); $(PROMTOOL) check rules ../../cmd/install/assets/recordingrules/*.yaml
+	cd $(TOOLS_DIR); $(PROMTOOL) check rules ../../cmd/install/assets/slos/*.yaml ../../cmd/install/assets/recordingrules/*.yaml ../../control-plane-operator/controllers/hostedcontrolplane/kas/assets/*.yaml
 
 # Updates Go modules
 .PHONY: deps
@@ -175,6 +182,7 @@ deps:
 	$(GO) mod tidy
 	$(GO) mod vendor
 	$(GO) mod verify
+	$(GO) list -m -mod=readonly -json all > /dev/null
 
 # Run staticcheck
 # How to ignore failures https://staticcheck.io/docs/configuration#line-based-linter-directives
@@ -220,13 +228,13 @@ ci-install-hypershift-private:
 		--oidc-storage-provider-s3-credentials=/etc/hypershift-pool-aws-credentials/credentials \
 		--oidc-storage-provider-s3-bucket-name=hypershift-ci-oidc \
 		--oidc-storage-provider-s3-region=us-east-1 \
-		--enable-webhook \
 		--private-platform=AWS \
 		--aws-private-creds=/etc/hypershift-pool-aws-credentials/credentials \
 		--aws-private-region=us-east-1 \
 		--external-dns-provider=aws \
 		--external-dns-credentials=/etc/hypershift-pool-aws-credentials/credentials \
-		--external-dns-domain-filter=service.ci.hypershift.devcluster.openshift.com
+		--external-dns-domain-filter=service.ci.hypershift.devcluster.openshift.com \
+		--wait-until-available
 
 .PHONY: ci-test-e2e
 ci-test-e2e:

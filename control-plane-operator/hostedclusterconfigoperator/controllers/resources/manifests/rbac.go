@@ -71,6 +71,22 @@ func NamespaceSecurityAllocationControllerClusterRoleBinding() *rbacv1.ClusterRo
 	}
 }
 
+func PodSecurityAdmissionLabelSyncerControllerClusterRole() *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "system:openshift:controller:podsecurity-admission-label-syncer-controller",
+		},
+	}
+}
+
+func PodSecurityAdmissionLabelSyncerControllerRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "system:openshift:controller:podsecurity-admission-label-syncer-controller",
+		},
+	}
+}
+
 func NodeBootstrapperClusterRoleBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -91,6 +107,64 @@ func MetricsClientClusterRoleBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "hypershift-metrics-client",
+		},
+	}
+}
+
+func AuthenticatedReaderForAuthenticatedUserRolebinding() *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "authentication-reader-for-authenticated-users",
+			Namespace: "kube-system",
+		}}
+}
+
+func KCMLeaderElectionRole() *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "system:openshift:leader-election-lock-kube-controller-manager",
+			Namespace: "kube-system",
+		},
+	}
+}
+
+func KCMLeaderElectionRoleBinding() *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "system:openshift:leader-election-lock-kube-controller-manager",
+			Namespace: "kube-system",
+		},
+	}
+}
+
+func DeployerClusterRole() *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "system:deployer",
+		},
+	}
+}
+
+func DeployerClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "system:deployer",
+		},
+	}
+}
+
+func ImageTriggerControllerClusterRole() *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "system:openshift:openshift-controller-manager:image-trigger-controller",
+		},
+	}
+}
+
+func ImageTriggerControllerClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "system:openshift:openshift-controller-manager:image-trigger-controller",
 		},
 	}
 }

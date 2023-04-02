@@ -18,8 +18,7 @@ import (
 
 	routev1 "github.com/openshift/api/route/v1"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
-	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/ingress"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
 	"github.com/openshift/hypershift/support/certs"
 	"github.com/openshift/hypershift/support/config"
@@ -32,9 +31,11 @@ var (
 		konnectivityServerContainer().Name: util.ContainerVolumeMounts{
 			konnectivityVolumeServerCerts().Name:  "/etc/konnectivity/server",
 			konnectivityVolumeClusterCerts().Name: "/etc/konnectivity/cluster",
+			konnectivitySignerCA().Name:           "/etc/konnectivity/ca",
 		},
 		konnectivityAgentContainer().Name: util.ContainerVolumeMounts{
 			konnectivityVolumeAgentCerts().Name: "/etc/konnectivity/agent",
+			konnectivitySignerCA().Name:         "/etc/konnectivity/ca",
 		},
 	}
 )
@@ -75,6 +76,7 @@ func ReconcileServerDeployment(deployment *appsv1.Deployment, ownerRef config.Ow
 				Volumes: []corev1.Volume{
 					util.BuildVolume(konnectivityVolumeServerCerts(), buildKonnectivityVolumeServerCerts),
 					util.BuildVolume(konnectivityVolumeClusterCerts(), buildKonnectivityVolumeClusterCerts),
+					util.BuildVolume(konnectivitySignerCA(), buildKonnectivitySignerCAkonnectivitySignerCAVolume),
 				},
 			},
 		},
@@ -111,7 +113,7 @@ func buildKonnectivityServerContainer(image string) func(c *corev1.Container) {
 			"--server-key",
 			cpath(konnectivityVolumeServerCerts().Name, corev1.TLSPrivateKeyKey),
 			"--server-ca-cert",
-			cpath(konnectivityVolumeServerCerts().Name, certs.CASignerCertMapKey),
+			cpath(konnectivitySignerCA().Name, certs.CASignerCertMapKey),
 			"--server-port",
 			strconv.Itoa(KonnectivityServerLocalPort),
 			"--agent-port",
@@ -138,7 +140,8 @@ func konnectivityVolumeServerCerts() *corev1.Volume {
 
 func buildKonnectivityVolumeServerCerts(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.KonnectivityServerSecret("").Name,
+		SecretName:  manifests.KonnectivityServerSecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
 }
 
@@ -150,8 +153,20 @@ func konnectivityVolumeClusterCerts() *corev1.Volume {
 
 func buildKonnectivityVolumeClusterCerts(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.KonnectivityClusterSecret("").Name,
+		SecretName:  manifests.KonnectivityClusterSecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
+}
+
+func konnectivitySignerCA() *corev1.Volume {
+	return &corev1.Volume{
+		Name: "konnectivity-ca",
+	}
+}
+
+func buildKonnectivitySignerCAkonnectivitySignerCAVolume(v *corev1.Volume) {
+	v.ConfigMap = &corev1.ConfigMapVolumeSource{}
+	v.ConfigMap.Name = manifests.KonnectivityCAConfigMap("").Name
 }
 
 const (
@@ -211,53 +226,18 @@ func ReconcileServerService(svc *corev1.Service, ownerRef config.OwnerRef, strat
 	return nil
 }
 
-func ReconcileRoute(route *routev1.Route, ownerRef config.OwnerRef, private bool, strategy *hyperv1.ServicePublishingStrategy, defaultIngressDomain string) error {
+func ReconcileExternalRoute(route *routev1.Route, ownerRef config.OwnerRef, hostname string, defaultIngressDomain string) error {
 	ownerRef.ApplyTo(route)
+	return util.ReconcileExternalRoute(route, hostname, defaultIngressDomain, manifests.KonnectivityServerService(route.Namespace).Name)
+}
 
-	// The route host is considered immutable, so set it only once upon creation
-	// and ignore updates.
-	if route.CreationTimestamp.IsZero() {
-		switch {
-		case !private && strategy.Route != nil && strategy.Route.Hostname != "":
-			route.Spec.Host = strategy.Route.Hostname
-			ingress.AddRouteLabel(route)
-		case private:
-			ingress.AddRouteLabel(route)
-			route.Spec.Host = fmt.Sprintf("%s.apps.%s.hypershift.local", route.Name, ownerRef.Reference.Name)
-		default:
-			route.Spec.Host = util.ShortenRouteHostnameIfNeeded(route.Name, route.Namespace, defaultIngressDomain)
-		}
-	}
-
-	switch {
-	case !private && strategy.Route != nil && strategy.Route.Hostname != "":
-		if route.Annotations == nil {
-			route.Annotations = map[string]string{}
-		}
-		route.Annotations[hyperv1.ExternalDNSHostnameAnnotation] = strategy.Route.Hostname
-	case private:
-		if route.Labels == nil {
-			route.Labels = map[string]string{}
-		}
-		route.Labels[ingress.HypershiftRouteLabel] = route.GetNamespace()
-	}
-
-	route.Spec.To = routev1.RouteTargetReference{
-		Kind: "Service",
-		Name: manifests.KonnectivityServerRoute(route.Namespace).Name,
-	}
-	route.Spec.TLS = &routev1.TLSConfig{
-		Termination:                   routev1.TLSTerminationPassthrough,
-		InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyNone,
-	}
-	route.Spec.Port = &routev1.RoutePort{
-		TargetPort: intstr.FromInt(KonnectivityServerPort),
-	}
-	return nil
+func ReconcileInternalRoute(route *routev1.Route, ownerRef config.OwnerRef) error {
+	ownerRef.ApplyTo(route)
+	// Assumes ownerRef is the HCP
+	return util.ReconcileInternalRoute(route, ownerRef.Reference.Name, manifests.KonnectivityServerService(route.Namespace).Name)
 }
 
 func ReconcileServerServiceStatus(svc *corev1.Service, route *routev1.Route, strategy *hyperv1.ServicePublishingStrategy, messageCollector events.MessageCollector) (host string, port int32, message string, err error) {
-
 	switch strategy.Type {
 	case hyperv1.LoadBalancer:
 		if len(svc.Status.LoadBalancer.Ingress) == 0 {
@@ -324,7 +304,8 @@ func konnectivityVolumeAgentCerts() *corev1.Volume {
 
 func buildKonnectivityVolumeAgentCerts(v *corev1.Volume) {
 	v.Secret = &corev1.SecretVolumeSource{
-		SecretName: manifests.KonnectivityAgentSecret("").Name,
+		SecretName:  manifests.KonnectivityAgentSecret("").Name,
+		DefaultMode: pointer.Int32Ptr(0640),
 	}
 }
 
@@ -345,6 +326,7 @@ func ReconcileAgentDeployment(deployment *appsv1.Deployment, ownerRef config.Own
 				},
 				Volumes: []corev1.Volume{
 					util.BuildVolume(konnectivityVolumeAgentCerts(), buildKonnectivityVolumeAgentCerts),
+					util.BuildVolume(konnectivitySignerCA(), buildKonnectivitySignerCAkonnectivitySignerCAVolume),
 				},
 			},
 		},
@@ -374,7 +356,7 @@ func buildKonnectivityAgentContainer(image string, ips []string) func(c *corev1.
 		c.Args = []string{
 			"--logtostderr=true",
 			"--ca-cert",
-			cpath(konnectivityVolumeAgentCerts().Name, certs.CASignerCertMapKey),
+			cpath(konnectivitySignerCA().Name, certs.CASignerCertMapKey),
 			"--agent-cert",
 			cpath(konnectivityVolumeAgentCerts().Name, corev1.TLSCertKey),
 			"--agent-key",
@@ -395,6 +377,8 @@ func buildKonnectivityAgentContainer(image string, ips []string) func(c *corev1.
 			"1m",
 			"--sync-interval-cap",
 			"5m",
+			"--v",
+			"3",
 		}
 		c.VolumeMounts = volumeMounts.ContainerMounts(c.Name)
 	}

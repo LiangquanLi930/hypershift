@@ -7,10 +7,14 @@ import (
 	"path"
 	"time"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/cloud/aws"
+	"github.com/openshift/hypershift/control-plane-operator/controllers/hostedcontrolplane/manifests"
+
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	"github.com/openshift/hypershift/support/api"
 	"github.com/openshift/hypershift/support/util"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apiserver/pkg/apis/config/v1"
 	"k8s.io/utils/pointer"
@@ -114,11 +118,11 @@ func applyAWSKMSConfig(podSpec *corev1.PodSpec, activeKey hyperv1.AWSKMSKeyEntry
 	if backupKey != nil && len(backupKey.ARN) > 0 {
 		podSpec.Containers = append(podSpec.Containers, util.BuildContainer(kasContainerAWSKMSBackup(), buildKASContainerAWSKMS(kmsImage, activeKey.ARN, awsRegion, fmt.Sprintf("%s/%s", awsKMSVolumeMounts.Path(kasContainerMain().Name, kasVolumeKMSSocket().Name), backupAWSKMSUnixSocketFileName), backupAWSKMSHealthPort)))
 	}
-	if len(awsAuth.Credentials.Name) == 0 {
-		return fmt.Errorf("aws kms credential data not specified")
+	if len(awsAuth.AWSKMSRoleARN) == 0 {
+		return fmt.Errorf("aws kms role arn not specified")
 	}
 	podSpec.Volumes = append(podSpec.Volumes,
-		util.BuildVolume(kasVolumeAWSKMSCredentials(), buildVolumeAWSKMSCredentials(awsAuth.Credentials.Name)),
+		util.BuildVolume(kasVolumeAWSKMSCredentials(), buildVolumeAWSKMSCredentials(aws.AWSKMSCredsSecret("").Name)),
 		util.BuildVolume(kasVolumeKMSSocket(), buildVolumeKMSSocket),
 		util.BuildVolume(kasVolumeAWSKMSCloudProviderToken(), buildKASVolumeAWSKMSCloudProviderToken),
 	)
@@ -208,11 +212,15 @@ func buildKASContainerAWSKMSTokenMinter(image string) func(*corev1.Container) {
 		c.ImagePullPolicy = corev1.PullIfNotPresent
 		c.Command = []string{"/usr/bin/control-plane-operator", "token-minter"}
 		c.Args = []string{
-			"--service-account-namespace=kube-system",
-			"--service-account-name=kms-provider",
 			"--token-audience=openshift",
+			fmt.Sprintf("--service-account-namespace=%s", manifests.KASContainerAWSKMSProviderServiceAccount().Namespace),
+			fmt.Sprintf("--service-account-name=%s", manifests.KASContainerAWSKMSProviderServiceAccount().Name),
 			fmt.Sprintf("--token-file=%s", path.Join(awsKMSVolumeMounts.Path(c.Name, kasVolumeAWSKMSCloudProviderToken().Name), "token")),
 			fmt.Sprintf("--kubeconfig=%s", path.Join(awsKMSVolumeMounts.Path(c.Name, kasVolumeLocalhostKubeconfig().Name), KubeconfigKey)),
+		}
+		c.Resources.Requests = corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("10Mi"),
 		}
 		c.VolumeMounts = awsKMSVolumeMounts.ContainerMounts(c.Name)
 	}

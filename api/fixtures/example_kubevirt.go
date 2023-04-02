@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
 	apiresource "k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -17,6 +17,9 @@ type ExampleKubevirtOptions struct {
 	RootVolumeSize            uint32
 	RootVolumeStorageClass    string
 	RootVolumeAccessModes     string
+	BaseDomainPassthrough     bool
+	InfraKubeConfig           []byte
+	InfraNamespace            string
 }
 
 func ExampleKubeVirtTemplate(o *ExampleKubevirtOptions) *hyperv1.KubevirtNodePoolPlatform {

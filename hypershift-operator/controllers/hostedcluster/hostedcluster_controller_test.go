@@ -1,26 +1,23 @@
 package hostedcluster
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/blang/semver"
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	. "github.com/onsi/gomega"
 	configv1 "github.com/openshift/api/config/v1"
 	"github.com/openshift/hypershift/api"
-	hyperv1 "github.com/openshift/hypershift/api/v1alpha1"
+	"github.com/openshift/hypershift/api/util/ipnet"
+	hyperv1 "github.com/openshift/hypershift/api/v1beta1"
+	version "github.com/openshift/hypershift/cmd/version"
 	"github.com/openshift/hypershift/control-plane-operator/hostedclusterconfigoperator/controllers/resources/manifests"
-	platformaws "github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster/internal/platform/aws"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/hostedcluster/internal/platform/kubevirt"
 	"github.com/openshift/hypershift/hypershift-operator/controllers/manifests/controlplaneoperator"
-	hyperapi "github.com/openshift/hypershift/support/api"
 	"github.com/openshift/hypershift/support/capabilities"
 	fakecapabilities "github.com/openshift/hypershift/support/capabilities/fake"
 	fakereleaseprovider "github.com/openshift/hypershift/support/releaseinfo/fake"
@@ -33,16 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	serializerjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
-	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/pointer"
-	capiawsv1 "sigs.k8s.io/cluster-api-provider-aws/api/v1beta1"
+	capiaws "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	capibmv1 "sigs.k8s.io/cluster-api-provider-ibmcloud/api/v1beta1"
 	"sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -73,7 +66,7 @@ func TestReconcileHostedControlPlaneUpgrades(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "a"},
+						Desired: configv1.Release{Image: "a"},
 						History: []configv1.UpdateHistory{
 							{Image: "a", State: configv1.PartialUpdate},
 						},
@@ -95,7 +88,7 @@ func TestReconcileHostedControlPlaneUpgrades(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "a"},
+						Desired: configv1.Release{Image: "a"},
 						History: []configv1.UpdateHistory{
 							{Image: "a", State: configv1.CompletedUpdate},
 						},
@@ -105,7 +98,11 @@ func TestReconcileHostedControlPlaneUpgrades(t *testing.T) {
 			ControlPlane: hyperv1.HostedControlPlane{
 				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: Now},
 				Spec:       hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status:     hyperv1.HostedControlPlaneStatus{ReleaseImage: "a"},
+				Status: hyperv1.HostedControlPlaneStatus{
+					VersionStatus: &hyperv1.ClusterVersionStatus{
+						Desired: configv1.Release{Image: "a"},
+					},
+				},
 			},
 			ExpectedImage: "b",
 		},
@@ -118,7 +115,7 @@ func TestReconcileHostedControlPlaneUpgrades(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "b"},
+						Desired: configv1.Release{Image: "b"},
 						History: []configv1.UpdateHistory{
 							{Image: "b", State: configv1.PartialUpdate},
 							{Image: "a", State: configv1.CompletedUpdate},
@@ -129,7 +126,11 @@ func TestReconcileHostedControlPlaneUpgrades(t *testing.T) {
 			ControlPlane: hyperv1.HostedControlPlane{
 				ObjectMeta: metav1.ObjectMeta{CreationTimestamp: Now},
 				Spec:       hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status:     hyperv1.HostedControlPlaneStatus{ReleaseImage: "a"},
+				Status: hyperv1.HostedControlPlaneStatus{
+					VersionStatus: &hyperv1.ClusterVersionStatus{
+						Desired: configv1.Release{Image: "a"},
+					},
+				},
 			},
 			ExpectedImage: "b",
 		},
@@ -145,135 +146,6 @@ func TestReconcileHostedControlPlaneUpgrades(t *testing.T) {
 			actualImage := updated.Spec.ReleaseImage
 			if !equality.Semantic.DeepEqual(test.ExpectedImage, actualImage) {
 				t.Errorf(cmp.Diff(test.ExpectedImage, actualImage))
-			}
-		})
-	}
-}
-
-func TestComputeClusterVersionStatus(t *testing.T) {
-	tests := map[string]struct {
-		// TODO: incorporate conditions?
-		Cluster        hyperv1.HostedCluster
-		ControlPlane   hyperv1.HostedControlPlane
-		ExpectedStatus hyperv1.ClusterVersionStatus
-	}{
-		"missing history causes new rollout": {
-			Cluster: hyperv1.HostedCluster{
-				Spec: hyperv1.HostedClusterSpec{Release: hyperv1.Release{Image: "a"}},
-			},
-			ControlPlane: hyperv1.HostedControlPlane{
-				Spec:   hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status: hyperv1.HostedControlPlaneStatus{},
-			},
-			ExpectedStatus: hyperv1.ClusterVersionStatus{
-				Desired: hyperv1.Release{Image: "a"},
-				History: []configv1.UpdateHistory{
-					{Image: "a", State: configv1.PartialUpdate, StartedTime: Now},
-				},
-			},
-		},
-		"hosted cluster spec is newer than completed control plane spec should not cause update to be completed": {
-			Cluster: hyperv1.HostedCluster{
-				Spec: hyperv1.HostedClusterSpec{Release: hyperv1.Release{Image: "b"}},
-				Status: hyperv1.HostedClusterStatus{
-					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "b"},
-						History: []configv1.UpdateHistory{
-							{Image: "b", Version: "", State: configv1.PartialUpdate, StartedTime: Now},
-							{Image: "a", Version: "1.0.0", State: configv1.CompletedUpdate, StartedTime: Now, CompletionTime: &Later},
-						},
-					},
-				},
-			},
-			ControlPlane: hyperv1.HostedControlPlane{
-				Spec:   hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status: hyperv1.HostedControlPlaneStatus{ReleaseImage: "a", Version: "1.0.0", LastReleaseImageTransitionTime: &Now},
-			},
-			ExpectedStatus: hyperv1.ClusterVersionStatus{
-				Desired: hyperv1.Release{Image: "b"},
-				History: []configv1.UpdateHistory{
-					{Image: "b", Version: "", State: configv1.PartialUpdate, StartedTime: Now},
-					{Image: "a", Version: "1.0.0", State: configv1.CompletedUpdate, StartedTime: Now, CompletionTime: &Later},
-				},
-			},
-		},
-		"completed rollout updates history": {
-			Cluster: hyperv1.HostedCluster{
-				Spec: hyperv1.HostedClusterSpec{Release: hyperv1.Release{Image: "a"}},
-				Status: hyperv1.HostedClusterStatus{
-					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "a"},
-						History: []configv1.UpdateHistory{
-							{Image: "a", State: configv1.PartialUpdate, StartedTime: Now},
-						},
-					},
-				},
-			},
-			ControlPlane: hyperv1.HostedControlPlane{
-				Spec:   hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status: hyperv1.HostedControlPlaneStatus{ReleaseImage: "a", Version: "1.0.0", LastReleaseImageTransitionTime: &Later},
-			},
-			ExpectedStatus: hyperv1.ClusterVersionStatus{
-				Desired: hyperv1.Release{Image: "a"},
-				History: []configv1.UpdateHistory{
-					{Image: "a", Version: "1.0.0", State: configv1.CompletedUpdate, StartedTime: Now, CompletionTime: &Later},
-				},
-			},
-		},
-		"new rollout happens after existing rollout completes": {
-			Cluster: hyperv1.HostedCluster{
-				Spec: hyperv1.HostedClusterSpec{Release: hyperv1.Release{Image: "b"}},
-				Status: hyperv1.HostedClusterStatus{
-					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "a"},
-						History: []configv1.UpdateHistory{
-							{Image: "a", State: configv1.CompletedUpdate, StartedTime: Now, CompletionTime: &Later},
-						},
-					},
-				},
-			},
-			ControlPlane: hyperv1.HostedControlPlane{
-				Spec:   hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status: hyperv1.HostedControlPlaneStatus{ReleaseImage: "a", Version: "1.0.0", LastReleaseImageTransitionTime: &Later},
-			},
-			ExpectedStatus: hyperv1.ClusterVersionStatus{
-				Desired: hyperv1.Release{Image: "b"},
-				History: []configv1.UpdateHistory{
-					{Image: "b", State: configv1.PartialUpdate, StartedTime: Now},
-					{Image: "a", Version: "1.0.0", State: configv1.CompletedUpdate, StartedTime: Now, CompletionTime: &Later},
-				},
-			},
-		},
-		"new rollout is deferred until existing rollout completes": {
-			Cluster: hyperv1.HostedCluster{
-				Spec: hyperv1.HostedClusterSpec{Release: hyperv1.Release{Image: "b"}},
-				Status: hyperv1.HostedClusterStatus{
-					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{Image: "a"},
-						History: []configv1.UpdateHistory{
-							{Image: "a", State: configv1.PartialUpdate, StartedTime: Now},
-						},
-					},
-				},
-			},
-			ControlPlane: hyperv1.HostedControlPlane{
-				Spec:   hyperv1.HostedControlPlaneSpec{ReleaseImage: "a"},
-				Status: hyperv1.HostedControlPlaneStatus{},
-			},
-			ExpectedStatus: hyperv1.ClusterVersionStatus{
-				Desired: hyperv1.Release{Image: "a"},
-				History: []configv1.UpdateHistory{
-					{Image: "a", State: configv1.PartialUpdate, StartedTime: Now},
-				},
-			},
-		},
-	}
-
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			actualStatus := computeClusterVersionStatus(clocktesting.NewFakeClock(Now.Time), &test.Cluster, &test.ControlPlane)
-			if !equality.Semantic.DeepEqual(&test.ExpectedStatus, actualStatus) {
-				t.Errorf(cmp.Diff(&test.ExpectedStatus, actualStatus))
 			}
 		})
 	}
@@ -402,10 +274,6 @@ func TestReconcileHostedControlPlaneAPINetwork(t *testing.T) {
 			}
 			g := NewGomegaWithT(t)
 			if test.networking != nil {
-				// deprecated values should still be populated
-				g.Expect(hostedControlPlane.Spec.APIPort).To(Equal(test.expectedAPIPort))
-				g.Expect(hostedControlPlane.Spec.APIAdvertiseAddress).To(Equal(test.expectedAPIAdvertiseAddress))
-
 				// new values should also be populated
 				g.Expect(hostedControlPlane.Spec.Networking.APIServer).ToNot(BeNil())
 				g.Expect(hostedControlPlane.Spec.Networking.APIServer.Port).To(Equal(test.expectedAPIPort))
@@ -413,6 +281,56 @@ func TestReconcileHostedControlPlaneAPINetwork(t *testing.T) {
 			} else {
 				g.Expect(hostedControlPlane.Spec.Networking.APIServer).To(BeNil())
 			}
+		})
+	}
+}
+
+func TestReconcileHostedControlPlaneConfiguration(t *testing.T) {
+	idp := configv1.IdentityProvider{
+		Name: "htpasswd",
+		IdentityProviderConfig: configv1.IdentityProviderConfig{
+			Type: configv1.IdentityProviderTypeHTPasswd,
+		},
+	}
+
+	tests := []struct {
+		name          string
+		configuration *hyperv1.ClusterConfiguration
+	}{
+		{
+			name:          "not specified",
+			configuration: nil,
+		},
+		{
+			name: "cluster configuration specified",
+			configuration: &hyperv1.ClusterConfiguration{
+				OAuth: &configv1.OAuthSpec{
+					IdentityProviders: []configv1.IdentityProvider{
+						idp,
+					},
+				},
+				Ingress: &configv1.IngressSpec{
+					Domain: "test.domain.com",
+				},
+				Network: &configv1.NetworkSpec{
+					NetworkType: "OpenShiftSDN",
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hostedCluster := &hyperv1.HostedCluster{}
+			hostedCluster.Spec.Configuration = test.configuration
+			hostedControlPlane := &hyperv1.HostedControlPlane{}
+			g := NewGomegaWithT(t)
+
+			err := reconcileHostedControlPlane(hostedControlPlane, hostedCluster)
+			g.Expect(err).ToNot(HaveOccurred())
+
+			// DeepEqual to check that all ClusterConfiguration fields are deep copied to HostedControlPlane
+			g.Expect(hostedControlPlane.Spec.Configuration).To(BeEquivalentTo(test.configuration))
 		})
 	}
 }
@@ -592,7 +510,7 @@ func TestReconcileCAPICluster(t *testing.T) {
 				Spec: v1beta1.ClusterSpec{
 					ControlPlaneEndpoint: v1beta1.APIEndpoint{},
 					ControlPlaneRef: &corev1.ObjectReference{
-						APIVersion: "hypershift.openshift.io/v1alpha1",
+						APIVersion: "hypershift.openshift.io/v1beta1",
 						Kind:       "HostedControlPlane",
 						Namespace:  "master-cluster1",
 						Name:       "cluster1",
@@ -629,10 +547,10 @@ func TestReconcileCAPICluster(t *testing.T) {
 					Name:      "cluster1",
 				},
 			},
-			infraCR: &capiawsv1.AWSCluster{
+			infraCR: &capiaws.AWSCluster{
 				TypeMeta: metav1.TypeMeta{
 					Kind:       "AWSCluster",
-					APIVersion: capiawsv1.GroupVersion.String(),
+					APIVersion: capiaws.GroupVersion.String(),
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "cluster1",
@@ -650,13 +568,13 @@ func TestReconcileCAPICluster(t *testing.T) {
 				Spec: v1beta1.ClusterSpec{
 					ControlPlaneEndpoint: v1beta1.APIEndpoint{},
 					ControlPlaneRef: &corev1.ObjectReference{
-						APIVersion: "hypershift.openshift.io/v1alpha1",
+						APIVersion: "hypershift.openshift.io/v1beta1",
 						Kind:       "HostedControlPlane",
 						Namespace:  "master-cluster1",
 						Name:       "cluster1",
 					},
 					InfrastructureRef: &corev1.ObjectReference{
-						APIVersion: capiawsv1.GroupVersion.String(),
+						APIVersion: capiaws.GroupVersion.String(),
 						Kind:       "AWSCluster",
 						Namespace:  "master-cluster1",
 						Name:       "cluster1",
@@ -841,7 +759,7 @@ func expectedRules(addRules []rbacv1.PolicyRule) []rbacv1.PolicyRule {
 }
 
 func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
-
+	releaseImage, _ := version.LookupDefaultOCPVersion()
 	hostedClusters := []*hyperv1.HostedCluster{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "agent"},
@@ -849,6 +767,9 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 				Platform: hyperv1.PlatformSpec{
 					Type:  hyperv1.AgentPlatform,
 					Agent: &hyperv1.AgentPlatformSpec{AgentNamespace: "agent-namespace"},
+				},
+				Release: hyperv1.Release{
+					Image: releaseImage.PullSpec,
 				},
 			},
 			Status: hyperv1.HostedClusterStatus{
@@ -873,6 +794,9 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 						},
 					},
 				},
+				Release: hyperv1.Release{
+					Image: releaseImage.PullSpec,
+				},
 			},
 		},
 		{
@@ -880,6 +804,9 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 			Spec: hyperv1.HostedClusterSpec{
 				Platform: hyperv1.PlatformSpec{
 					Type: hyperv1.NonePlatform,
+				},
+				Release: hyperv1.Release{
+					Image: releaseImage.PullSpec,
 				},
 			},
 		},
@@ -890,6 +817,9 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 					Type:     hyperv1.IBMCloudPlatform,
 					IBMCloud: &hyperv1.IBMCloudPlatformSpec{},
 				},
+				Release: hyperv1.Release{
+					Image: releaseImage.PullSpec,
+				},
 			},
 		},
 		{
@@ -897,6 +827,12 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 			Spec: hyperv1.HostedClusterSpec{
 				Platform: hyperv1.PlatformSpec{
 					Type: hyperv1.KubevirtPlatform,
+					Kubevirt: &hyperv1.KubevirtPlatformSpec{
+						GenerateID: "123456789",
+					},
+				},
+				Release: hyperv1.Release{
+					Image: releaseImage.PullSpec,
 				},
 			},
 		},
@@ -912,6 +848,14 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 				".dockerconfigjson": []byte("{}"),
 			},
 		},
+		&configv1.Network{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cluster",
+			},
+			Spec: configv1.NetworkSpec{
+				NetworkType: "OVNKubernetes",
+			},
+		},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-namespace"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "aws"}},
@@ -924,8 +868,8 @@ func TestHostedClusterWatchesEverythingItCreates(t *testing.T) {
 			{Service: hyperv1.APIServer, ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{Type: hyperv1.LoadBalancer}},
 			{Service: hyperv1.Konnectivity, ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{Type: hyperv1.Route}},
 			{Service: hyperv1.OAuthServer, ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{Type: hyperv1.Route}},
-			{Service: hyperv1.OIDC, ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{Type: hyperv1.None}},
 			{Service: hyperv1.Ignition, ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{Type: hyperv1.Route}},
+			{Service: hyperv1.OVNSbDb, ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{Type: hyperv1.Route}},
 		}
 		cluster.Spec.PullSecret = corev1.LocalObjectReference{Name: "secret"}
 		cluster.Spec.InfraID = "infra-id"
@@ -980,85 +924,20 @@ func (c *createTypeTrackingClient) Create(ctx context.Context, obj crclient.Obje
 	return c.Client.Create(ctx, obj, opts...)
 }
 
-func TestReconcileAWSSubnets(t *testing.T) {
-	g := NewGomegaWithT(t)
-	hcNamespace := "test"
-	hcName := "test"
-	nodePool := &hyperv1.NodePool{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test",
-			Namespace: hcNamespace,
-		},
-		Spec: hyperv1.NodePoolSpec{
-			ClusterName: hcName,
-			Platform: hyperv1.NodePoolPlatform{
-				Type: hyperv1.AWSPlatform,
-				AWS: &hyperv1.AWSNodePoolPlatform{
-					Subnet: &hyperv1.AWSResourceReference{
-						ID: pointer.StringPtr("1"),
-					},
-				},
-			},
-		},
-	}
-
-	nodePool2 := &hyperv1.NodePool{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test2",
-			Namespace: hcNamespace,
-		},
-		Spec: hyperv1.NodePoolSpec{
-			ClusterName: hcName,
-			Platform: hyperv1.NodePoolPlatform{
-				Type: hyperv1.AWSPlatform,
-				AWS: &hyperv1.AWSNodePoolPlatform{
-					Subnet: &hyperv1.AWSResourceReference{
-						ID: pointer.StringPtr("2"),
-					},
-				},
-			},
-		},
-	}
-
-	infraCRName := "test"
-	hcpNamespace := "hcp"
-	infraCR := &capiawsv1.AWSCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      infraCRName,
-			Namespace: hcpNamespace,
-		},
-		Spec: capiawsv1.AWSClusterSpec{},
-	}
-
-	client := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(infraCR, nodePool, nodePool2).Build()
-	r := &HostedClusterReconciler{
-		Client:         client,
-		createOrUpdate: func(reconcile.Request) upsert.CreateOrUpdateFN { return ctrl.CreateOrUpdate },
-	}
-	req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: hcNamespace, Name: hcName}}
-	createOrUpdate := r.createOrUpdate(req)
-
-	err := r.reconcileAWSSubnets(context.Background(), createOrUpdate, infraCR, req.Namespace, req.Name, hcpNamespace)
-	g.Expect(err).ToNot(HaveOccurred())
-
-	freshInfraCR := &capiawsv1.AWSCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      infraCRName,
-			Namespace: hcpNamespace,
-		}}
-	err = client.Get(context.Background(), crclient.ObjectKeyFromObject(freshInfraCR), freshInfraCR)
-	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(freshInfraCR.Spec.NetworkSpec.Subnets).To(BeEquivalentTo([]capiawsv1.SubnetSpec{
-		{
-			ID: "1",
-		},
-		{
-			ID: "2",
-		},
-	}))
-}
-
 func TestValidateConfigAndClusterCapabilities(t *testing.T) {
+
+	// For network test below.
+	machineNet := make([]hyperv1.MachineNetworkEntry, 2)
+	cidr, _ := ipnet.ParseCIDR("172.16.0.0/24")
+	machineNet[0].CIDR = *cidr
+	cidr, _ = ipnet.ParseCIDR("172.16.1.0/24")
+	machineNet[1].CIDR = *cidr
+	serviceNet := make([]hyperv1.ServiceNetworkEntry, 2)
+	cidr, _ = ipnet.ParseCIDR("172.16.1.252/32")
+	serviceNet[0].CIDR = *cidr
+	cidr, _ = ipnet.ParseCIDR("172.16.3.0/24")
+	serviceNet[1].CIDR = *cidr
+
 	testCases := []struct {
 		name                          string
 		hostedCluster                 *hyperv1.HostedCluster
@@ -1129,6 +1008,41 @@ func TestValidateConfigAndClusterCapabilities(t *testing.T) {
 			}},
 			expectedResult: errors.New(`cannot parse cluster ID "foobar": invalid UUID length: 6`),
 		},
+		{
+			name: "Setting network CIDRs overlapped, not allowed",
+			hostedCluster: &hyperv1.HostedCluster{
+				Spec: hyperv1.HostedClusterSpec{
+					Networking: hyperv1.ClusterNetworking{
+						ServiceNetwork: serviceNet,
+						MachineNetwork: machineNet,
+					},
+				},
+			},
+			expectedResult: errors.New(`spec.networking.MachineNetwork: Invalid value: "172.16.1.0/24": spec.networking.MachineNetwork and spec.networking.ServiceNetwork overlap: 172.16.1.0/24 and 172.16.1.252/32`),
+		},
+		{
+			name: "multiple published services use the same hostname, error",
+			hostedCluster: &hyperv1.HostedCluster{Spec: hyperv1.HostedClusterSpec{
+				Services: []hyperv1.ServicePublishingStrategyMapping{
+					{
+						Service: hyperv1.APIServer,
+						ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+							Type:  hyperv1.Route,
+							Route: &hyperv1.RoutePublishingStrategy{Hostname: "api.example.com"},
+						},
+					},
+					{
+						Service: hyperv1.OAuthServer,
+						ServicePublishingStrategy: hyperv1.ServicePublishingStrategy{
+							Type:  hyperv1.Route,
+							Route: &hyperv1.RoutePublishingStrategy{Hostname: "api.example.com"},
+						},
+					},
+				},
+			}},
+			expectedResult:                errors.New(`service type OAuthServer can't be published with the same hostname api.example.com as service type APIServer`),
+			managementClusterCapabilities: &fakecapabilities.FakeSupportAllCapabilities{},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1149,10 +1063,11 @@ func TestValidateConfigAndClusterCapabilities(t *testing.T) {
 
 func TestValidateReleaseImage(t *testing.T) {
 	testCases := []struct {
-		name           string
-		other          []crclient.Object
-		hostedCluster  *hyperv1.HostedCluster
-		expectedResult error
+		name                  string
+		other                 []crclient.Object
+		hostedCluster         *hyperv1.HostedCluster
+		expectedResult        error
+		expectedNotFoundError bool
 	}{
 		{
 			name: "no pull secret, error",
@@ -1166,7 +1081,8 @@ func TestValidateReleaseImage(t *testing.T) {
 					},
 				},
 			},
-			expectedResult: errors.New("failed to get pull secret: secrets \"pull-secret\" not found"),
+			expectedResult:        errors.New("failed to get pull secret: secrets \"pull-secret\" not found"),
+			expectedNotFoundError: true,
 		},
 		{
 			name: "invalid pull secret, error",
@@ -1236,7 +1152,7 @@ func TestValidateReleaseImage(t *testing.T) {
 					},
 				},
 			},
-			expectedResult: errors.New("releases before 4.8 are not supported"),
+			expectedResult: errors.New(`releases before 4.8 are not supported. Attempting to use: "4.7.0"`),
 		},
 		{
 			name: "unsupported y-stream downgrade, error",
@@ -1257,18 +1173,18 @@ func TestValidateReleaseImage(t *testing.T) {
 						Name: "pull-secret",
 					},
 					Release: hyperv1.Release{
-						Image: "image-4.10.0",
+						Image: "image-4.12.0",
 					},
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
-							Image: "image-4.11.0",
+						Desired: configv1.Release{
+							Image: "image-4.13.0",
 						},
 					},
 				},
 			},
-			expectedResult: errors.New("y-stream downgrade is not supported"),
+			expectedResult: errors.New(`y-stream downgrade from "4.13.0" to "4.12.0" is not supported`),
 		},
 		{
 			name: "unsupported y-stream upgrade, error",
@@ -1289,18 +1205,18 @@ func TestValidateReleaseImage(t *testing.T) {
 						Name: "pull-secret",
 					},
 					Release: hyperv1.Release{
-						Image: "image-4.11.0",
+						Image: "image-4.13.0",
 					},
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
-							Image: "image-4.10.0",
+						Desired: configv1.Release{
+							Image: "image-4.11.0",
 						},
 					},
 				},
 			},
-			expectedResult: errors.New("y-stream upgrade is not for OpenShiftSDN"),
+			expectedResult: errors.New(`y-stream upgrade from "4.11.0" to "4.13.0" is not for OpenShiftSDN`),
 		},
 		{
 			name: "supported y-stream upgrade, success",
@@ -1321,13 +1237,13 @@ func TestValidateReleaseImage(t *testing.T) {
 						Name: "pull-secret",
 					},
 					Release: hyperv1.Release{
-						Image: "image-4.11.0",
+						Image: "image-4.12.0",
 					},
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
-							Image: "image-4.10.0",
+						Desired: configv1.Release{
+							Image: "image-4.11.0",
 						},
 					},
 				},
@@ -1347,13 +1263,13 @@ func TestValidateReleaseImage(t *testing.T) {
 			hostedCluster: &hyperv1.HostedCluster{
 				Spec: hyperv1.HostedClusterSpec{
 					Networking: hyperv1.ClusterNetworking{
-						NetworkType: hyperv1.OpenShiftSDN,
+						NetworkType: hyperv1.OVNKubernetes,
 					},
 					PullSecret: corev1.LocalObjectReference{
 						Name: "pull-secret",
 					},
 					Release: hyperv1.Release{
-						Image: "image-4.10.0",
+						Image: "image-4.12.0",
 					},
 				},
 			},
@@ -1372,19 +1288,19 @@ func TestValidateReleaseImage(t *testing.T) {
 			hostedCluster: &hyperv1.HostedCluster{
 				Spec: hyperv1.HostedClusterSpec{
 					Networking: hyperv1.ClusterNetworking{
-						NetworkType: hyperv1.OpenShiftSDN,
+						NetworkType: hyperv1.OVNKubernetes,
 					},
 					PullSecret: corev1.LocalObjectReference{
 						Name: "pull-secret",
 					},
 					Release: hyperv1.Release{
-						Image: "image-4.10.0",
+						Image: "image-4.12.0",
 					},
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
-							Image: "image-4.10.0",
+						Desired: configv1.Release{
+							Image: "image-4.12.0",
 						},
 					},
 				},
@@ -1410,13 +1326,13 @@ func TestValidateReleaseImage(t *testing.T) {
 						Name: "pull-secret",
 					},
 					Release: hyperv1.Release{
-						Image: "image-4.10.0",
+						Image: "image-4.12.0",
 					},
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
-							Image: "image-4.10.1",
+						Desired: configv1.Release{
+							Image: "image-4.11.1",
 						},
 					},
 				},
@@ -1447,8 +1363,8 @@ func TestValidateReleaseImage(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
-							Image: "image-4.11.0",
+						Desired: configv1.Release{
+							Image: "image-4.12.0",
 						},
 					},
 				},
@@ -1466,9 +1382,10 @@ func TestValidateReleaseImage(t *testing.T) {
 						"image-4.7.0":  "4.7.0",
 						"image-4.9.0":  "4.9.0",
 						"image-4.10.0": "4.10.0",
-						"image-4.10.1": "4.10.1",
 						"image-4.11.0": "4.11.0",
+						"image-4.11.1": "4.11.1",
 						"image-4.12.0": "4.12.0",
+						"image-4.13.0": "4.13.0",
 					},
 				},
 			}
@@ -1477,6 +1394,10 @@ func TestValidateReleaseImage(t *testing.T) {
 			actual := r.validateReleaseImage(ctx, tc.hostedCluster)
 			if diff := cmp.Diff(actual, tc.expectedResult, equateErrorMessage); diff != "" {
 				t.Errorf("actual validation result differs from expected: %s", diff)
+			}
+			if tc.expectedNotFoundError {
+				g := NewGomegaWithT(t)
+				g.Expect(errors2.IsNotFound(actual)).To(BeTrue())
 			}
 		})
 	}
@@ -1609,72 +1530,6 @@ func TestDefaultClusterIDsIfNeeded(t *testing.T) {
 	}
 }
 
-func TestConfigurationFieldsToRawExtensions(t *testing.T) {
-	config := &hyperv1.ClusterConfiguration{
-		Ingress: &configv1.IngressSpec{Domain: "example.com"},
-		Proxy:   &configv1.ProxySpec{HTTPProxy: "http://10.0.136.57:3128", HTTPSProxy: "http://10.0.136.57:3128"},
-	}
-	result, err := configurationFieldsToRawExtensions(config)
-	if err != nil {
-		t.Fatalf("configurationFieldsToRawExtensions: %v", err)
-	}
-
-	// Check that serialized resources do not contain a status section
-	for i, rawExt := range result {
-		unstructuredObj := &unstructured.Unstructured{}
-		_, _, err := unstructured.UnstructuredJSONScheme.Decode(rawExt.Raw, nil, unstructuredObj)
-		if err != nil {
-			t.Fatalf("unexpected decode error: %v", err)
-		}
-		_, exists, err := unstructured.NestedFieldNoCopy(unstructuredObj.Object, "status")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if exists {
-			t.Errorf("status field exists for resource %d", i)
-		}
-	}
-
-	serialized, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-
-	var roundtripped []runtime.RawExtension
-	if err := json.Unmarshal(serialized, &roundtripped); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-
-	// CreateOrUpdate does a naive DeepEqual which can not deal with custom unmarshallers, so make
-	// sure the output matches a roundtripped result.
-	if diff := cmp.Diff(result, roundtripped); diff != "" {
-		t.Errorf("output does not match a json-roundtripped version: %s", diff)
-	}
-
-	var ingress configv1.Ingress
-	if err := json.Unmarshal(result[0].Raw, &ingress); err != nil {
-		t.Fatalf("failed to unmarshal raw data: %v", err)
-	}
-	if ingress.APIVersion == "" || ingress.Kind == "" {
-		t.Errorf("rawObject has no apiVersion or kind set: %+v", ingress.ObjectMeta)
-	}
-	if ingress.Spec.Domain != "example.com" {
-		t.Errorf("ingress does not have expected domain: %q", ingress.Spec.Domain)
-	}
-
-	var proxy configv1.Proxy
-	if err := json.Unmarshal(result[1].Raw, &proxy); err != nil {
-		t.Fatalf("failed to unmarshal raw data: %v", err)
-	}
-	if proxy.APIVersion == "" || proxy.Kind == "" {
-		t.Errorf("rawObject has no apiVersion or kind set: %+v", proxy.ObjectMeta)
-	}
-	if proxy.Spec.HTTPProxy != "http://10.0.136.57:3128" {
-		t.Errorf("proxy does not have expected HTTPProxy: %q", proxy.Spec.HTTPProxy)
-	}
-
-}
-
 func TestIsUpgradeable(t *testing.T) {
 	releaseImageFrom := "image:1.2"
 	releaseImageTo := "image:1.3"
@@ -1709,7 +1564,7 @@ func TestIsUpgradeable(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: releaseImageFrom,
 						},
 					},
@@ -1728,7 +1583,7 @@ func TestIsUpgradeable(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: releaseImageFrom,
 						},
 					},
@@ -1758,7 +1613,7 @@ func TestIsUpgradeable(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: releaseImageFrom,
 						},
 					},
@@ -1788,7 +1643,7 @@ func TestIsUpgradeable(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: releaseImageFrom,
 						},
 					},
@@ -1815,367 +1670,6 @@ func TestIsUpgradeable(t *testing.T) {
 				return
 			}
 		})
-	}
-}
-
-func TestReconcileDeprecatedAWSRoles(t *testing.T) {
-	testNamespace := "test"
-
-	// Emulate user input secrets pre-created by the CLI.
-	kubeCloudControllerARN := "kubeCloudControllerARN"
-	kubeCloudControllerSecretName := "kubeCloudControllerCreds"
-	kubeCloudControllerSecret := &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Secret",
-			APIVersion: corev1.SchemeGroupVersion.String(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      kubeCloudControllerSecretName,
-		},
-		Data: map[string][]byte{
-			"credentials": []byte(fmt.Sprintf(`[default]
-role_arn = %s
-web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
-`, kubeCloudControllerARN)),
-		},
-	}
-
-	nodePoolManagementARN := "nodePoolManagementARN"
-	nodePoolManagementSecretName := "nodePoolManagementCreds"
-	nodePoolManagementSecret := &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Secret",
-			APIVersion: corev1.SchemeGroupVersion.String(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      nodePoolManagementSecretName,
-		},
-		Data: map[string][]byte{
-			"credentials": []byte(fmt.Sprintf(`[default]
-role_arn = %s
-web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
-`, nodePoolManagementARN)),
-		},
-	}
-
-	controlPlaneOperatorARN := "controlPlaneOperatorARN"
-	controlPlaneOperatorSecretName := "controlPlaneOperatorCreds"
-	controlPlaneOperatorSecret := &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Secret",
-			APIVersion: corev1.SchemeGroupVersion.String(),
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      controlPlaneOperatorSecretName,
-		},
-		Data: map[string][]byte{
-			"credentials": []byte(fmt.Sprintf(`[default]
-role_arn = %s
-web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
-`, controlPlaneOperatorARN)),
-		},
-	}
-
-	// Emulate user input.
-	ingressARN := "ingressARN"
-	imageRegistryARN := "registryARN"
-	storageARN := "ebsARN"
-	networkARN := "networkARN"
-
-	hc := &hyperv1.HostedCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "",
-			Namespace: testNamespace,
-		},
-		Spec: hyperv1.HostedClusterSpec{
-			Platform: hyperv1.PlatformSpec{
-				Type: hyperv1.AWSPlatform,
-				AWS: &hyperv1.AWSPlatformSpec{
-					RolesRef: hyperv1.AWSRolesRef{
-						IngressARN:              "",
-						ImageRegistryARN:        "",
-						StorageARN:              "",
-						NetworkARN:              "",
-						KubeCloudControllerARN:  "",
-						NodePoolManagementARN:   "",
-						ControlPlaneOperatorARN: "",
-					},
-					Roles: []hyperv1.AWSRoleCredentials{
-						{
-							ARN:       ingressARN,
-							Namespace: "openshift-ingress-operator",
-							Name:      "cloud-credentials",
-						},
-						{
-							ARN:       imageRegistryARN,
-							Namespace: "openshift-image-registry",
-							Name:      "installer-cloud-credentials",
-						},
-						{
-							ARN:       storageARN,
-							Namespace: "openshift-cluster-csi-drivers",
-							Name:      "ebs-cloud-credentials",
-						},
-						{
-							ARN:       networkARN,
-							Namespace: "openshift-cloud-network-config-controller",
-							Name:      "cloud-credentials",
-						},
-					},
-					KubeCloudControllerCreds:  corev1.LocalObjectReference{Name: kubeCloudControllerSecretName},
-					NodePoolManagementCreds:   corev1.LocalObjectReference{Name: nodePoolManagementSecretName},
-					ControlPlaneOperatorCreds: corev1.LocalObjectReference{Name: controlPlaneOperatorSecretName},
-				},
-			},
-		},
-		Status: hyperv1.HostedClusterStatus{},
-	}
-
-	// Expect old fields to be migrated.
-	expectedAWSPlatformSpec := &hyperv1.AWSPlatformSpec{
-		Region:              "",
-		CloudProviderConfig: nil,
-		ServiceEndpoints:    nil,
-		RolesRef: hyperv1.AWSRolesRef{
-			IngressARN:              ingressARN,
-			ImageRegistryARN:        imageRegistryARN,
-			StorageARN:              storageARN,
-			NetworkARN:              networkARN,
-			KubeCloudControllerARN:  kubeCloudControllerARN,
-			NodePoolManagementARN:   nodePoolManagementARN,
-			ControlPlaneOperatorARN: controlPlaneOperatorARN,
-		},
-		Roles:                     nil,
-		KubeCloudControllerCreds:  corev1.LocalObjectReference{},
-		NodePoolManagementCreds:   corev1.LocalObjectReference{},
-		ControlPlaneOperatorCreds: corev1.LocalObjectReference{},
-		ResourceTags:              nil,
-		EndpointAccess:            "",
-	}
-
-	client := fake.NewClientBuilder().WithScheme(api.Scheme).WithObjects(controlPlaneOperatorSecret, nodePoolManagementSecret, kubeCloudControllerSecret).Build()
-	r := &HostedClusterReconciler{Client: client}
-
-	g := NewGomegaWithT(t)
-	err := r.reconcileDeprecatedAWSRoles(context.Background(), hc)
-	g.Expect(err).ToNot(HaveOccurred())
-	g.Expect(hc.Spec.Platform.AWS).To(BeEquivalentTo(expectedAWSPlatformSpec))
-}
-
-func TestEnsureHCPAWSRolesBackwardCompatibility(t *testing.T) {
-	ingressARN := "ingressARN"
-	imageRegistryARN := "imageRegistryARN"
-	storageARN := "storageARN"
-	networkARN := "networkARN"
-
-	hc := &hyperv1.HostedCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "",
-			Namespace: "",
-		},
-		Spec: hyperv1.HostedClusterSpec{
-			Platform: hyperv1.PlatformSpec{
-				Type: hyperv1.AWSPlatform,
-				AWS: &hyperv1.AWSPlatformSpec{
-					RolesRef: hyperv1.AWSRolesRef{
-						IngressARN:              ingressARN,
-						ImageRegistryARN:        imageRegistryARN,
-						StorageARN:              storageARN,
-						NetworkARN:              networkARN,
-						KubeCloudControllerARN:  "anything",
-						NodePoolManagementARN:   "anything",
-						ControlPlaneOperatorARN: "anything",
-					},
-				},
-			},
-		},
-	}
-
-	expectedAWSPlatformSpec := &hyperv1.AWSPlatformSpec{
-		Region:              "",
-		CloudProviderConfig: nil,
-		ServiceEndpoints:    nil,
-		RolesRef: hyperv1.AWSRolesRef{
-			IngressARN:              ingressARN,
-			ImageRegistryARN:        imageRegistryARN,
-			StorageARN:              storageARN,
-			NetworkARN:              networkARN,
-			KubeCloudControllerARN:  "anything",
-			NodePoolManagementARN:   "anything",
-			ControlPlaneOperatorARN: "anything",
-		},
-		Roles: []hyperv1.AWSRoleCredentials{
-			{
-				ARN:       ingressARN,
-				Namespace: "openshift-ingress-operator",
-				Name:      "cloud-credentials",
-			},
-			{
-				ARN:       imageRegistryARN,
-				Namespace: "openshift-image-registry",
-				Name:      "installer-cloud-credentials",
-			},
-			{
-				ARN:       storageARN,
-				Namespace: "openshift-cluster-csi-drivers",
-				Name:      "ebs-cloud-credentials",
-			},
-			{
-				ARN:       networkARN,
-				Namespace: "openshift-cloud-network-config-controller",
-				Name:      "cloud-credentials",
-			},
-		},
-		KubeCloudControllerCreds:  corev1.LocalObjectReference{Name: platformaws.KubeCloudControllerCredsSecret("").Name},
-		NodePoolManagementCreds:   corev1.LocalObjectReference{},
-		ControlPlaneOperatorCreds: corev1.LocalObjectReference{},
-		ResourceTags:              nil,
-		EndpointAccess:            "",
-	}
-
-	g := NewGomegaWithT(t)
-	hcp := &hyperv1.HostedControlPlane{
-		Spec: hyperv1.HostedControlPlaneSpec{
-			Platform: hyperv1.PlatformSpec{
-				Type: hyperv1.AWSPlatform,
-				AWS: &hyperv1.AWSPlatformSpec{
-					Region:                    "",
-					CloudProviderConfig:       nil,
-					ServiceEndpoints:          nil,
-					RolesRef:                  hyperv1.AWSRolesRef{},
-					Roles:                     nil,
-					KubeCloudControllerCreds:  corev1.LocalObjectReference{},
-					NodePoolManagementCreds:   corev1.LocalObjectReference{},
-					ControlPlaneOperatorCreds: corev1.LocalObjectReference{},
-					ResourceTags:              nil,
-					EndpointAccess:            "",
-				},
-			},
-		},
-	}
-	ensureHCPAWSRolesBackwardCompatibility(hc, hcp)
-	g.Expect(hcp.Spec.Platform.AWS).To(BeEquivalentTo(expectedAWSPlatformSpec))
-}
-
-func TestReconcileDeprecatedGlobalConfig(t *testing.T) {
-	hc := &hyperv1.HostedCluster{}
-	hc.Name = "fake-name"
-	hc.Namespace = "fake-namespace"
-
-	apiServer := &configv1.APIServer{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: configv1.SchemeGroupVersion.String(),
-			Kind:       "APIServer",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "cluster",
-		},
-		Spec: configv1.APIServerSpec{
-			Audit: configv1.Audit{
-				// Populate kubebuilder default for comparison
-				// https://github.com/openshift/api/blob/f120778bee805ad1a7a4f05a6430332cf5811813/config/v1/types_apiserver.go#L57
-				Profile: configv1.DefaultAuditProfileType,
-			},
-			ClientCA: configv1.ConfigMapNameReference{
-				Name: "fake-ca",
-			},
-		},
-	}
-
-	jsonSerializer := serializerjson.NewSerializerWithOptions(
-		serializerjson.DefaultMetaFactory, hyperapi.Scheme, hyperapi.Scheme,
-		serializerjson.SerializerOptions{Yaml: false, Pretty: true, Strict: false},
-	)
-
-	serializedAPIServer := &bytes.Buffer{}
-	err := jsonSerializer.Encode(apiServer, serializedAPIServer)
-	if err != nil {
-		t.Fatalf("failed to serialize apiserver: %v", err)
-	}
-
-	hc.Spec.Configuration = &hyperv1.ClusterConfiguration{
-		Items: []runtime.RawExtension{
-			{
-				Raw: serializedAPIServer.Bytes(),
-			},
-		},
-		ConfigMapRefs: []corev1.LocalObjectReference{
-			{
-				Name: "fake-ca",
-			},
-		},
-		SecretRefs: []corev1.LocalObjectReference{
-			{
-				Name: "fake-creds",
-			},
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(hyperapi.Scheme).
-		WithObjects(hc).
-		Build()
-	reconciler := &HostedClusterReconciler{
-		Client: fakeClient,
-	}
-
-	originalSpec := hc.Spec.DeepCopy()
-	if err := reconciler.reconcileDeprecatedGlobalConfig(context.Background(), hc); err != nil {
-		t.Fatalf("unexpected reconcile error: %v", err)
-	}
-
-	// Update fields if required.
-	if !equality.Semantic.DeepEqual(&hc.Spec, originalSpec) {
-		err := reconciler.Client.Update(context.Background(), hc)
-		if err != nil {
-			t.Fatalf("unexpected update error: %v", err)
-		}
-	}
-
-	updatedHc := &hyperv1.HostedCluster{}
-	if err := fakeClient.Get(context.Background(), crclient.ObjectKeyFromObject(hc), updatedHc); err != nil {
-		t.Fatalf("unexpected get error: %v", err)
-	}
-	if updatedHc.Spec.Configuration == nil {
-		t.Fatalf("unexpected nil configuration")
-	}
-	if len(updatedHc.Spec.Configuration.Items) == 0 {
-		t.Errorf("empty deprecated configuration")
-	}
-	if len(updatedHc.Spec.Configuration.ConfigMapRefs) == 0 {
-		t.Errorf("empty configmap refs")
-	}
-	if len(updatedHc.Spec.Configuration.SecretRefs) == 0 {
-		t.Errorf("emtpy secret refs")
-	}
-	if !equality.Semantic.DeepEqual(&apiServer.Spec, updatedHc.Spec.Configuration.APIServer) {
-		t.Errorf("unexpected apiserver spec: %#v", updatedHc.Spec.Configuration.APIServer)
-	}
-
-	// Update deprecated field, remove test when field is unsupported
-	apiServer.Spec.ClientCA.Name = "updated-ca"
-	serializedAPIServer.Reset()
-	err = jsonSerializer.Encode(apiServer, serializedAPIServer)
-	if err != nil {
-		t.Fatalf("failed to serialize apiserver: %v", err)
-	}
-	updatedHc.Spec.Configuration.Items = []runtime.RawExtension{{Raw: serializedAPIServer.Bytes()}}
-	if err := reconciler.reconcileDeprecatedGlobalConfig(context.Background(), updatedHc); err != nil {
-		t.Fatalf("unexpected reconcile error: %v", err)
-	}
-	err = reconciler.Client.Update(context.Background(), updatedHc)
-	if err != nil {
-		t.Fatalf("unexpected update error: %v", err)
-	}
-	updatedHcAgain := &hyperv1.HostedCluster{}
-	if err := fakeClient.Get(context.Background(), crclient.ObjectKeyFromObject(updatedHc), updatedHcAgain); err != nil {
-		t.Fatalf("unexpected get error: %v", err)
-	}
-	if !equality.Semantic.DeepEqual(&apiServer.Spec, updatedHcAgain.Spec.Configuration.APIServer) {
-		t.Errorf("unexpected apiserver spec on update: %#v", updatedHcAgain.Spec.Configuration.APIServer)
 	}
 }
 
@@ -2344,7 +1838,7 @@ func TestIsProgressing(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: "release-1.2",
 						},
 					},
@@ -2375,7 +1869,7 @@ func TestIsProgressing(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: "release-1.2",
 						},
 					},
@@ -2394,7 +1888,7 @@ func TestIsProgressing(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: "release-1.2",
 						},
 					},
@@ -2419,7 +1913,7 @@ func TestIsProgressing(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: "release-1.2",
 						},
 					},
@@ -2449,7 +1943,7 @@ func TestIsProgressing(t *testing.T) {
 				},
 				Status: hyperv1.HostedClusterStatus{
 					Version: &hyperv1.ClusterVersionStatus{
-						Desired: hyperv1.Release{
+						Desired: configv1.Release{
 							Image: "release-1.2",
 						},
 					},
@@ -2479,156 +1973,141 @@ func TestIsProgressing(t *testing.T) {
 	}
 }
 
-func TestIsValidReleaseVersion(t *testing.T) {
-	v := func(str string) *semver.Version {
-		result := semver.MustParse(str)
-		return &result
-	}
-	testCases := []struct {
-		name                   string
-		currentVersion         *semver.Version
-		nextVersion            *semver.Version
-		latestVersionSupported *semver.Version
-		minVersionSupported    *semver.Version
-		networkType            hyperv1.NetworkType
-		expectError            bool
-		platform               hyperv1.PlatformType
+func TestComputeAWSEndpointServiceCondition(t *testing.T) {
+	tests := []struct {
+		name                string
+		endpointAConditions []metav1.Condition
+		endpointBConditions []metav1.Condition
+		expected            metav1.Condition
 	}{
 		{
-			name:                   "Releases before 4.8 are not supported",
-			currentVersion:         v("4.8.0"),
-			nextVersion:            v("4.7.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
+			name: "Both endpoints condition is true",
+			endpointAConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionTrue,
+					Reason:  hyperv1.AWSSuccessReason,
+					Message: hyperv1.AllIsWellMessage,
+				},
+			},
+			endpointBConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionTrue,
+					Reason:  hyperv1.AWSSuccessReason,
+					Message: hyperv1.AllIsWellMessage,
+				},
+			},
+			expected: metav1.Condition{
+				Type:    string(hyperv1.AWSEndpointAvailable),
+				Status:  metav1.ConditionTrue,
+				Reason:  hyperv1.AWSSuccessReason,
+				Message: hyperv1.AllIsWellMessage,
+			},
 		},
 		{
-			name:                   "y-stream downgrade is not supported",
-			currentVersion:         v("4.10.0"),
-			nextVersion:            v("4.9.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
+			name: "endpointA condition true, endpointB condition false",
+			endpointAConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionTrue,
+					Reason:  hyperv1.AWSSuccessReason,
+					Message: hyperv1.AllIsWellMessage,
+				},
+			},
+			endpointBConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionFalse,
+					Reason:  hyperv1.AWSErrorReason,
+					Message: "error message B",
+				},
+			},
+			expected: metav1.Condition{
+				Type:    string(hyperv1.AWSEndpointAvailable),
+				Status:  metav1.ConditionFalse,
+				Reason:  hyperv1.AWSErrorReason,
+				Message: "error message B",
+			},
 		},
 		{
-			name:                   "y-stream upgrade is not for OpenShiftSDN",
-			currentVersion:         v("4.10.0"),
-			nextVersion:            v("4.11.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			networkType:            hyperv1.OpenShiftSDN,
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
+			name: "endpointA condition false, endpointB condition true",
+			endpointAConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionFalse,
+					Reason:  hyperv1.AWSErrorReason,
+					Message: "error message A",
+				},
+			},
+			endpointBConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionTrue,
+					Reason:  hyperv1.AWSSuccessReason,
+					Message: hyperv1.AllIsWellMessage,
+				},
+			},
+			expected: metav1.Condition{
+				Type:    string(hyperv1.AWSEndpointAvailable),
+				Status:  metav1.ConditionFalse,
+				Reason:  hyperv1.AWSErrorReason,
+				Message: "error message A",
+			},
 		},
 		{
-			name:                   "the latest HostedCluster version supported by this Operator is 4.12.0",
-			currentVersion:         v("4.12.0"),
-			nextVersion:            v("4.13.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "the minimum HostedCluster version supported by this Operator is 4.10.0",
-			currentVersion:         v("4.9.0"),
-			nextVersion:            v("4.9.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Valid",
-			currentVersion:         v("4.11.0"),
-			nextVersion:            v("4.11.1"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            false,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "When going to minimum should be valid",
-			currentVersion:         v("4.9.0"),
-			nextVersion:            v("4.10.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            false,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Valid when going to minimum with a dev tag",
-			currentVersion:         v("4.9.0"),
-			nextVersion:            v("4.10.0-nightly-something"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			expectError:            false,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Invalid when installing with OpenShiftSDN and version > 4.10",
-			currentVersion:         nil,
-			nextVersion:            v("4.11.5"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			networkType:            hyperv1.OpenShiftSDN,
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Valid when installing with OpenShift SDN and version <= 4.10",
-			currentVersion:         nil,
-			nextVersion:            v("4.10.3"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			networkType:            hyperv1.OpenShiftSDN,
-			expectError:            false,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Invalid when isntalling with OVNKubernetes and version < 4.11",
-			currentVersion:         nil,
-			nextVersion:            v("4.10.5"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			networkType:            hyperv1.OVNKubernetes,
-			expectError:            true,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Valid when isntalling with OVNKubernetes and version >= 4.11",
-			currentVersion:         nil,
-			nextVersion:            v("4.11.1"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			networkType:            hyperv1.OVNKubernetes,
-			expectError:            false,
-			platform:               hyperv1.NonePlatform,
-		},
-		{
-			name:                   "Valid when installing with OpenShift SDN and version >= 4.11 with PowerVS platform",
-			currentVersion:         nil,
-			nextVersion:            v("4.11.0"),
-			latestVersionSupported: v("4.12.0"),
-			minVersionSupported:    v("4.10.0"),
-			networkType:            hyperv1.OpenShiftSDN,
-			expectError:            false,
-			platform:               hyperv1.PowerVSPlatform,
+			name: "Both endpoints condition is false",
+			endpointAConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionFalse,
+					Reason:  hyperv1.AWSErrorReason,
+					Message: "error message A",
+				},
+			},
+			endpointBConditions: []metav1.Condition{
+				{
+					Type:    string(hyperv1.AWSEndpointAvailable),
+					Status:  metav1.ConditionFalse,
+					Reason:  hyperv1.AWSErrorReason,
+					Message: "error message B",
+				},
+			},
+			expected: metav1.Condition{
+				Type:    string(hyperv1.AWSEndpointAvailable),
+				Status:  metav1.ConditionFalse,
+				Reason:  hyperv1.AWSErrorReason,
+				Message: "error message A; error message B",
+			},
 		},
 	}
 
-	for _, test := range testCases {
-		t.Run(test.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			err := isValidReleaseVersion(test.nextVersion, test.currentVersion, test.latestVersionSupported, test.minVersionSupported, test.networkType, test.platform)
-			if test.expectError {
-				g.Expect(err).To(HaveOccurred())
-				return
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			awsEndpointServiceList := hyperv1.AWSEndpointServiceList{
+				Items: []hyperv1.AWSEndpointService{
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "endpointA",
+						},
+						Status: hyperv1.AWSEndpointServiceStatus{
+							Conditions: tc.endpointAConditions,
+						},
+					},
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "endpointB",
+						},
+						Status: hyperv1.AWSEndpointServiceStatus{
+							Conditions: tc.endpointBConditions,
+						},
+					},
+				},
 			}
-			g.Expect(err).ToNot(HaveOccurred())
+			condition := computeAWSEndpointServiceCondition(awsEndpointServiceList, hyperv1.AWSEndpointAvailable)
+			if condition != tc.expected {
+				t.Errorf("error, expected %v\nbut got %v", tc.expected, condition)
+			}
 		})
 	}
-
 }

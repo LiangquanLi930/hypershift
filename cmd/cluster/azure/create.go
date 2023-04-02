@@ -3,7 +3,6 @@ package azure
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,6 +32,7 @@ func NewCreateCommand(opts *core.CreateOptions) *cobra.Command {
 	cmd.Flags().StringSliceVar(&opts.AzurePlatform.AvailabilityZones, "availablity-zones", opts.AzurePlatform.AvailabilityZones, "The availablity zones in which NodePools will be created. Must be left unspecified if the region does not support AZs. If set, one nodepool per zone will be created.")
 
 	cmd.MarkFlagRequired("azure-creds")
+	cmd.MarkPersistentFlagRequired("pull-secret")
 
 	cmd.Run = func(cmd *cobra.Command, args []string) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -68,7 +68,7 @@ func applyPlatformSpecificsValues(ctx context.Context, exampleOptions *apifixtur
 	var infra *azureinfra.CreateInfraOutput
 	var err error
 	if opts.InfrastructureJSON != "" {
-		rawInfra, err := ioutil.ReadFile(opts.InfrastructureJSON)
+		rawInfra, err := os.ReadFile(opts.InfrastructureJSON)
 		if err != nil {
 			return fmt.Errorf("failed to read infra json file: %w", err)
 		}
@@ -107,7 +107,7 @@ func applyPlatformSpecificsValues(ctx context.Context, exampleOptions *apifixtur
 		AvailabilityZones: opts.AzurePlatform.AvailabilityZones,
 	}
 
-	azureCredsRaw, err := ioutil.ReadFile(opts.AzurePlatform.CredentialsFile)
+	azureCredsRaw, err := os.ReadFile(opts.AzurePlatform.CredentialsFile)
 	if err != nil {
 		return fmt.Errorf("failed to read --azure-creds file %s: %w", opts.AzurePlatform.CredentialsFile, err)
 	}

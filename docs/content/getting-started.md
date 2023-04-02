@@ -5,7 +5,7 @@ title: Getting started
 # Getting started
 
 HyperShift is middleware for hosting OpenShift control planes at scale that
-solves for cost and time to provision, as well as portability cross cloud with
+solves for cost and time to provision, as well as portability across cloud service providers with
 strong separation of concerns between management and workloads. Clusters are
 fully compliant OpenShift Container Platform (OCP) clusters and are compatible
 with standard OCP and Kubernetes toolchains.
@@ -39,9 +39,10 @@ you should adjust to your own environment.
         aws route53 create-hosted-zone --name $BASE_DOMAIN --caller-reference $(whoami)-$(date --rfc-3339=date)
         ```
 
-    !!! important
+!!! important
 
-        In order to access applications in your guest clusters, the public zone must be routable.
+	To access applications in your guest clusters, the public zone must be routable. If the public zone exists, skip 
+    this step. Otherwise, the public zone will affect the existing functions.
 
 * An S3 bucket with public access to host OIDC discovery documents for your clusters.
 
@@ -71,9 +72,9 @@ BUCKET_NAME=your-bucket-name
 AWS_CREDS="$HOME/.aws/credentials"
 
 hypershift install \
---oidc-storage-provider-s3-bucket-name $BUCKET_NAME \
---oidc-storage-provider-s3-credentials $AWS_CREDS \
---oidc-storage-provider-s3-region $REGION
+  --oidc-storage-provider-s3-bucket-name $BUCKET_NAME \
+  --oidc-storage-provider-s3-credentials $AWS_CREDS \
+  --oidc-storage-provider-s3-region $REGION
 ```
 
 ## Create a HostedCluster
@@ -89,13 +90,13 @@ AWS_CREDS="$HOME/.aws/credentials"
 PULL_SECRET="$HOME/pull-secret"
 
 hypershift create cluster aws \
---name $CLUSTER_NAME \
---node-pool-replicas=3 \
---base-domain $BASE_DOMAIN \
---pull-secret $PULL_SECRET \
---aws-creds $AWS_CREDS \
---region $REGION \
---generate-ssh
+  --name $CLUSTER_NAME \
+  --node-pool-replicas=3 \
+  --base-domain $BASE_DOMAIN \
+  --pull-secret $PULL_SECRET \
+  --aws-creds $AWS_CREDS \
+  --region $REGION \
+  --generate-ssh
 ```
 
 !!! important
@@ -106,7 +107,13 @@ hypershift create cluster aws \
 !!! note
 
     A default NodePool will be created for the cluster with 3 replicas per the
-    `--node-pool-replicas` flag.
+    `--node-pool-replicas` flag. 
+
+!!! note 
+
+    The default NodePool name will be a combination of your cluster name and zone name for 
+    AWS (example, `example-us-east-1a`). For other providers, the default NodePool 
+    name will be the same as the cluster name.
 
 !!! note
 
@@ -118,8 +125,12 @@ namespace and when ready it will look similar to the following:
 
 ```
 oc get --namespace clusters hostedclusters
-NAME      VERSION   KUBECONFIG                 AVAILABLE
-example   4.8.0     example-admin-kubeconfig   True
+NAME      VERSION   KUBECONFIG                 PROGRESS    AVAILABLE   PROGRESSING   MESSAGE
+example   4.12.0    example-admin-kubeconfig   Completed   True        False         The hosted control plane is available
+
+oc get nodepools --namespace clusters
+NAME                 CLUSTER   DESIRED NODES   CURRENT NODES   AUTOSCALING   AUTOREPAIR   VERSION   UPDATINGVERSION   UPDATINGCONFIG   MESSAGE
+example-us-east-1a   example   2               2               False         False        4.12.0
 ```
 
 Eventually the cluster's kubeconfig will become available and can be printed to
@@ -143,6 +154,7 @@ NODEPOOL_REPLICAS=2
 
 hypershift create nodepool aws \
   --cluster-name $CLUSTER_NAME \
+  --namespace clusters \
   --name $NODEPOOL_NAME \
   --node-count $NODEPOOL_REPLICAS \
   --instance-type $INSTANCE_TYPE
@@ -169,7 +181,9 @@ Manually scale a NodePool using the `oc scale` command:
 NODEPOOL_NAME=${CLUSTER_NAME}-work
 NODEPOOL_REPLICAS=5
 
-oc scale nodepool/$NODEPOOL_NAME --namespace clusters --replicas=$NODEPOOL_REPLICAS
+oc scale nodepool/$NODEPOOL_NAME \
+  --namespace clusters \
+  --replicas=$NODEPOOL_REPLICAS
 ```
 
 ## Delete a HostedCluster
@@ -177,12 +191,17 @@ oc scale nodepool/$NODEPOOL_NAME --namespace clusters --replicas=$NODEPOOL_REPLI
 To delete a HostedCluster:
 
 ```shell
-hypershift destroy cluster aws --name $CLUSTER_NAME --aws-creds $AWS_CREDS
+hypershift destroy cluster aws \
+  --name $CLUSTER_NAME \
+  --aws-creds $AWS_CREDS
 ```
 
 To clean up cloud resources that may have been created by the HostedCluster during its lifetime, add
 the `--destroy-cloud-resources` flag:
 
 ```shell
-hypershift destroy cluster aws --name $CLUSTER_NAME --aws-creds $AWS_CREDS --destroy-cloud-resources
+hypershift destroy cluster aws \
+  --name $CLUSTER_NAME \
+  --aws-creds $AWS_CREDS \
+  --destroy-cloud-resources
 ```
