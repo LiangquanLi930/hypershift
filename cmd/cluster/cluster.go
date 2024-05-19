@@ -43,6 +43,7 @@ func NewCreateCommands() *cobra.Command {
 		NodeUpgradeType:                "",
 		Arch:                           "amd64",
 		OLMCatalogPlacement:            v1beta1.ManagementOLMCatalogPlacement,
+		NetworkType:                    string(v1beta1.OVNKubernetes),
 	}
 	cmd := &cobra.Command{
 		Use:          "cluster",
