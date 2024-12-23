@@ -1130,10 +1130,12 @@ func (r *HostedClusterReconciler) reconcile(ctx context.Context, req ctrl.Reques
 	if !ok {
 		return ctrl.Result{}, fmt.Errorf("expected %s key in pull secret", corev1.DockerConfigJsonKey)
 	}
+	//这个没问题
 	controlPlaneOperatorImage, err := GetControlPlaneOperatorImage(ctx, hcluster, releaseProvider, r.HypershiftOperatorImage, pullSecretBytes)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get controlPlaneOperatorImage: %w", err)
 	}
+	log.Info("调试controlPlaneOperatorImage:", "controlPlaneOperatorImage", controlPlaneOperatorImage)
 	controlPlaneOperatorImageLabels, err := GetControlPlaneOperatorImageLabels(ctx, hcluster, controlPlaneOperatorImage, pullSecretBytes, registryClientImageMetadataProvider)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get controlPlaneOperatorImageLabels: %w", err)
@@ -2401,6 +2403,7 @@ func GetControlPlaneOperatorImage(ctx context.Context, hc *hyperv1.HostedCluster
 //     HostedCluster resource itself
 //  2. The image labels in the medata of the image as resolved by GetControlPlaneOperatorImage
 func GetControlPlaneOperatorImageLabels(ctx context.Context, hc *hyperv1.HostedCluster, controlPlaneOperatorImage string, pullSecret []byte, imageMetadataProvider hyperutil.ImageMetadataProvider) (map[string]string, error) {
+	log := ctrl.LoggerFrom(ctx)
 	if val, ok := hc.Annotations[hyperv1.ControlPlaneOperatorImageLabelsAnnotation]; ok {
 		annotatedLabels := map[string]string{}
 		rawLabels := strings.Split(val, ",")
@@ -2415,6 +2418,7 @@ func GetControlPlaneOperatorImageLabels(ctx context.Context, hc *hyperv1.HostedC
 	}
 
 	controlPlaneOperatorImageMetadata, err := imageMetadataProvider.ImageMetadata(ctx, controlPlaneOperatorImage, pullSecret)
+	log.Info("调试 controlPlaneOperatorImageMetadata:", "controlPlaneOperatorImageMetadata", controlPlaneOperatorImageMetadata)
 	if err != nil {
 		return nil, fmt.Errorf("failed to look up image metadata for %s: %w", controlPlaneOperatorImage, err)
 	}

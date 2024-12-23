@@ -97,6 +97,23 @@ func (r *RegistryClientImageMetadataProvider) ImageMetadata(ctx context.Context,
 		}
 	}
 
+	// func seekOverride(ctx context.Context, openshiftImageRegistryOverrides map[string][]string, parsedImageReference reference.DockerImageReference) *reference.DockerImageReference {
+	//	log := ctrl.LoggerFrom(ctx)
+	//	for source, mirrors := range openshiftImageRegistryOverrides {
+	//		for _, mirror := range mirrors {
+	//			ref, overrideFound, err := GetRegistryOverrides(context.Background(), parsedImageReference, source, mirror)
+	//			if err != nil {
+	//				log.Info(fmt.Sprintf("failed to find registry override for image reference %q with source, %s, mirror %s: %s", parsedImageReference, source, mirror, err.Error()))
+	//				continue
+	//			}
+	//			if overrideFound {
+	//				return ref
+	//			}
+	//		}
+	//	}
+	//	return &parsedImageReference
+	//}
+
 	// If the image reference contains a digest, immediately look it up in the cache
 	if ref.ID != "" {
 		if imageConfigObject, exists := imageMetadataCache.Get(ref.ID); exists {
