@@ -442,66 +442,26 @@ func isArchAndPlatformSupported(nodePool *hyperv1.NodePool) bool {
 
 func (r *NodePoolReconciler) delete(ctx context.Context, nodePool *hyperv1.NodePool, controlPlaneNamespace string) error {
 	capi := &CAPI{
-		Token: &Token{
-			CreateOrUpdateProvider: r.CreateOrUpdateProvider,
-			ConfigGenerator: &ConfigGenerator{
-				Client:                r.Client,
-				nodePool:              nodePool,
-				controlplaneNamespace: controlPlaneNamespace,
-				rolloutConfig:         &rolloutConfig{},
-			},
+		Client:                r.Client,
+		nodePool:              nodePool,
+		controlplaneNamespace: controlPlaneNamespace,
+		CreateOrUpdateProvider: r.CreateOrUpdateProvider,
+		ConfigGenerator: &ConfigGenerator{
+			Client:                r.Client,
+			nodePool:              nodePool,
+			controlplaneNamespace: controlPlaneNamespace,
+			rolloutConfig:         &rolloutConfig{},
 		},
 	}
-	md := capi.machineDeployment()
-	ms := capi.machineSet()
-	mhc := capi.machineHealthCheck()
-	machineTemplates, err := capi.listMachineTemplates()
+
+	if err := capi.Delete(ctx); err != nil {
+		return fmt.Errorf("failed to delete nodePool: %w", err)
+	}
+
+	err := r.deleteKubeVirtCache(ctx, nodePool, controlPlaneNamespace)
 	if err != nil {
-		return fmt.Errorf("failed to list MachineTemplates: %w", err)
+		return fmt.Errorf("failed to delete kubevirt cache: %w", err)
 	}
-	for k := range machineTemplates {
-		if err := r.Delete(ctx, machineTemplates[k]); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete MachineTemplate: %w", err)
-		}
-	}
-
-	if err := deleteMachineDeployment(ctx, r.Client, md); err != nil {
-		return fmt.Errorf("failed to delete MachineDeployment: %w", err)
-	}
-
-	if err := deleteMachineHealthCheck(ctx, r.Client, mhc); err != nil {
-		return fmt.Errorf("failed to delete MachineHealthCheck: %w", err)
-	}
-
-	if err := deleteMachineSet(ctx, r.Client, ms); err != nil {
-		return fmt.Errorf("failed to delete MachineSet: %w", err)
-	}
-
-	// Delete any ConfigMap belonging to this NodePool i.e. TunedConfig ConfigMaps.
-	err = r.DeleteAllOf(ctx, &corev1.ConfigMap{},
-		client.InNamespace(controlPlaneNamespace),
-		client.MatchingLabels{nodePoolAnnotation: nodePool.GetName()},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to delete ConfigMaps with nodePool label: %w", err)
-	}
-
-	// Ensure all machines in NodePool are deleted
-	if err = r.ensureMachineDeletion(ctx, nodePool); err != nil {
-		return err
-	}
-
-	// Delete all secrets related to the NodePool
-	if err = r.deleteNodePoolSecrets(ctx, nodePool); err != nil {
-		return fmt.Errorf("failed to delete NodePool secrets: %w", err)
-	}
-
-	err = r.deleteKubeVirtCache(ctx, nodePool, controlPlaneNamespace)
-	if err != nil {
-		return err
-	}
-
-	r.KubevirtInfraClients.Delete(string(nodePool.GetUID()))
 
 	return nil
 }
