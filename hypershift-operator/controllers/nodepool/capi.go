@@ -343,6 +343,9 @@ func deleteMachineHealthCheck(ctx context.Context, c client.Client, mhc *capiv1.
 	// TODO(alberto): why do we need to fetch the object and check the DeletionTimestamp first?
 	// isn't Delete a no-op if the object is already deleting?
 	// This is kept like this for now to contain the scope of the refactor and avoid backward compatibility issues.
+	// TODO(alberto)：为什么我们需要首先获取对象并检查DeletionTimestamp ？
+	// 如果对象已经被删除，那么Delete不是空操作吗？
+	// 现在这样保存是为了包含重构的作用域，避免向后兼容问题。
 	err := c.Get(ctx, client.ObjectKeyFromObject(mhc), mhc)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1281,23 +1284,8 @@ func (c *CAPI) listMachineTemplates() ([]client.Object, error) {
 
 // TODO (alberto): Let the all the deletion logic be a capi func.
 // This is kept like this for now to contain the scope of the refactor and avoid backward compatibility issues.
-
-// ensureMachineDeletion ensures all the machines belonging to the NodePool's MachineSet are fully deleted.
-// This function can be deleted once the upstream PR (https://github.com/kubernetes-sigs/cluster-api-provider-aws/pull/3805) is merged and pulled into https://github.com/openshift/cluster-api-provider-aws.
-// This function is necessary to ensure AWSMachines are fully deleted prior to deleting the NodePull secrets being deleted due to a bug introduced by https://github.com/kubernetes-sigs/cluster-api-provider-aws/pull/2271
-// See https://github.com/openshift/hypershift/pull/1826#discussion_r1007349564 for more details.
-func (r *NodePoolReconciler) ensureMachineDeletion(ctx context.Context, nodePool *hyperv1.NodePool) error {
-	machines, err := r.getMachinesForNodePool(ctx, nodePool)
-	if err != nil {
-		return fmt.Errorf("error getting Machines: %w", err)
-	}
-
-	if len(machines) > 0 {
-		return fmt.Errorf("there are still Machines in for NodePool %q", nodePool.Name)
-	}
-
-	return nil
-}
+// TODO（alberto）：让所有删除逻辑都成为 capi 函数。
+// 暂时保持这种状态以包含重构的范围并避免向后兼容性问题。
 
 // getMachinesForNodePool get all Machines listed with the nodePoolAnnotation
 // within the control plane Namespace for that NodePool.
