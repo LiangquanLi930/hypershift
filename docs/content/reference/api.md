@@ -800,10 +800,6 @@ NodePoolSpec
 string
 </em>
 </td>
-<td>
-<p>clusterName is the name of the HostedCluster this NodePool belongs to.
-If a HostedCluster with this name doesn&rsquo;t exist, the controller will no-op until it exists.</p>
-</td>
 </tr>
 <tr>
 <td>
@@ -1603,7 +1599,6 @@ TODO(dan): should this be named AWSNetworkConfig?</p>
 <em>(Optional)</em>
 <p>serviceEndpoints specifies optional custom endpoints which will override
 the default service endpoint of specific AWS Services.</p>
-<p>There must be only one ServiceEndpoint for a given service name.</p>
 </td>
 </tr>
 <tr>
@@ -4365,6 +4360,21 @@ APIServerNetworking
 how the APIServer is exposed inside a hosted cluster node.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>ovn</code></br>
+<em>
+<a href="#hypershift.openshift.io/v1beta1.OVNNetworking">
+OVNNetworking
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ovn contains OVN-specific network configuration.
+This configuration is only applicable when networkType is OVNKubernetes.</p>
+</td>
+</tr>
 </tbody>
 </table>
 ###ClusterVersionOperatorSpec { #hypershift.openshift.io/v1beta1.ClusterVersionOperatorSpec }
@@ -6397,7 +6407,12 @@ PlatformSpec
 <p>platform is the platform configuration for the cluster.</p>
 </td>
 </tr>
-<tr>
+</tbody>
+</table>
+</p>
+</div>
+</body>
+</html>
 <td>
 <code>dns</code></br>
 <em>
@@ -8000,40 +8015,6 @@ k8s.io/apimachinery/pkg/api/resource.Quantity
 string
 </em>
 </td>
-<td>
-<em>(Optional)</em>
-<p>storageClass is the storageClass used for the underlying PVC that hosts the volume</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>accessModes</code></br>
-<em>
-<a href="#hypershift.openshift.io/v1beta1.PersistentVolumeAccessMode">
-[]PersistentVolumeAccessMode
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>accessModes is an array that contains the desired Access Modes the root volume should have.
-More info: <a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes">https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes</a></p>
-</td>
-</tr>
-<tr>
-<td>
-<code>volumeMode</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#persistentvolumemode-v1-core">
-Kubernetes core/v1.PersistentVolumeMode
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>volumeMode defines what type of volume is required by the claim.
-Value of Filesystem is implied when not included in claim spec.</p>
-</td>
 </tr>
 </tbody>
 </table>
@@ -9599,28 +9580,13 @@ nodes in the NodePool. The Tuned API is defined here:</p>
 <p><a href="https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go">https://github.com/openshift/cluster-node-tuning-operator/blob/2c76314fb3cc8f12aef4a0dcd67ddc3677d5b54f/pkg/apis/tuned/v1/tuned_types.go</a></p>
 <p>The PerformanceProfile API is defined here:
 <a href="https://github.com/openshift/cluster-node-tuning-operator/tree/b41042d42d4ba5bb2e99960248cf1d6ae4935018/pkg/apis/performanceprofile/v2">https://github.com/openshift/cluster-node-tuning-operator/tree/b41042d42d4ba5bb2e99960248cf1d6ae4935018/pkg/apis/performanceprofile/v2</a></p>
-<p>Each ConfigMap must have a single key named &ldquo;tuning&rdquo; whose value is the
-JSON or YAML of a serialized Tuned or PerformanceProfile.
-Changing this field will trigger a NodePool rollout.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>arch</code></br>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>arch is the preferred processor architecture for the NodePool. Different platforms might have different supported architectures.
-TODO: This is set as optional to prevent validation from failing due to a limitation on client side validation with open API machinery:
-<a href="https://github.com/kubernetes/kubernetes/issues/108768#issuecomment-1253912215">https://github.com/kubernetes/kubernetes/issues/108768#issuecomment-1253912215</a>
-TODO Add s390x to enum validation once the architecture is supported</p>
 </td>
 </tr>
 </tbody>
 </table>
+</div>
+</body>
+</html>
 ###NodePoolStatus { #hypershift.openshift.io/v1beta1.NodePoolStatus }
 <p>
 (<em>Appears on:</em>

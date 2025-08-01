@@ -37,7 +37,7 @@ const kubevirtDefaultGenevePort = uint32(9880)
 // 100.65.0.0/16 is not used internally at OVN kubernetes.
 const kubevirtDefaultV4InternalSubnet = "100.65.0.0/16"
 
-func ReconcileNetworkOperator(network *operatorv1.Network, networkType hyperv1.NetworkType, platformType hyperv1.PlatformType, disableMultiNetwork bool) {
+func ReconcileNetworkOperator(network *operatorv1.Network, networkType hyperv1.NetworkType, platformType hyperv1.PlatformType, disableMultiNetwork bool, hcp *hyperv1.HostedControlPlane) {
 	switch platformType {
 	case hyperv1.KubevirtPlatform:
 		// Modify vxlan port to avoid collisions with management cluster's default vxlan port.
@@ -77,6 +77,11 @@ func ReconcileNetworkOperator(network *operatorv1.Network, networkType hyperv1.N
 		// do nothing
 	}
 
+	// Apply OVN-specific configuration if provided
+	if networkType == hyperv1.OVNKubernetes && hcp != nil {
+		reconcileOVNConfiguration(network, hcp)
+	}
+
 	// Setting the management state is required in order to create
 	// this object. We need to create this object before the cno starts
 	// because mutating many of the values (like vxlanport) is not permitted
@@ -88,6 +93,47 @@ func ReconcileNetworkOperator(network *operatorv1.Network, networkType hyperv1.N
 	// Set disableMultiNetwork to disable Multus CNI and related components
 	if disableMultiNetwork {
 		network.Spec.DisableMultiNetwork = &disableMultiNetwork
+	}
+}
+
+// reconcileOVNConfiguration applies OVN-specific configuration from HostedCluster to Network operator
+func reconcileOVNConfiguration(network *operatorv1.Network, hcp *hyperv1.HostedControlPlane) {
+	if hcp.Spec.Networking.OVN == nil {
+		return
+	}
+
+	if network.Spec.DefaultNetwork.OVNKubernetesConfig == nil {
+		network.Spec.DefaultNetwork.OVNKubernetesConfig = &operatorv1.OVNKubernetesConfig{}
+	}
+
+	// Configure IPv4 settings
+	if hcp.Spec.Networking.OVN.IPv4 != nil {
+		if network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv4 == nil {
+			network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv4 = &operatorv1.IPv4OVNKubernetesConfig{}
+		}
+
+		if hcp.Spec.Networking.OVN.IPv4.InternalTransitSwitchSubnet != "" {
+			network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv4.InternalTransitSwitchSubnet = hcp.Spec.Networking.OVN.IPv4.InternalTransitSwitchSubnet
+		}
+
+		if hcp.Spec.Networking.OVN.IPv4.InternalJoinSubnet != "" {
+			network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv4.InternalJoinSubnet = hcp.Spec.Networking.OVN.IPv4.InternalJoinSubnet
+		}
+	}
+
+	// Configure IPv6 settings
+	if hcp.Spec.Networking.OVN.IPv6 != nil {
+		if network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv6 == nil {
+			network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv6 = &operatorv1.IPv6OVNKubernetesConfig{}
+		}
+
+		if hcp.Spec.Networking.OVN.IPv6.InternalTransitSwitchSubnet != "" {
+			network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv6.InternalTransitSwitchSubnet = hcp.Spec.Networking.OVN.IPv6.InternalTransitSwitchSubnet
+		}
+
+		if hcp.Spec.Networking.OVN.IPv6.InternalJoinSubnet != "" {
+			network.Spec.DefaultNetwork.OVNKubernetesConfig.IPv6.InternalJoinSubnet = hcp.Spec.Networking.OVN.IPv6.InternalJoinSubnet
+		}
 	}
 }
 

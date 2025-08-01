@@ -24,6 +24,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 		inputNetworkType    hyperv1.NetworkType
 		inputPlatformType   hyperv1.PlatformType
 		disableMultiNetwork bool
+		hcp                 *hyperv1.HostedControlPlane
 		expectedNetwork     *operatorv1.Network
 	}{
 		{
@@ -32,6 +33,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OVNKubernetes,
 			inputPlatformType:   hyperv1.KubevirtPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -53,6 +55,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.KubevirtPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -85,6 +88,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.KubevirtPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -118,6 +122,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OVNKubernetes,
 			inputPlatformType:   hyperv1.KubevirtPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -152,6 +157,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OVNKubernetes,
 			inputPlatformType:   hyperv1.KubevirtPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -174,6 +180,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    "fake",
 			inputPlatformType:   hyperv1.KubevirtPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -189,6 +196,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.AWSPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -204,6 +212,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.Other,
 			inputPlatformType:   hyperv1.AWSPlatform,
 			disableMultiNetwork: true,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -220,6 +229,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.Other,
 			inputPlatformType:   hyperv1.AWSPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -235,6 +245,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.NonePlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -250,6 +261,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.IBMCloudPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -265,6 +277,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.AzurePlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -280,6 +293,7 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 			inputNetworkType:    hyperv1.OpenShiftSDN,
 			inputPlatformType:   hyperv1.AgentPlatform,
 			disableMultiNetwork: false,
+			hcp:                 nil,
 			expectedNetwork: &operatorv1.Network{
 				ObjectMeta: NetworkOperator().ObjectMeta,
 				Spec: operatorv1.NetworkSpec{
@@ -289,11 +303,85 @@ func TestReconcileDefaultIngressController(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:                "OVN with IPv4 internal subnets",
+			inputNetwork:        NetworkOperator(),
+			inputNetworkType:    hyperv1.OVNKubernetes,
+			inputPlatformType:   hyperv1.AWSPlatform,
+			disableMultiNetwork: false,
+			hcp: &hyperv1.HostedControlPlane{
+				Spec: hyperv1.HostedControlPlaneSpec{
+					Networking: hyperv1.ClusterNetworking{
+						NetworkType: hyperv1.OVNKubernetes,
+						OVN: &hyperv1.OVNNetworking{
+							IPv4: &hyperv1.OVNIPv4Config{
+								InternalTransitSwitchSubnet: "100.90.0.0/16",
+								InternalJoinSubnet:          "100.91.0.0/16",
+							},
+						},
+					},
+				},
+			},
+			expectedNetwork: &operatorv1.Network{
+				ObjectMeta: NetworkOperator().ObjectMeta,
+				Spec: operatorv1.NetworkSpec{
+					OperatorSpec: operatorv1.OperatorSpec{
+						ManagementState: "Managed",
+					},
+					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
+						Type: "OVNKubernetes",
+						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
+							IPv4: &operatorv1.IPv4OVNKubernetesConfig{
+								InternalTransitSwitchSubnet: "100.90.0.0/16",
+								InternalJoinSubnet:          "100.91.0.0/16",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:                "OVN with IPv6 internal subnets",
+			inputNetwork:        NetworkOperator(),
+			inputNetworkType:    hyperv1.OVNKubernetes,
+			inputPlatformType:   hyperv1.AWSPlatform,
+			disableMultiNetwork: false,
+			hcp: &hyperv1.HostedControlPlane{
+				Spec: hyperv1.HostedControlPlaneSpec{
+					Networking: hyperv1.ClusterNetworking{
+						NetworkType: hyperv1.OVNKubernetes,
+						OVN: &hyperv1.OVNNetworking{
+							IPv6: &hyperv1.OVNIPv6Config{
+								InternalTransitSwitchSubnet: "fd99::/64",
+								InternalJoinSubnet:          "fd9a::/64",
+							},
+						},
+					},
+				},
+			},
+			expectedNetwork: &operatorv1.Network{
+				ObjectMeta: NetworkOperator().ObjectMeta,
+				Spec: operatorv1.NetworkSpec{
+					OperatorSpec: operatorv1.OperatorSpec{
+						ManagementState: "Managed",
+					},
+					DefaultNetwork: operatorv1.DefaultNetworkDefinition{
+						Type: "OVNKubernetes",
+						OVNKubernetesConfig: &operatorv1.OVNKubernetesConfig{
+							IPv6: &operatorv1.IPv6OVNKubernetesConfig{
+								InternalTransitSwitchSubnet: "fd99::/64",
+								InternalJoinSubnet:          "fd9a::/64",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 	for _, tc := range testsCases {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			ReconcileNetworkOperator(tc.inputNetwork, tc.inputNetworkType, tc.inputPlatformType, tc.disableMultiNetwork)
+			ReconcileNetworkOperator(tc.inputNetwork, tc.inputNetworkType, tc.inputPlatformType, tc.disableMultiNetwork, tc.hcp)
 			g.Expect(tc.inputNetwork).To(BeEquivalentTo(tc.expectedNetwork))
 		})
 	}
